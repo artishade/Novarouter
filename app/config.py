@@ -55,6 +55,11 @@ REQUEST_TIMEOUT = float(os.environ.get("NOVA_TIMEOUT", "180"))
 CONNECT_TIMEOUT = float(os.environ.get("NOVA_CONNECT_TIMEOUT", "15"))
 MAX_KEY_ATTEMPTS = int(os.environ.get("NOVA_MAX_KEY_ATTEMPTS", "4"))
 
+# Extensions (MCP servers / skills / plugins)
+TOOL_TIMEOUT = float(os.environ.get("NOVA_TOOL_TIMEOUT", "90"))     # per tool call
+TOOL_MAX_HOPS = int(os.environ.get("NOVA_TOOL_MAX_HOPS", "5"))       # agentic loop rounds
+TOOL_AUTO = os.environ.get("NOVA_TOOL_AUTO", "1") == "1"            # auto-inject+execute tools
+
 # Cooldown (seconds) applied to an upstream key after specific failures
 COOLDOWN_429 = int(os.environ.get("NOVA_COOLDOWN_429", "60"))
 COOLDOWN_402 = int(os.environ.get("NOVA_COOLDOWN_402", "1800"))

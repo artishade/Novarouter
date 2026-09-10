@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import adapters, checker, config, db, store
+from . import adapters, checker, config, db, extensions, store
 
 router = APIRouter()
 
@@ -121,6 +121,22 @@ class CheckIn(BaseModel):
     timeout: float = 30.0
     retry: int = 0
     sync_first: bool = True
+
+
+# ----------------------------------------------------------------- extensions
+class ExtensionIn(BaseModel):
+    kind: str
+    name: str
+    description: str = ""
+    config: Dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+
+class ExtensionPatch(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    enabled: Optional[bool] = None
 
 
 # ----------------------------------------------------------------- meta
@@ -351,6 +367,184 @@ async def check_jobs(request: Request):
 async def check_cancel(request: Request, job_id: str):
     require_admin(request)
     return {"ok": checker.cancel_job(job_id)}
+
+
+# ----------------------------------------------------------------- extensions
+@router.get("/extensions")
+async def get_extensions(request: Request, kind: Optional[str] = None, reveal: bool = False):
+    require_admin(request)
+    return extensions.list_extensions(kind, reveal=reveal)
+
+
+@router.post("/extensions")
+async def create_extension(request: Request, body: ExtensionIn):
+    require_admin(request)
+    try:
+        eid = extensions.add_extension(body.kind, body.name, body.description, body.config, body.enabled)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(e))
+    out = {"id": eid, "kind": body.kind}
+    if body.kind == "mcp":
+        try:
+            res = await extensions.refresh_mcp_tools(eid)
+            out.update(res)
+        except Exception as e:  # noqa: BLE001
+            out["error"] = str(e)[:200]
+    return out
+
+
+@router.patch("/extensions/{eid}")
+async def patch_extension(request: Request, eid: int, body: ExtensionPatch):
+    require_admin(request)
+    ext = extensions.get_extension(eid)
+    if not ext:
+        raise HTTPException(status_code=404, detail="extension not found")
+    fields = body.model_dump(exclude_none=True)
+    if "config" in fields:
+        fields["config"] = extensions.preserve_secret(fields["config"], ext.get("config") or {})
+    try:
+        extensions.update_extension(eid, **fields)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@router.delete("/extensions/{eid}")
+async def remove_extension(request: Request, eid: int):
+    require_admin(request)
+    if not extensions.get_extension(eid):
+        raise HTTPException(status_code=404, detail="extension not found")
+    extensions.delete_extension(eid)
+    return {"ok": True}
+
+
+@router.post("/extensions/{eid}/refresh")
+async def refresh_extension(request: Request, eid: int):
+    """MCP: re-run tools/list and replace stored tools. Skill: re-sync its tool."""
+    require_admin(request)
+    ext = extensions.get_extension(eid)
+    if not ext:
+        raise HTTPException(status_code=404, detail="extension not found")
+    if ext["kind"] == "mcp":
+        return await extensions.refresh_mcp_tools(eid)
+    if ext["kind"] == "skill":
+        return {"tools": extensions.sync_skill_tool(eid), "error": ""}
+    return {"tools": 0, "error": "plugins have no auto-discovery; tools are defined by you"}
+
+
+@router.patch("/extensions/{eid}/tools/{tid}")
+async def patch_ext_tool(request: Request, eid: int, tid: int, enabled: bool):
+    require_admin(request)
+    extensions.set_tool_enabled(tid, enabled)
+    return {"ok": True}
+
+
+@router.delete("/extensions/{eid}/tools/{tid}")
+async def remove_ext_tool(request: Request, eid: int, tid: int):
+    require_admin(request)
+    extensions.delete_tool(tid)
+    return {"ok": True}
+
+
+@router.post("/extensions/{eid}/tools")
+async def add_ext_tool(request: Request, eid: int):
+    """Manually register a plugin tool (JSON body: name, description, parameters)."""
+    require_admin(request)
+    if not extensions.get_extension(eid):
+        raise HTTPException(status_code=404, detail="extension not found")
+    try:
+        body = await request.json()
+        tid = extensions.register_tool(
+            eid,
+            body.get("name") or "",
+            body.get("description") or "",
+            body.get("parameters") or {"type": "object", "properties": {}},
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"id": tid}
+
+
+@router.post("/extensions/{eid}/test")
+async def test_extension(request: Request, eid: int):
+    """Fire one real call against the first enabled tool of the extension."""
+    require_admin(request)
+    ext = extensions.get_extension(eid)
+    if not ext:
+        raise HTTPException(status_code=404, detail="extension not found")
+    tools = [t for t in ext.get("tools", []) if t.get("enabled")]
+    if not tools:
+        raise HTTPException(status_code=400, detail="extension has no enabled tools")
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - empty body is fine
+        body = {}
+    args = body.get("arguments") if isinstance(body, dict) else None
+    ok, content = await extensions.call_tool(tools[0]["tool_name"], args)
+    return {"ok": ok, "output": content[:2000]}
+
+
+@router.post("/extensions/import")
+async def import_extensions(request: Request):
+    """Bulk import extensions from a JSON payload (dashboard upload)."""
+    require_admin(request)
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="invalid JSON")
+    items = payload.get("extensions") if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="expected {extensions:[...]} or [...]")
+
+    added = {"extensions": 0, "tools": 0, "errors": []}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "").strip()
+        name = str(item.get("name") or "").strip()
+        cfg = item.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except ValueError:
+                cfg = {}
+        try:
+            eid = extensions.add_extension(
+                kind, name, item.get("description") or "", cfg,
+                bool(item.get("enabled", True)),
+            )
+            added["extensions"] += 1
+        except Exception as e:  # noqa: BLE001
+            added["errors"].append(f"{name}: {e}"[:200])
+            continue
+        if kind == "mcp":
+            try:
+                res = await extensions.refresh_mcp_tools(eid)
+                added["tools"] += res.get("tools", 0)
+                if res.get("error"):
+                    added["errors"].append(f"{name}: {res['error']}"[:200])
+            except Exception as e:  # noqa: BLE001
+                added["errors"].append(f"{name} refresh: {e}"[:200])
+        elif kind == "skill":
+            added["tools"] += 1
+        elif kind == "plugin" and isinstance(item.get("tools"), list):
+            for t in item["tools"]:
+                if isinstance(t, dict) and t.get("name"):
+                    try:
+                        extensions.register_tool(eid, t["name"], t.get("description") or "",
+                                                 t.get("parameters"))
+                        added["tools"] += 1
+                    except Exception:  # noqa: BLE001
+                        continue
+    return added
+
+
+@router.get("/extensions/export")
+async def export_extensions(request: Request):
+    """Export full extension configs (secrets included) for backup/migration."""
+    require_admin(request)
+    rows = extensions.list_extensions(reveal=True)
+    return {"extensions": rows}
 
 
 # ----------------------------------------------------------------- import/export

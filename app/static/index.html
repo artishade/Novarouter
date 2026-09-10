@@ -83,6 +83,7 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
   <button data-v="providers">Providers &amp; Keys</button>
   <button data-v="access">Access Keys</button>
   <button data-v="models">Models</button>
+  <button data-v="extensions">Extensions</button>
   <button data-v="checker">Availability Checker</button>
   <button data-v="playground">Playground</button>
   <button data-v="logs">Logs</button>
@@ -186,6 +187,99 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
       <th>Exposed id (use this)</th><th>Provider</th><th>Upstream id</th><th>Free</th>
       <th>Status</th><th>HTTP</th><th>ms</th><th>Checked</th><th>On</th>
     </tr></thead><tbody id="modelBody"></tbody></table></div>
+  </div>
+</section>
+
+<!-- EXTENSIONS: MCP / SKILLS / PLUGINS -->
+<section class="view" id="v-extensions">
+  <div class="card">
+    <h2>Add extension</h2>
+    <div class="grid g2">
+      <div>
+        <label class="mini">Kind</label>
+        <select id="x_kind" onchange="extFormMode()">
+          <option value="mcp">MCP server (auto-discovers its tools)</option>
+          <option value="skill">Custom skill (prompt instructions as a tool)</option>
+          <option value="plugin">HTTP plugin (manual tool schema)</option>
+        </select>
+      </div>
+      <div><label class="mini">Name (unique)</label><input id="x_name" placeholder="tavily-search"></div>
+    </div>
+    <div class="grid g2" style="margin-top:10px">
+      <div id="x_mcp_url_wrap">
+        <label class="mini">MCP server URL (Streamable HTTP / JSON-RPC over HTTP)</label>
+        <input id="x_mcp_url" placeholder="https://mcp.tavily.com/mcp/?tavilyApiKey=..." style="width:100%">
+      </div>
+      <div id="x_mcp_auth_wrap">
+        <label class="mini">Auth token (optional — sent as Authorization: Bearer …)</label>
+        <input id="x_mcp_auth" placeholder="sk-..." style="width:100%">
+      </div>
+    </div>
+    <div id="x_skill_wrap" class="hidden" style="margin-top:10px">
+      <label class="mini">Skill instructions — the model gets these when it calls the tool</label>
+      <textarea id="x_skill_instr" rows="6" style="width:100%" spellcheck="false"
+        placeholder="You are a senior trading analyst...&#10;&#10;1. Always check...&#10;2. ..."></textarea>
+      <div class="grid g2" style="margin-top:8px">
+        <div><label class="mini">Tool description (what the model sees)</label>
+          <input id="x_skill_desc" placeholder="Analyze a market/trading question with senior-analyst rigor" style="width:100%"></div>
+        <div><label class="mini">Trigger keywords (optional, for the description)</label>
+          <input id="x_skill_kw" placeholder="market, trade, forex, crypto" style="width:100%"></div>
+      </div>
+    </div>
+    <div id="x_plugin_wrap" class="hidden" style="margin-top:10px">
+      <div class="grid g2">
+        <div><label class="mini">Plugin endpoint URL</label>
+          <input id="x_plugin_url" placeholder="https://api.example.com/tools/lookup" style="width:100%"></div>
+        <div><label class="mini">HTTP method</label>
+          <select id="x_plugin_method"><option>POST</option><option>GET</option></select></div>
+      </div>
+      <div class="grid g2" style="margin-top:8px">
+        <div><label class="mini">Auth token (optional)</label>
+          <input id="x_plugin_auth" placeholder="Bearer token / api key" style="width:100%"></div>
+        <div><label class="mini">Params style</label>
+          <select id="x_plugin_style">
+            <option value="direct">direct — arguments = JSON body / query params</option>
+            <option value="wrapped">wrapped — {"tool": name, "arguments": {...}}</option>
+          </select></div>
+      </div>
+      <div style="margin-top:8px">
+        <label class="mini">Tool definitions (JSON array — name, description, parameters JSON-schema)</label>
+        <textarea id="x_plugin_tools" rows="5" style="width:100%" spellcheck="false"
+placeholder='[{"name":"lookup","description":"Look something up","parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}}]'></textarea>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" onclick="addExtension()">Add extension</button>
+      <span class="dim mini">MCP tools are fetched automatically right after adding.</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Bulk import (JSON)</h2>
+    <div class="row">
+      <input type="file" id="x_file" accept=".json,application/json" style="max-width:320px">
+      <button onclick="importExtensions()">Upload &amp; import</button>
+      <button onclick="exportExtensions()">Export all</button>
+      <button class="danger" onclick="if(confirm('Delete ALL extensions?'))wipeExtensions()">Delete all</button>
+    </div>
+    <p class="mini dim">Format: <code>{"extensions":[{"kind":"mcp","name":"...","config":{"url":"...","auth_token":"..."}}]}</code> — or paste below.</p>
+    <textarea id="x_paste" rows="4" style="width:100%" spellcheck="false" placeholder='{"extensions":[...]}'></textarea>
+    <button style="margin-top:8px" onclick="importPaste()">Import pasted JSON</button>
+  </div>
+
+  <div class="card">
+    <h2>Installed extensions</h2>
+    <div id="extList" class="mini dim">—</div>
+  </div>
+
+  <div class="card">
+    <h2>How auto-activation works</h2>
+    <ul class="mini dim">
+      <li>Every enabled extension tool is <b>auto-injected</b> into <code>POST /v1/chat/completions</code> — any client with a gateway key gets it, zero code changes on their side.</li>
+      <li>When the model calls a Nova-injected tool, NovaRouter executes it (MCP call / skill return / plugin HTTP) and feeds the result back to the model — up to 5 rounds — then returns the final answer.</li>
+      <li>Client-declared tools are passed through untouched. Opt out per-request with <code>{"nova":{"auto_tools":false}}</code>.</li>
+      <li>Discover tools: <code>GET /v1/tools</code> · call directly: <code>POST /v1/tools/&lt;name&gt;</code></li>
+    </ul>
   </div>
 </section>
 
@@ -345,6 +439,7 @@ $$('nav button').forEach(b => b.onclick = () => {
   $$('.view').forEach(v=>v.classList.toggle('on', v.id === 'v'+'-'+b.dataset.v));
   if(b.dataset.v==='models') loadModels();
   if(b.dataset.v==='logs') loadLogs();
+  if(b.dataset.v==='extensions') loadExtensions();
 });
 
 // ---------------- playground ----------------
@@ -775,6 +870,151 @@ async function exportCfg(withSecrets){
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'novarouter-config.json'; a.click();
+}
+
+// ---------------- extensions (MCP / skills / plugins) ----------------
+let EXTS = [];
+function extFormMode(){
+  const k = $('#x_kind').value;
+  $('#x_mcp_url_wrap').classList.toggle('hidden', k!=='mcp');
+  $('#x_mcp_auth_wrap').classList.toggle('hidden', k!=='mcp');
+  $('#x_skill_wrap').classList.toggle('hidden', k!=='skill');
+  $('#x_plugin_wrap').classList.toggle('hidden', k!=='plugin');
+}
+async function loadExtensions(){
+  EXTS = await api('/extensions');
+  const wrap = $('#extList');
+  if(!EXTS.length){ wrap.innerHTML = '<p class="dim">No extensions yet. Add an MCP server, a custom skill, or an HTTP plugin above.</p>'; return; }
+  wrap.innerHTML = EXTS.map(e=>`
+    <div class="card" style="margin-bottom:10px">
+      <div class="row">
+        <b>${esc(e.name)}</b>
+        <span class="tag">${e.kind}</span>
+        ${pill(e.status||'UNKNOWN')}
+        <span class="tag">${(e.tools||[]).filter(t=>t.enabled).length}/${(e.tools||[]).length} tools on</span>
+        <div class="sp" style="flex:1"></div>
+        <button class="sm" onclick="toggleExt(${e.id},${e.enabled?0:1})">${e.enabled?'Disable':'Enable'}</button>
+        ${e.kind==='mcp'?`<button class="sm" onclick="refreshExt(${e.id})">Refresh tools</button>`:''}
+        <button class="sm" onclick="testExt(${e.id})">Test</button>
+        <button class="sm danger" onclick="delExt(${e.id},'${esc(e.name)}')">✕</button>
+      </div>
+      ${e.last_error?`<div class="mini warn">⚠ ${esc(e.last_error)}</div>`:''}
+      ${e.description?`<div class="mini dim">${esc(e.description)}</div>`:''}
+      <details style="margin-top:6px">
+        <summary>config</summary>
+        <pre class="mono mini" style="white-space:pre-wrap">${esc(JSON.stringify(e.config,null,2))}</pre>
+      </details>
+      <div style="margin-top:8px">
+        ${(e.tools||[]).map(t=>`
+          <div class="keyline" style="grid-template-columns:1fr auto auto">
+            <div>
+              <span class="mono">${esc(t.tool_name)}</span>
+              <div class="mini dim" style="margin-top:2px">${esc((t.description||'').slice(0,160))}</div>
+            </div>
+            <button class="sm" onclick="toggleExtTool(${e.id},${t.id},${t.enabled?0:1})">${t.enabled?'Disable':'Enable'}</button>
+            <button class="sm danger" onclick="delExtTool(${e.id},${t.id})">✕</button>
+          </div>`).join('') || '<p class="dim mini">No tools registered.</p>'}
+      </div>
+    </div>`).join('');
+}
+async function addExtension(){
+  const kind = $('#x_kind').value, name = $('#x_name').value.trim();
+  if(!name) return toast('Name is required','err');
+  const config = {};
+  if(kind==='mcp'){
+    const url = $('#x_mcp_url').value.trim();
+    if(!url) return toast('MCP server URL is required','err');
+    config.url = url;
+    const auth = $('#x_mcp_auth').value.trim();
+    if(auth) config.auth_token = auth;
+  } else if(kind==='skill'){
+    const instr = $('#x_skill_instr').value.trim();
+    if(!instr) return toast('Skill instructions are required','err');
+    config.instructions = instr;
+    const d = $('#x_skill_desc').value.trim(); if(d) config.description = d;
+    const kw = $('#x_skill_kw').value.trim(); if(kw) config.keywords = kw;
+  } else if(kind==='plugin'){
+    const url = $('#x_plugin_url').value.trim();
+    if(!url) return toast('Plugin URL is required','err');
+    config.url = url;
+    config.method = $('#x_plugin_method').value;
+    const auth = $('#x_plugin_auth').value.trim(); if(auth) config.auth_token = auth;
+    config.params_style = $('#x_plugin_style').value;
+    const rawTools = $('#x_plugin_tools').value.trim();
+    if(rawTools){
+      try { const parsed = JSON.parse(rawTools); if(!Array.isArray(parsed)) throw 0; config.tools = parsed; }
+      catch { return toast('Tool definitions must be a JSON array','err'); }
+    }
+  }
+  const body = {kind, name, config};
+  if(kind==='skill'){
+    const d = $('#x_skill_desc').value.trim(); if(d) body.description = d;
+  }
+  if(kind==='plugin'){
+    // move tool defs to the import-style field via a second call below
+  }
+  const r = await api('/extensions',{method:'POST',body:JSON.stringify(body)});
+  let msg = `Extension "${name}" added`;
+  if(kind==='mcp') msg += ` — ${r.tools??0} tool(s) discovered${r.error?` (error: ${r.error})`:''}`;
+  if(kind==='plugin' && config.tools){
+    for(const t of config.tools){
+      await api(`/extensions/${r.id}/tools`,{method:'POST',body:JSON.stringify({
+        name:t.name, description:t.description||'', parameters:t.parameters||{type:'object',properties:{}}
+      })});
+    }
+    msg += ` — ${config.tools.length} tool(s) registered`;
+  }
+  toast(msg,'ok');
+  $('#x_name').value=''; $('#x_mcp_url').value=''; $('#x_mcp_auth').value='';
+  $('#x_skill_instr').value=''; $('#x_skill_desc').value=''; $('#x_skill_kw').value='';
+  $('#x_plugin_url').value=''; $('#x_plugin_auth').value=''; $('#x_plugin_tools').value='';
+  loadExtensions(); loadStats();
+}
+async function toggleExt(id,en){ await api('/extensions/'+id,{method:'PATCH',body:JSON.stringify({enabled:!!en})}); loadExtensions(); }
+async function refreshExt(id){
+  const r = await api(`/extensions/${id}/refresh`,{method:'POST'});
+  toast(`${r.tools??0} tool(s)${r.error?` — ${r.error}`:''}`, r.error?'err':'ok');
+  loadExtensions();
+}
+async function testExt(id){
+  toast('Calling first enabled tool…');
+  try{
+    const r = await api(`/extensions/${id}/test`,{method:'POST',body:JSON.stringify({})});
+    toast(r.ok?`Tool OK — ${(r.output||'').slice(0,80)}…`:`Tool failed: ${(r.output||'').slice(0,120)}`, r.ok?'ok':'err');
+  }catch(e){ /* toast already fired */ }
+}
+async function delExt(id,name){
+  if(!confirm(`Delete extension "${name}" and its tools?`)) return;
+  await api('/extensions/'+id,{method:'DELETE'}); toast('Deleted','ok'); loadExtensions();
+}
+async function toggleExtTool(eid,tid,en){ await api(`/extensions/${eid}/tools/${tid}?enabled=${!!en}`,{method:'PATCH'}); loadExtensions(); }
+async function delExtTool(eid,tid){ if(!confirm('Delete this tool?')) return; await api(`/extensions/${eid}/tools/${tid}`,{method:'DELETE'}); loadExtensions(); }
+async function importExtensions(){
+  const f = $('#x_file').files[0];
+  if(!f) return toast('Pick a JSON file first','err');
+  const txt = await f.text();
+  let data; try{ data = JSON.parse(txt); }catch{ return toast('Invalid JSON file','err'); }
+  const r = await api('/extensions/import',{method:'POST',body:JSON.stringify(data)});
+  toast(`Imported ${r.extensions} extension(s), ${r.tools} tool(s)${r.errors?.length?` — ${r.errors.length} error(s)`:''}`, r.errors?.length?'err':'ok');
+  loadExtensions();
+}
+async function importPaste(){
+  const raw = $('#x_paste').value.trim();
+  if(!raw) return toast('Paste JSON first','err');
+  let data; try{ data = JSON.parse(raw); }catch{ return toast('Invalid JSON','err'); }
+  const r = await api('/extensions/import',{method:'POST',body:JSON.stringify(data)});
+  toast(`Imported ${r.extensions} extension(s), ${r.tools} tool(s)`, r.errors?.length?'err':'ok');
+  loadExtensions();
+}
+async function exportExtensions(){
+  const r = await api('/extensions/export');
+  const blob = new Blob([JSON.stringify(r,null,2)],{type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'novarouter-extensions.json'; a.click();
+}
+async function wipeExtensions(){
+  for(const e of await api('/extensions')) await api('/extensions/'+e.id,{method:'DELETE'});
+  toast('All extensions deleted','ok'); loadExtensions();
 }
 
 if(TOKEN) refreshAll();

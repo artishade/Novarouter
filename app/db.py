@@ -96,6 +96,28 @@ CREATE INDEX IF NOT EXISTS idx_log_ts ON request_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_models_exposed ON models(exposed_id);
 CREATE INDEX IF NOT EXISTS idx_reqlog_client_ts ON request_log(client_key_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reqlog_day ON request_log(client_key_id, CAST(ts/86400 AS INT) DESC);
+CREATE TABLE IF NOT EXISTS extensions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT    NOT NULL,
+    name            TEXT    NOT NULL UNIQUE,
+    description     TEXT    NOT NULL DEFAULT '',
+    config          TEXT    NOT NULL DEFAULT '{}',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    status          TEXT    NOT NULL DEFAULT 'UNKNOWN',
+    last_error      TEXT    NOT NULL DEFAULT '',
+    created_at      REAL    NOT NULL
+);
+CREATE TABLE IF NOT EXISTS extension_tools (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    extension_id    INTEGER NOT NULL REFERENCES extensions(id) ON DELETE CASCADE,
+    tool_name       TEXT    NOT NULL,
+    description     TEXT    NOT NULL DEFAULT '',
+    parameters      TEXT    NOT NULL DEFAULT '{}',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    created_at      REAL    NOT NULL,
+    UNIQUE(extension_id, tool_name)
+);
+CREATE INDEX IF NOT EXISTS idx_exttools_name ON extension_tools(tool_name);
 """
 
 SCHEMA_PG = """
@@ -172,6 +194,28 @@ CREATE INDEX IF NOT EXISTS idx_log_ts ON request_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_models_exposed ON models(exposed_id);
 CREATE INDEX IF NOT EXISTS idx_reqlog_client_ts ON request_log(client_key_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reqlog_day ON request_log(client_key_id, CAST(ts/86400 AS INT) DESC);
+CREATE TABLE IF NOT EXISTS extensions (
+    id              BIGSERIAL PRIMARY KEY,
+    kind            TEXT    NOT NULL,
+    name            TEXT    NOT NULL UNIQUE,
+    description     TEXT    NOT NULL DEFAULT '',
+    config          TEXT    NOT NULL DEFAULT '{}',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    status          TEXT    NOT NULL DEFAULT 'UNKNOWN',
+    last_error      TEXT    NOT NULL DEFAULT '',
+    created_at      DOUBLE PRECISION NOT NULL
+);
+CREATE TABLE IF NOT EXISTS extension_tools (
+    id              BIGSERIAL PRIMARY KEY,
+    extension_id    BIGINT NOT NULL REFERENCES extensions(id) ON DELETE CASCADE,
+    tool_name       TEXT    NOT NULL,
+    description     TEXT    NOT NULL DEFAULT '',
+    parameters      TEXT    NOT NULL DEFAULT '{}',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    created_at      DOUBLE PRECISION NOT NULL,
+    UNIQUE(extension_id, tool_name)
+);
+CREATE INDEX IF NOT EXISTS idx_exttools_name ON extension_tools(tool_name);
 """
 
 USE_POSTGRES = bool(config.DATABASE_URL)

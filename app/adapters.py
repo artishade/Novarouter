@@ -614,7 +614,7 @@ def anthropic_sse_to_openai(raw_line: str, model: str, chunk_id: str) -> Optiona
 # request building
 # --------------------------------------------------------------------------
 
-_OPENAI_DROP_KEYS = ("_nova_thinking", "_nova")
+_OPENAI_DROP_KEYS = ("_nova_thinking", "_nova", "nova", "auto_tools")
 
 
 def build_request(

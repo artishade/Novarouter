@@ -25,13 +25,13 @@ import asyncio
 import json
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from . import adapters, config, db, store
+from . import adapters, config, db, extensions, store
 
 router = APIRouter()
 
@@ -325,6 +325,39 @@ async def _stream_attempt(
         },
     )
 
+# ------------------------------------------------------------------ /v1/tools
+@router.get("/tools")
+async def tools_catalogue(request: Request):
+    """Discovery endpoint: which auto-active tools this gateway injects."""
+    client = require_client(request)
+    tools = extensions.catalogue()
+    return {
+        "object": "list",
+        "auto_active": bool(config.TOOL_AUTO),
+        "tools": tools,
+        "usage": (
+            "NovaRouter auto-injects these tools into POST /v1/chat/completions "
+            "and auto-executes the model's tool calls server-side. No client-side "
+            "tool wiring needed - just send a normal chat request. Opt out with "
+            "{\"nova\":{\"auto_tools\":false}} in the request body."
+        ),
+        "_nova": {"client": client["name"]},
+    }
+
+
+@router.post("/tools/{tool_name}")
+async def call_tool_direct(tool_name: str, request: Request):
+    """Direct tool call (for testing / non-LLM automation)."""
+    client = require_client(request)
+    payload, err = await _parse_json(request)
+    if err:
+        return err
+    ok, content = await extensions.call_tool(tool_name, payload, client["id"])
+    return JSONResponse(
+        status_code=200 if ok else 400,
+        content={"tool": tool_name, "ok": ok, "output": content},
+    )
+
 
 # ------------------------------------------------------------------ /v1/models
 @router.get("/models")
@@ -366,9 +399,158 @@ async def list_models(request: Request):
     return {"object": "list", "data": data}
 
 
+# ------------------------------------------------------------------ auto tool loop
+def _tool_calls_of(body: Any) -> List[Dict[str, Any]]:
+    """Extract openai-shape tool_calls from a chat completion body."""
+    try:
+        msg = body["choices"][0]["message"]
+        return list(msg.get("tool_calls") or [])
+    except (KeyError, TypeError, IndexError):
+        return []
+
+
+def _nova_auto_enabled(payload: Dict[str, Any]) -> bool:
+    """Client can opt out with nova.auto_tools=false; global switch must be on."""
+    if not config.TOOL_AUTO:
+        return False
+    flag = payload.get("nova", {})
+    if isinstance(flag, dict) and flag.get("auto_tools") is False:
+        return False
+    if payload.get("auto_tools") is False:
+        return False
+    return True
+
+
+async def _tool_round(
+    client: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+    base: Dict[str, Any],
+    requested: str,
+) -> Optional[Dict[str, Any]]:
+    """One buffered (non-streaming) chat round through the normal fan-out.
+    Returns the openai-shaped body, or None when upstream failed."""
+    payload = {**base, "messages": messages, "model": requested, "stream": False}
+    result = await dispatch(
+        None, "chat",
+        payload_override=payload,
+        client_override=client,
+        endpoint_label="chat",
+    )
+    if isinstance(result, JSONResponse) and result.status_code == 200:
+        try:
+            return json.loads(result.body)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _final_response(body: Dict[str, Any], stream_requested: bool) -> JSONResponse:
+    """Return the finished body; synthesize an SSE stream if the client asked for one."""
+    if not stream_requested:
+        return JSONResponse(status_code=200, content=body)
+    try:
+        msg = body["choices"][0]["message"]
+        finish = body["choices"][0].get("finish_reason") or "stop"
+    except (KeyError, IndexError, TypeError):
+        return JSONResponse(status_code=200, content=body)
+    chunk_id = body.get("id") or f"chatcmpl-{uuid.uuid4().hex[:20]}"
+    created = int(time.time())
+    usage = body.get("usage") or {}
+
+    def sse(delta: Dict[str, Any], finish: Optional[str] = None, with_usage: bool = False) -> str:
+        obj: Dict[str, Any] = {
+            "id": chunk_id, "object": "chat.completion.chunk", "created": created,
+            "model": body.get("model", ""),
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+        if with_usage and usage:
+            obj["usage"] = usage
+        return "data: " + json.dumps(obj, ensure_ascii=False)
+
+    text = msg.get("content") or ""
+
+    async def gen():
+        yield sse({"role": "assistant", "content": ""})
+        for i in range(0, max(len(text), 1), 400):
+            piece = text[i: i + 400]
+            if piece:
+                yield sse({"content": piece})
+        if msg.get("tool_calls"):
+            yield sse({"tool_calls": msg["tool_calls"]})
+        yield sse({}, finish=finish, with_usage=True)
+        yield "data: [DONE]"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _auto_tool_chat(
+    payload: Dict[str, Any], client: Dict[str, Any]
+) -> Optional[JSONResponse]:
+    """Agentic loop: inject Nova extension tools, auto-execute their calls.
+
+    Returns None when it doesn't apply (opt-out / no tools), so the caller
+    falls back to plain dispatch. Only Nova-added tools are auto-executed;
+    any client-declared tool call is passed through untouched.
+    """
+    if not _nova_auto_enabled(payload):
+        return None
+    working = {k: v for k, v in payload.items() if k not in ("nova", "auto_tools")}
+    working, added = extensions.inject_tools(working)
+    if not added:
+        return None
+    stream_requested = bool(payload.get("stream"))
+    requested = str(payload.get("model") or "")
+    messages = list(working.get("messages") or [])
+    base = {k: v for k, v in working.items() if k not in ("messages", "stream", "model")}
+
+    for _ in range(max(1, config.TOOL_MAX_HOPS)):
+        body = await _tool_round(client, messages, base, requested)
+        if body is None:
+            return None  # dispatch already logged + the error surfaced upstream
+        calls = _tool_calls_of(body)
+        if not calls:
+            return _final_response(body, stream_requested)
+        names = {(c.get("function") or {}).get("name") for c in calls}
+        if not names or not names.issubset(added):
+            # client-declared tools present -> not our business, pass through
+            return _final_response(body, stream_requested)
+        messages = messages + [body["choices"][0]["message"]]
+        for c in calls:
+            fn = c.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (ValueError, TypeError):
+                args = {}
+            ok, content = await extensions.call_tool(fn.get("name") or "", args, client["id"])
+            messages.append({
+                "role": "tool",
+                "tool_call_id": c.get("id") or "",
+                "content": content,
+            })
+    # hop budget exhausted: ask once more without tools to force a final answer
+    base.pop("tools", None)
+    base.pop("tool_choice", None)
+    body = await _tool_round(client, messages, base, requested)
+    if body is None:
+        return _err(502, "tool loop exhausted and the final round failed")
+    return _final_response(body, stream_requested)
+
+
 # ------------------------------------------------------------------ chat endpoints
 @router.post("/chat/completions")
 async def chat_completions(request: Request):
+    if config.TOOL_AUTO and extensions.has_enabled_tools():
+        client = require_client(request)
+        payload, err = await _parse_json(request)
+        if err:
+            return err
+        auto = await _auto_tool_chat(payload, client)
+        if auto is not None:
+            return auto
+        return await dispatch(request, "chat", payload_override=payload, client_override=client)
     return await dispatch(request, "chat")
 
 

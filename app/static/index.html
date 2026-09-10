@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NovaRouter Dashboard</title>
+<style>
+:root{
+  --bg:#0b0f16; --panel:#131a25; --panel2:#182130; --line:#243044;
+  --tx:#e8eef8; --dim:#8ea0bd; --acc:#4d9fff; --ok:#2fd07a; --warn:#ffb03a;
+  --bad:#ff5f6d; --mut:#6c7d99;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--acc)}
+header{display:flex;align-items:center;gap:14px;padding:14px 20px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;flex-wrap:wrap}
+header h1{font-size:16px;margin:0;letter-spacing:.5px}
+header .sp{flex:1}
+input,select,textarea,button{font:inherit;color:var(--tx);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+input:focus,select:focus,textarea:focus{outline:2px solid rgba(77,159,255,.35);outline-offset:0}
+button{cursor:pointer;background:var(--panel2)}
+button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#04121f;font-weight:600}
+button.danger{border-color:#54202a;color:#ff96a0}
+button.danger:hover{background:#31151b}
+button.sm{padding:4px 8px;font-size:12px;border-radius:6px}
+nav{display:flex;gap:6px;padding:10px 20px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap;position:sticky;top:57px;z-index:19}
+nav button{background:transparent;border:1px solid transparent;color:var(--dim)}
+nav button.on{background:var(--panel2);border-color:var(--line);color:var(--tx)}
+main{padding:20px;max-width:1400px;margin:0 auto}
+.view{display:none}.view.on{display:block}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+.card h2{margin:0 0 12px;font-size:14px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
+.grid{display:grid;gap:12px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.g4{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px}
+.stat b{display:block;font-size:22px;font-weight:700}
+.stat span{color:var(--dim);font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px;position:sticky;top:0;background:var(--panel)}
+tr:hover td{background:rgba(255,255,255,.02)}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;border:1px solid var(--line);background:var(--panel2);white-space:nowrap}
+.p-OK{color:var(--ok);border-color:#1d4e37}
+.p-RATE_LIMITED{color:var(--warn);border-color:#5a4319}
+.p-NEEDS_CREDIT{color:#ff9dd6;border-color:#5a2447}
+.p-NO_ACCESS,.p-BAD_REQUEST{color:var(--bad);border-color:#5a2027}
+.p-SERVER_ERROR,.p-NETWORK_ERROR{color:#c39bff;border-color:#3d2a5c}
+.p-UNKNOWN{color:var(--mut)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.scroll{max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+.bar{height:8px;background:var(--panel2);border-radius:99px;overflow:hidden;border:1px solid var(--line)}
+.bar>i{display:block;height:100%;background:var(--acc);width:0;transition:width .3s}
+.dim{color:var(--dim)}
+.warn{color:var(--warn)}
+.mini{font-size:12px}
+.tag{font-size:11px;padding:1px 6px;border-radius:5px;background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+#toast{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50}
+#toast div{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--acc);padding:10px 14px;border-radius:8px;max-width:380px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+#toast div.err{border-left-color:var(--bad)}
+#toast div.ok{border-left-color:var(--ok)}
+details summary{cursor:pointer;color:var(--dim);padding:4px 0}
+.keyline{display:grid;grid-template-columns:1fr auto auto auto auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px dashed var(--line)}
+.hidden{display:none}
+label.mini{display:block;color:var(--dim);margin-bottom:4px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ NOVAROUTER</h1>
+  <span class="tag" id="baseTag">base url —</span>
+  <div class="sp"></div>
+  <input id="adminToken" type="password" placeholder="admin token" style="width:230px">
+  <button class="primary" onclick="saveToken()">Connect</button>
+  <button onclick="refreshAll()">↻</button>
+</header>
+
+<nav>
+  <button class="on" data-v="dash">Dashboard</button>
+  <button data-v="providers">Providers &amp; Keys</button>
+  <button data-v="access">Access Keys</button>
+  <button data-v="models">Models</button>
+  <button data-v="checker">Availability Checker</button>
+  <button data-v="logs">Logs</button>
+  <button data-v="help">Usage</button>
+</nav>
+
+<main>
+
+<!-- DASHBOARD -->
+<section class="view on" id="v-dash">
+  <div class="card">
+    <h2>Overview</h2>
+    <div class="grid g4" id="stats"></div>
+  </div>
+  <div class="card">
+    <h2>Quick actions</h2>
+    <div class="row">
+      <button onclick="syncModels()">Sync model catalogues</button>
+      <button onclick="startCheck({free_only:false})">Check all models</button>
+      <button onclick="startCheck({free_only:true})">Check free models only</button>
+      <button onclick="clearCooldowns()">Clear all key cooldowns</button>
+      <button onclick="exportCfg(false)">Export config</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Provider health</h2>
+    <div class="scroll"><table><thead><tr>
+      <th>Provider</th><th>Kind</th><th>Keys</th><th>Cooling</th><th>Models</th><th>OK</th><th>State</th>
+    </tr></thead><tbody id="healthBody"></tbody></table></div>
+  </div>
+</section>
+
+<!-- PROVIDERS -->
+<section class="view" id="v-providers">
+  <div class="card">
+    <h2>Add provider</h2>
+    <div class="grid g2">
+      <div><label class="mini">Preset</label><select id="p_preset" onchange="applyPreset()"><option value="">— custom —</option></select></div>
+      <div><label class="mini">Name (unique)</label><input id="p_name" placeholder="groq"></div>
+      <div><label class="mini">Base URL (OpenAI-style, ends at /v1)</label><input id="p_url" placeholder="https://api.groq.com/openai/v1"></div>
+      <div><label class="mini">API kind</label><select id="p_kind"><option value="openai">openai (compatible)</option><option value="anthropic">anthropic (native)</option></select></div>
+      <div><label class="mini">Model prefix (namespacing, optional)</label><input id="p_prefix" placeholder="groq/"></div>
+      <div><label class="mini">Extra headers (JSON, optional)</label><input id="p_headers" placeholder='{"HTTP-Referer":"http://localhost"}'></div>
+    </div>
+    <div style="margin-top:12px">
+      <label class="mini">API key(s) — one per line, or comma separated. Ekta provider e joto key chao paste koro.</label>
+      <textarea id="p_keys" rows="4" style="width:100%" spellcheck="false"
+        placeholder="gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxx&#10;gsk_yyyyyyyyyyyyyyyyyyyyyyyyyyyy&#10;gsk_zzzzzzzzzzzzzzzzzzzzzzzzzzzz"></textarea>
+      <p class="mini dim" id="p_keycount">0 key(s) detected</p>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <button class="primary" onclick="addProvider()">Add provider + keys</button>
+      <label class="row mini"><input type="checkbox" id="p_autosync" checked style="width:auto"> sync model catalogue right after</label>
+      <span class="dim mini">Prefix keeps model ids unique when two providers serve the same model.</span>
+    </div>
+  </div>
+  <div id="provList"></div>
+</section>
+
+<!-- ACCESS KEYS -->
+<section class="view" id="v-access">
+  <div class="card">
+    <h2>Create gateway API key</h2>
+    <div class="grid g2">
+      <div><label class="mini">Name</label><input id="c_name" placeholder="my-agent"></div>
+      <div><label class="mini">Allowed models (comma sep, wildcard *, blank = all)</label><input id="c_allow" placeholder="groq/*, deepseek/deepseek-chat"></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" onclick="createClientKey()">Generate key</button>
+      <span class="dim mini">Shown once in full — copy it right away.</span>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Existing keys</h2>
+    <div class="scroll"><table><thead><tr>
+      <th>Name</th><th>Key</th><th>Allowed models</th><th>Requests</th><th>Enabled</th><th></th>
+    </tr></thead><tbody id="clientBody"></tbody></table></div>
+  </div>
+</section>
+
+<!-- MODELS -->
+<section class="view" id="v-models">
+  <div class="card">
+    <h2>Model registry</h2>
+    <div class="row">
+      <select id="m_prov"><option value="">All providers</option></select>
+      <select id="m_status"><option value="">Any status</option></select>
+      <input id="m_search" placeholder="search model id" style="width:220px">
+      <label class="row mini"><input type="checkbox" id="m_free" style="width:auto"> free only</label>
+      <button onclick="loadModels()">Filter</button>
+      <button onclick="syncModels()">Sync catalogues</button>
+      <button class="danger" onclick="pruneDead()">Disable unreachable</button>
+      <span class="dim mini" id="m_count"></span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="scroll"><table><thead><tr>
+      <th>Exposed id (use this)</th><th>Provider</th><th>Upstream id</th><th>Free</th>
+      <th>Status</th><th>HTTP</th><th>ms</th><th>Checked</th><th>On</th>
+    </tr></thead><tbody id="modelBody"></tbody></table></div>
+  </div>
+</section>
+
+<!-- CHECKER -->
+<section class="view" id="v-checker">
+  <div class="card">
+    <h2>Availability checker</h2>
+    <div class="grid g2">
+      <div><label class="mini">Providers (none selected = all)</label><select id="k_prov" multiple size="6" style="width:100%"></select></div>
+      <div>
+        <label class="mini">Options</label>
+        <label class="row mini"><input type="checkbox" id="k_free" style="width:auto"> free models only</label>
+        <label class="row mini"><input type="checkbox" id="k_unknown" style="width:auto"> only never-checked models</label>
+        <label class="row mini"><input type="checkbox" id="k_sync" checked style="width:auto"> refresh catalogues first</label>
+        <label class="mini" style="margin-top:8px">Filter substring</label><input id="k_filter" placeholder="llama">
+      </div>
+      <div><label class="mini">Workers</label><input id="k_workers" type="number" value="6" min="1" max="32"></div>
+      <div><label class="mini">Timeout (s)</label><input id="k_timeout" type="number" value="30" min="5"></div>
+      <div><label class="mini">Retry on 429</label><input id="k_retry" type="number" value="0" min="0" max="5"></div>
+      <div><label class="mini">Max models (0 = all)</label><input id="k_limit" type="number" value="0" min="0"></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" onclick="startCheckForm()">Run check</button>
+      <button class="danger" onclick="cancelJob()">Cancel</button>
+      <span class="warn mini">Paid models cost a few tokens per ping (max_tokens=5).</span>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Progress</h2>
+    <div class="bar"><i id="jobBar"></i></div>
+    <p class="mini dim" id="jobMeta">idle</p>
+    <div class="row" id="jobCounts"></div>
+    <div class="scroll" style="margin-top:10px"><table><thead><tr>
+      <th>Provider</th><th>Model</th><th>Status</th><th>HTTP</th><th>ms</th><th>Detail</th>
+    </tr></thead><tbody id="jobBody"></tbody></table></div>
+  </div>
+</section>
+
+<!-- LOGS -->
+<section class="view" id="v-logs">
+  <div class="card">
+    <h2>Recent gateway requests</h2>
+    <div class="row"><button onclick="loadLogs()">Refresh</button>
+    <label class="row mini"><input type="checkbox" id="logAuto" style="width:auto"> auto refresh</label></div>
+  </div>
+  <div class="card">
+    <div class="scroll"><table><thead><tr>
+      <th>Time</th><th>Client</th><th>Provider</th><th>Model</th><th>HTTP</th><th>ms</th><th>Error</th>
+    </tr></thead><tbody id="logBody"></tbody></table></div>
+  </div>
+</section>
+
+<!-- HELP -->
+<section class="view" id="v-help">
+  <div class="card">
+    <h2>Point any agent at NovaRouter</h2>
+    <p class="mini dim">Use the gateway base URL below with any OpenAI-compatible SDK or tool, and one of your generated gateway keys.</p>
+<pre class="mono" style="background:var(--panel2);padding:12px;border-radius:10px;overflow:auto">OPENAI_BASE_URL = <span id="h_base">http://127.0.0.1:8080/v1</span>
+OPENAI_API_KEY  = nova-...            # created in "Access Keys"
+
+curl $OPENAI_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"groq/llama-3.3-70b-versatile","messages":[{"role":"user","content":"hi"}]}'
+
+# python
+from openai import OpenAI
+c = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="nova-...")
+print(c.chat.completions.create(model="groq/llama-3.3-70b-versatile",
+      messages=[{"role":"user","content":"hi"}]).choices[0].message.content)</pre>
+    <p class="mini dim">GET /v1/models lists every enabled model with its provider and last known health. Streaming (<code>"stream":true</code>) is supported, including Anthropic-native providers which are translated to OpenAI SSE chunks.</p>
+  </div>
+  <div class="card">
+    <h2>How routing works</h2>
+    <ul class="mini dim">
+      <li>Requested model id is matched against <code>exposed_id</code>, then raw upstream id, then <code>providername/model</code>.</li>
+      <li>If several providers serve the same id, the healthiest/fastest one goes first, the rest are failover.</li>
+      <li>Within a provider, keys rotate round-robin by weight; a key hitting 429/402/401/5xx gets a cooldown and is skipped.</li>
+      <li>Non-retryable upstream errors (like a malformed request) are returned immediately instead of burning other keys.</li>
+    </ul>
+  </div>
+</section>
+
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+let TOKEN = localStorage.getItem('nova_admin') || '';
+let META = null, PROVIDERS = [], JOB = null, jobTimer = null, logTimer = null;
+
+$('#adminToken').value = TOKEN;
+
+function toast(msg, kind){
+  const d = document.createElement('div');
+  d.className = kind || '';
+  d.textContent = msg;
+  $('#toast').append(d);
+  setTimeout(()=>d.remove(), 5200);
+}
+
+async function api(path, opts={}){
+  const res = await fetch('/admin/api'+path, {
+    ...opts,
+    headers:{'Content-Type':'application/json','X-Admin-Token':TOKEN, ...(opts.headers||{})}
+  });
+  if(res.status === 401){ toast('Admin token rejected','err'); throw new Error('unauthorized'); }
+  const txt = await res.text();
+  let data; try{ data = txt ? JSON.parse(txt) : null; }catch{ data = txt; }
+  if(!res.ok){ toast((data && (data.detail||data.error)) || ('HTTP '+res.status), 'err'); throw new Error('api'); }
+  return data;
+}
+
+function saveToken(){
+  TOKEN = $('#adminToken').value.trim();
+  localStorage.setItem('nova_admin', TOKEN);
+  refreshAll();
+}
+
+$$('nav button').forEach(b => b.onclick = () => {
+  $$('nav button').forEach(x=>x.classList.toggle('on', x===b));
+  $$('.view').forEach(v=>v.classList.toggle('on', v.id === 'v'+'-'+b.dataset.v));
+  if(b.dataset.v==='models') loadModels();
+  if(b.dataset.v==='logs') loadLogs();
+});
+
+function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function pill(s){ return `<span class="pill p-${esc(s)}">${esc(s)}</span>`; }
+function ago(ts){
+  if(!ts) return '—';
+  const d = Math.floor(Date.now()/1000 - ts);
+  if(d<60) return d+'s';
+  if(d<3600) return Math.floor(d/60)+'m';
+  if(d<86400) return Math.floor(d/3600)+'h';
+  return Math.floor(d/86400)+'d';
+}
+
+async function refreshAll(){
+  if(!TOKEN){ toast('Enter the admin token (printed on server start)','err'); return; }
+  try{
+    META = await api('/meta');
+    $('#baseTag').textContent = 'base url  ' + META.base_url;
+    $('#h_base').textContent = META.base_url;
+    const ps = $('#p_preset');
+    ps.innerHTML = '<option value="">— custom —</option>' +
+      META.presets.map((p,i)=>`<option value="${i}">${esc(p.name)}</option>`).join('');
+    $('#m_status').innerHTML = '<option value="">Any status</option>' +
+      META.statuses.map(s=>`<option>${esc(s)}</option>`).join('');
+    await Promise.all([loadStats(), loadProviders(), loadClientKeys()]);
+  }catch(e){}
+}
+
+async function loadStats(){
+  const s = await api('/stats');
+  const cards = [
+    ['Providers', `${s.providers_enabled}/${s.providers}`],
+    ['Upstream keys', s.upstream_keys],
+    ['Keys cooling', s.upstream_keys_cooling],
+    ['Gateway keys', s.client_keys],
+    ['Models', s.models],
+    ['Models OK', s.models_ok],
+    ['Unchecked', s.models_unknown],
+    ['Reqs 24h', s.requests_24h],
+    ['Errors 24h', s.errors_24h],
+  ];
+  $('#stats').innerHTML = cards.map(([k,v])=>`<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
+}
+
+function applyPreset(){
+  const i = $('#p_preset').value;
+  if(i==='') return;
+  const p = META.presets[i];
+  $('#p_name').value = p.name; $('#p_url').value = p.base_url;
+  $('#p_kind').value = p.kind; $('#p_prefix').value = p.prefix;
+  const hint = p.key_hint || 'your-api-key';
+  $('#p_keys').placeholder = `${hint}\n${hint}   <- second key (optional)`;
+  $('#p_keys').focus();
+}
+
+function countKeys(raw){
+  return (raw||'').replace(/,/g,'\n').split('\n').map(s=>s.trim()).filter(Boolean).length;
+}
+
+$('#p_keys').oninput = e => {
+  const n = countKeys(e.target.value);
+  $('#p_keycount').textContent = `${n} key(s) detected`;
+};
+
+async function addProvider(){
+  const name = $('#p_name').value.trim();
+  const base_url = $('#p_url').value.trim();
+  if(!name || !base_url) return toast('Name and base URL are required','err');
+
+  const api_keys = $('#p_keys').value;
+  if(!countKeys(api_keys) && !confirm('No API key entered. Add the provider without any key? It will not work until you add one.')) return;
+
+  let extra = {};
+  const raw = $('#p_headers').value.trim();
+  if(raw){ try{ extra = JSON.parse(raw); }catch{ return toast('Extra headers must be valid JSON','err'); } }
+
+  const r = await api('/providers',{method:'POST',body:JSON.stringify({
+    name, base_url, kind:$('#p_kind').value,
+    prefix:$('#p_prefix').value.trim(), extra_headers:extra, api_keys
+  })});
+  toast(`Provider "${name}" added with ${r.keys_added} key(s)`,'ok');
+
+  ['p_name','p_url','p_prefix','p_headers','p_keys'].forEach(id=>$('#'+id).value='');
+  $('#p_keycount').textContent = '0 key(s) detected';
+  $('#p_preset').value = '';
+
+  if(r.keys_added && $('#p_autosync').checked) await syncModels(r.id);
+  else { loadProviders(); loadStats(); }
+}
+
+async function loadProviders(){
+  PROVIDERS = await api('/providers');
+  // selectors
+  const opts = PROVIDERS.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  $('#m_prov').innerHTML = '<option value="">All providers</option>'+opts;
+  $('#k_prov').innerHTML = opts;
+
+  $('#healthBody').innerHTML = PROVIDERS.map(p=>{
+    const cooling = (p.keys||[]).filter(k=>k.cooling).length;
+    return `<tr>
+      <td><b>${esc(p.name)}</b><div class="mini dim mono">${esc(p.base_url)}</div></td>
+      <td><span class="tag">${esc(p.kind)}</span></td>
+      <td>${p.active_key_count}/${p.key_count}</td>
+      <td>${cooling?`<span class="warn">${cooling}</span>`:'0'}</td>
+      <td>${p.model_count}</td>
+      <td class="dim">—</td>
+      <td>${p.enabled?pill('OK'):pill('UNKNOWN')}</td></tr>`;
+  }).join('') || '<tr><td colspan="7" class="dim">No providers yet.</td></tr>';
+
+  $('#provList').innerHTML = PROVIDERS.map(p=>`
+    <div class="card">
+      <div class="row">
+        <h2 style="margin:0">${esc(p.name)}</h2>
+        <span class="tag">${esc(p.kind)}</span>
+        <span class="tag mono">${esc(p.base_url)}</span>
+        ${p.prefix?`<span class="tag mono">prefix ${esc(p.prefix)}</span>`:''}
+        <span class="tag">${p.model_count} models</span>
+        <div class="sp" style="flex:1"></div>
+        <button class="sm" onclick="toggleProvider(${p.id},${p.enabled?0:1})">${p.enabled?'Disable':'Enable'}</button>
+        <button class="sm" onclick="editProvider(${p.id})">Edit</button>
+        <button class="sm" onclick="syncModels(${p.id})">Sync models</button>
+        <button class="sm" onclick="startCheck({provider_ids:[${p.id}]})">Check</button>
+        <button class="sm" onclick="clearCooldowns(${p.id})">Clear cooldowns</button>
+        <button class="sm danger" onclick="delProvider(${p.id},'${esc(p.name)}')">Delete</button>
+      </div>
+      <div style="margin-top:12px">
+        ${(p.keys||[]).map(k=>`
+          <div class="keyline">
+            <div>
+              <span class="mono">${esc(k.masked)}</span>
+              <span class="tag">${esc(k.label||'no label')}</span>
+              ${k.cooling?`<span class="pill p-RATE_LIMITED">cooling ${k.cooldown_left}s</span>`:''}
+              ${k.last_error?`<div class="mini dim">${esc(k.last_error)}</div>`:''}
+            </div>
+            <span class="mini dim">w${k.weight}</span>
+            <span class="mini dim">${k.req_count} ok / ${k.err_count} err</span>
+            <button class="sm" onclick="toggleKey(${k.id},${k.enabled?0:1})">${k.enabled?'Disable':'Enable'}</button>
+            <button class="sm danger" onclick="delKey(${k.id})">✕</button>
+          </div>`).join('') || '<p class="dim mini">No API keys on this provider yet.</p>'}
+      </div>
+      <details style="margin-top:10px">
+        <summary>Add API keys</summary>
+        <div class="grid g2" style="margin-top:8px">
+          <div><label class="mini">Paste one or many keys (newline / comma separated)</label>
+            <textarea id="nk_${p.id}" rows="3" style="width:100%" placeholder="sk-xxx&#10;sk-yyy"></textarea></div>
+          <div><label class="mini">Label prefix</label><input id="nl_${p.id}" value="key">
+            <button class="primary" style="margin-top:8px" onclick="addKeys(${p.id})">Add key(s)</button></div>
+        </div>
+      </details>
+    </div>`).join('');
+}
+
+async function toggleProvider(id, enabled){ await api('/providers/'+id,{method:'PATCH',body:JSON.stringify({enabled:!!enabled})}); loadProviders(); }
+async function delProvider(id,name){
+  if(!confirm(`Delete provider "${name}"? Its keys and models go with it.`)) return;
+  await api('/providers/'+id,{method:'DELETE'}); toast('Deleted','ok'); loadProviders(); loadStats();
+}
+async function editProvider(id){
+  const p = PROVIDERS.find(x=>x.id===id);
+  const base_url = prompt('Base URL', p.base_url); if(base_url===null) return;
+  const prefix = prompt('Model prefix', p.prefix); if(prefix===null) return;
+  await api('/providers/'+id,{method:'PATCH',body:JSON.stringify({base_url,prefix})});
+  toast('Updated — re-sync models so prefixes apply','ok'); loadProviders();
+}
+async function addKeys(pid){
+  const keys = $('#nk_'+pid).value.trim();
+  if(!keys) return toast('Paste at least one key','err');
+  const r = await api('/keys/bulk',{method:'POST',body:JSON.stringify({provider_id:pid,keys,label_prefix:$('#nl_'+pid).value||'key'})});
+  toast(`${r.added} key(s) added`,'ok'); loadProviders(); loadStats();
+}
+async function toggleKey(id,enabled){ await api('/keys/'+id,{method:'PATCH',body:JSON.stringify({enabled:!!enabled})}); loadProviders(); }
+async function delKey(id){ if(!confirm('Delete this API key?')) return; await api('/keys/'+id,{method:'DELETE'}); loadProviders(); loadStats(); }
+async function clearCooldowns(pid){
+  await api('/keys/clear-cooldowns'+(pid?('?provider_id='+pid):''),{method:'POST'});
+  toast('Cooldowns cleared','ok'); loadProviders(); loadStats();
+}
+
+async function loadClientKeys(){
+  const rows = await api('/client-keys');
+  $('#clientBody').innerHTML = rows.map(k=>`<tr>
+    <td>${esc(k.name)}</td>
+    <td class="mono">${esc(k.masked)}</td>
+    <td class="mini">${esc(k.allowed_models||'all')}</td>
+    <td>${k.req_count}</td>
+    <td>${k.enabled?pill('OK'):pill('UNKNOWN')}</td>
+    <td class="row">
+      <button class="sm" onclick="toggleClient(${k.id},${k.enabled?0:1})">${k.enabled?'Disable':'Enable'}</button>
+      <button class="sm" onclick="revealClient(${k.id})">Reveal</button>
+      <button class="sm danger" onclick="delClient(${k.id})">✕</button>
+    </td></tr>`).join('') || '<tr><td colspan="6" class="dim">No gateway keys yet.</td></tr>';
+}
+async function createClientKey(){
+  const r = await api('/client-keys',{method:'POST',body:JSON.stringify({name:$('#c_name').value,allowed_models:$('#c_allow').value})});
+  navigator.clipboard?.writeText(r.token).catch(()=>{});
+  prompt('Your new gateway API key (copied to clipboard):', r.token);
+  $('#c_name').value=''; $('#c_allow').value='';
+  loadClientKeys(); loadStats();
+}
+async function toggleClient(id,enabled){ await api('/client-keys/'+id,{method:'PATCH',body:JSON.stringify({enabled:!!enabled})}); loadClientKeys(); }
+async function delClient(id){ if(!confirm('Delete this gateway key? Anything using it stops working.')) return; await api('/client-keys/'+id,{method:'DELETE'}); loadClientKeys(); loadStats(); }
+async function revealClient(id){
+  const rows = await api('/client-keys?reveal=true');
+  const k = rows.find(x=>x.id===id);
+  if(k){ navigator.clipboard?.writeText(k.token).catch(()=>{}); prompt('Key (copied):', k.token); }
+}
+
+async function loadModels(){
+  const q = new URLSearchParams();
+  if($('#m_prov').value) q.set('provider_id',$('#m_prov').value);
+  if($('#m_status').value) q.set('status',$('#m_status').value);
+  if($('#m_search').value) q.set('search',$('#m_search').value);
+  if($('#m_free').checked) q.set('free_only','true');
+  const r = await api('/models?'+q);
+  $('#m_count').textContent = `${r.rows.length} shown / ${r.total} total`;
+  $('#modelBody').innerHTML = r.rows.map(m=>`<tr>
+    <td class="mono">${esc(m.exposed_id)}</td>
+    <td>${esc(m.provider_name)}</td>
+    <td class="mono dim">${esc(m.model_id)}</td>
+    <td>${m.is_free?'<span class="pill p-OK">free</span>':'<span class="tag">paid</span>'}</td>
+    <td>${pill(m.status)}</td>
+    <td>${m.http_status||'—'}</td>
+    <td>${m.latency_ms||'—'}</td>
+    <td class="mini dim">${ago(m.checked_at)}</td>
+    <td><input type="checkbox" ${m.enabled?'checked':''} onchange="toggleModel(${m.id},this.checked)"></td>
+  </tr>`).join('') || '<tr><td colspan="9" class="dim">No models. Add a provider + key, then Sync catalogues.</td></tr>';
+}
+async function toggleModel(id,enabled){ await api(`/models/${id}?enabled=${enabled}`,{method:'PATCH'}); }
+async function pruneDead(){
+  if(!confirm('Disable every model whose last check was not OK / rate-limited / unchecked?')) return;
+  await api('/models/prune-dead',{method:'POST'}); toast('Unreachable models disabled','ok'); loadModels(); loadStats();
+}
+async function syncModels(pid){
+  toast('Syncing catalogues…');
+  const r = await api('/models/sync'+(pid?('?provider_id='+pid):''),{method:'POST'});
+  const okc = r.filter(x=>x.ok).length;
+  toast(`Synced ${okc}/${r.length} providers`, okc?'ok':'err');
+  r.filter(x=>!x.ok).forEach(x=>toast(`${x.provider}: ${x.error}`,'err'));
+  loadProviders(); loadStats(); loadModels();
+}
+
+function startCheckForm(){
+  const ids = [...$('#k_prov').selectedOptions].map(o=>+o.value);
+  startCheck({
+    provider_ids: ids.length?ids:null,
+    free_only:$('#k_free').checked, only_unknown:$('#k_unknown').checked,
+    sync_first:$('#k_sync').checked, model_filter:$('#k_filter').value,
+    workers:+$('#k_workers').value, timeout:+$('#k_timeout').value,
+    retry:+$('#k_retry').value, limit:+$('#k_limit').value
+  });
+}
+async function startCheck(body){
+  $$('nav button').forEach(x=>x.classList.toggle('on', x.dataset.v==='checker'));
+  $$('.view').forEach(v=>v.classList.toggle('on', v.id==='v-checker'));
+  const r = await api('/check',{method:'POST',body:JSON.stringify(body||{})});
+  JOB = r.job_id; $('#jobBody').innerHTML=''; pollJob();
+  clearInterval(jobTimer); jobTimer = setInterval(pollJob, 1500);
+}
+async function cancelJob(){ if(JOB) { await api(`/check/${JOB}/cancel`,{method:'POST'}); toast('Cancelling…'); } }
+async function pollJob(){
+  if(!JOB) return;
+  const j = await api('/check/'+JOB);
+  const pct = j.total ? Math.round(j.done/j.total*100) : 0;
+  $('#jobBar').style.width = pct+'%';
+  $('#jobMeta').textContent = `${j.state} · ${j.done}/${j.total} (${pct}%) · scope: ${j.scope}` + (j.error?` · ${j.error}`:'');
+  $('#jobCounts').innerHTML = Object.entries(j.counts||{}).map(([k,v])=>`${pill(k)}<b style="margin:0 10px 0 4px">${v}</b>`).join('');
+  $('#jobBody').innerHTML = (j.rows||[]).slice().reverse().map(r=>`<tr>
+    <td>${esc(r.provider)}</td><td class="mono">${esc(r.model)}</td>
+    <td>${pill(r.status)}</td><td>${r.http_status||'—'}</td><td>${r.latency_ms||'—'}</td>
+    <td class="mini dim">${esc(r.detail)}</td></tr>`).join('');
+  if(['done','cancelled','error'].includes(j.state)){
+    clearInterval(jobTimer); jobTimer=null;
+    toast('Check finished', j.state==='done'?'ok':'err');
+    loadStats(); loadProviders();
+  }
+}
+
+async function loadLogs(){
+  const rows = await api('/logs?limit=200');
+  $('#logBody').innerHTML = rows.map(l=>`<tr>
+    <td class="mini dim">${ago(l.ts)} ago</td>
+    <td>${esc(l.client_name||'—')}</td>
+    <td>${esc(l.provider_name||'—')}</td>
+    <td class="mono">${esc(l.model)}</td>
+    <td>${l.status>=400||l.status===0?`<span class="pill p-NO_ACCESS">${l.status}</span>`:`<span class="pill p-OK">${l.status}</span>`}</td>
+    <td>${l.latency_ms}</td>
+    <td class="mini dim">${esc(l.error)}</td></tr>`).join('') || '<tr><td colspan="7" class="dim">No requests yet.</td></tr>';
+}
+$('#logAuto').onchange = e => {
+  clearInterval(logTimer); logTimer=null;
+  if(e.target.checked) logTimer = setInterval(loadLogs, 4000);
+};
+
+async function exportCfg(withSecrets){
+  const r = await api('/export?include_secrets='+(withSecrets?'true':'false'));
+  const blob = new Blob([JSON.stringify(r,null,2)],{type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'novarouter-config.json'; a.click();
+}
+
+if(TOKEN) refreshAll();
+</script>
+</body>
+</html>

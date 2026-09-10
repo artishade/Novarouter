@@ -1,0 +1,13 @@
+# NovaRouter - stays lean: dependencies
+#
+# Local / self-hosted (SQLite + uvicorn):
+#   pip install -r requirements.txt
+#
+# Vercel deploys pick up the same file. psycopg[binary] powers the Postgres
+# backend (DATABASE_URL) that serverless deployments must use; locally it's
+# only imported when DATABASE_URL is set, so SQLite users pay nothing extra.
+fastapi==0.115.6
+httpx==0.28.1
+pydantic==2.10.4
+psycopg[binary,pool]==3.2.3
+uvicorn[standard]==0.34.0

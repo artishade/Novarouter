@@ -1,0 +1,41 @@
+# NovaRouter on Fly.io - full VM, persistent SQLite on a volume.
+# One-time setup:  fly launch  (picks up this file; creates app + volume)
+# Deploy:          fly deploy
+# Set secrets:     fly secrets set NOVA_ADMIN_TOKEN=...
+
+app = "novarouter"
+primary_region = "iad"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NOVA_HOST = "0.0.0.0"
+  NOVA_PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    name = "healthz"
+    grace_period = "10s"
+    interval = "15s"
+    timeout = "5s"
+    method = "GET"
+    path = "/healthz"
+
+[mounts]
+  source = "novarouter_data"
+  destination = "/data"
+  initial_size = "3gb"

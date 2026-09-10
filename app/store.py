@@ -1,0 +1,472 @@
+"""CRUD helpers + upstream key rotation + model routing resolution."""
+
+import itertools
+import json
+import secrets
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+from . import adapters, config, db
+
+_rr_lock = threading.Lock()
+_rr_counters: Dict[int, itertools.count] = {}
+
+
+def now() -> float:
+    return time.time()
+
+
+# --------------------------------------------------------------------------
+# providers
+# --------------------------------------------------------------------------
+
+def list_providers(include_keys: bool = False) -> List[Dict[str, Any]]:
+    rows = db.query("SELECT * FROM providers ORDER BY id")
+    for r in rows:
+        r["key_count"] = db.one(
+            "SELECT COUNT(*) c FROM upstream_keys WHERE provider_id=?", (r["id"],)
+        )["c"]
+        r["active_key_count"] = db.one(
+            "SELECT COUNT(*) c FROM upstream_keys WHERE provider_id=? AND enabled=1", (r["id"],)
+        )["c"]
+        r["model_count"] = db.one(
+            "SELECT COUNT(*) c FROM models WHERE provider_id=?", (r["id"],)
+        )["c"]
+        if include_keys:
+            r["keys"] = list_upstream_keys(r["id"])
+    return rows
+
+
+def get_provider(pid: int) -> Optional[Dict[str, Any]]:
+    return db.one("SELECT * FROM providers WHERE id=?", (pid,))
+
+
+def add_provider(
+    name: str,
+    base_url: str,
+    kind: str = "openai",
+    prefix: str = "",
+    extra_headers: Optional[Dict[str, str]] = None,
+    enabled: bool = True,
+) -> int:
+    if kind not in adapters.KNOWN_KINDS:
+        raise ValueError(f"kind must be one of {adapters.KNOWN_KINDS}")
+    return db.execute(
+        """INSERT INTO providers (name, base_url, kind, prefix, enabled, extra_headers, created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            name.strip(),
+            base_url.strip().rstrip("/"),
+            kind,
+            (prefix or "").strip(),
+            1 if enabled else 0,
+            json.dumps(extra_headers or {}),
+            now(),
+        ),
+    )
+
+
+def update_provider(pid: int, **fields) -> None:
+    allowed = {"name", "base_url", "kind", "prefix", "enabled", "extra_headers"}
+    sets, params = [], []
+    for k, v in fields.items():
+        if k not in allowed or v is None:
+            continue
+        if k == "kind" and v not in adapters.KNOWN_KINDS:
+            raise ValueError(f"kind must be one of {adapters.KNOWN_KINDS}")
+        if k == "enabled":
+            v = 1 if v else 0
+        if k == "extra_headers" and isinstance(v, dict):
+            v = json.dumps(v)
+        if k == "base_url":
+            v = str(v).strip().rstrip("/")
+        sets.append(f"{k}=?")
+        params.append(v)
+    if not sets:
+        return
+    params.append(pid)
+    db.execute(f"UPDATE providers SET {', '.join(sets)} WHERE id=?", tuple(params))
+
+
+def delete_provider(pid: int) -> None:
+    db.execute("DELETE FROM providers WHERE id=?", (pid,))
+
+
+# --------------------------------------------------------------------------
+# upstream keys
+# --------------------------------------------------------------------------
+
+def mask(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 12:
+        return key[:3] + "***"
+    return f"{key[:8]}...{key[-4:]}"
+
+
+def list_upstream_keys(provider_id: Optional[int] = None, reveal: bool = False) -> List[Dict[str, Any]]:
+    if provider_id:
+        rows = db.query("SELECT * FROM upstream_keys WHERE provider_id=? ORDER BY id", (provider_id,))
+    else:
+        rows = db.query("SELECT * FROM upstream_keys ORDER BY provider_id, id")
+    t = now()
+    for r in rows:
+        r["masked"] = mask(r["api_key"])
+        r["cooling"] = r["cooldown_until"] > t
+        r["cooldown_left"] = max(0, int(r["cooldown_until"] - t))
+        if not reveal:
+            r.pop("api_key", None)
+    return rows
+
+
+def add_upstream_key(provider_id: int, api_key: str, label: str = "", weight: int = 1) -> int:
+    if not get_provider(provider_id):
+        raise ValueError("provider not found")
+    key = (api_key or "").strip()
+    if not key:
+        raise ValueError("api_key cannot be empty")
+    return db.execute(
+        """INSERT INTO upstream_keys (provider_id, label, api_key, weight, enabled, created_at)
+           VALUES (?,?,?,?,1,?)""",
+        (provider_id, label.strip(), key, max(1, int(weight)), now()),
+    )
+
+
+def parse_keys(raw: str) -> List[str]:
+    """Split a pasted blob into individual keys (newline / comma separated)."""
+    if not raw:
+        return []
+    out, seen = [], set()
+    for chunk in raw.replace(",", "\n").splitlines():
+        key = chunk.strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def add_upstream_keys_bulk(provider_id: int, raw: str, label_prefix: str = "key") -> List[int]:
+    """Add every key found in a pasted blob. Returns the ids that were created."""
+    ids = []
+    for i, key in enumerate(parse_keys(raw)):
+        try:
+            ids.append(add_upstream_key(provider_id, key, f"{label_prefix}{i + 1}"))
+        except ValueError:
+            continue
+    return ids
+
+
+def update_upstream_key(kid: int, **fields) -> None:
+    allowed = {"label", "api_key", "weight", "enabled", "cooldown_until", "last_error"}
+    sets, params = [], []
+    for k, v in fields.items():
+        if k not in allowed or v is None:
+            continue
+        if k == "enabled":
+            v = 1 if v else 0
+        if k == "weight":
+            v = max(1, int(v))
+        sets.append(f"{k}=?")
+        params.append(v)
+    if not sets:
+        return
+    params.append(kid)
+    db.execute(f"UPDATE upstream_keys SET {', '.join(sets)} WHERE id=?", tuple(params))
+
+
+def delete_upstream_key(kid: int) -> None:
+    db.execute("DELETE FROM upstream_keys WHERE id=?", (kid,))
+
+
+def clear_cooldowns(provider_id: Optional[int] = None) -> None:
+    if provider_id:
+        db.execute(
+            "UPDATE upstream_keys SET cooldown_until=0, last_error='' WHERE provider_id=?",
+            (provider_id,),
+        )
+    else:
+        db.execute("UPDATE upstream_keys SET cooldown_until=0, last_error=''")
+
+
+def pick_keys(provider_id: int, limit: int = config.MAX_KEY_ATTEMPTS) -> List[Dict[str, Any]]:
+    """Round-robin ordered, cooldown-aware key list for a provider.
+
+    Non-cooling keys come first (rotated), then cooling ones as last-resort
+    fallback so a request never hard-fails just because every key is cooling.
+    """
+    rows = db.query(
+        "SELECT * FROM upstream_keys WHERE provider_id=? AND enabled=1 ORDER BY id",
+        (provider_id,),
+    )
+    if not rows:
+        return []
+
+    # expand by weight
+    pool: List[Dict[str, Any]] = []
+    for r in rows:
+        pool.extend([r] * max(1, r["weight"]))
+
+    with _rr_lock:
+        counter = _rr_counters.setdefault(provider_id, itertools.count())
+        offset = next(counter) % len(pool)
+    rotated = pool[offset:] + pool[:offset]
+
+    t = now()
+    fresh, cooling, seen = [], [], set()
+    for r in rotated:
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        (fresh if r["cooldown_until"] <= t else cooling).append(r)
+    return (fresh + cooling)[:limit]
+
+
+def penalize_key(key_id: int, status: int, error: str) -> None:
+    cooldown = 0
+    if status == 429:
+        cooldown = config.COOLDOWN_429
+    elif status == 402:
+        cooldown = config.COOLDOWN_402
+    elif status >= 500 or status == 0:
+        cooldown = config.COOLDOWN_5XX
+    elif status in (401, 403):
+        cooldown = config.COOLDOWN_402
+    db.execute(
+        """UPDATE upstream_keys
+           SET err_count = err_count + 1,
+               last_error = ?,
+               cooldown_until = ?
+           WHERE id=?""",
+        (f"{status}: {error}"[:250], now() + cooldown if cooldown else 0, key_id),
+    )
+
+
+def reward_key(key_id: int) -> None:
+    db.execute(
+        """UPDATE upstream_keys
+           SET req_count = req_count + 1, last_used_at = ?, cooldown_until = 0, last_error=''
+           WHERE id=?""",
+        (now(), key_id),
+    )
+
+
+# --------------------------------------------------------------------------
+# client (gateway) keys
+# --------------------------------------------------------------------------
+
+def list_client_keys(reveal: bool = False) -> List[Dict[str, Any]]:
+    rows = db.query("SELECT * FROM client_keys ORDER BY id")
+    for r in rows:
+        r["masked"] = mask(r["token"])
+        if not reveal:
+            r.pop("token", None)
+    return rows
+
+
+def create_client_key(name: str, allowed_models: str = "") -> Dict[str, Any]:
+    token = "nova-" + secrets.token_urlsafe(32)
+    kid = db.execute(
+        """INSERT INTO client_keys (name, token, enabled, allowed_models, created_at)
+           VALUES (?,?,1,?,?)""",
+        (name.strip() or "unnamed", token, (allowed_models or "").strip(), now()),
+    )
+    return {
+        "id": kid,
+        "name": name,
+        "token": token,
+        "allowed_models": (allowed_models or "").strip(),
+    }
+
+
+def update_client_key(kid: int, **fields) -> None:
+    allowed = {"name", "enabled", "allowed_models"}
+    sets, params = [], []
+    for k, v in fields.items():
+        if k not in allowed or v is None:
+            continue
+        if k == "enabled":
+            v = 1 if v else 0
+        sets.append(f"{k}=?")
+        params.append(v)
+    if not sets:
+        return
+    params.append(kid)
+    db.execute(f"UPDATE client_keys SET {', '.join(sets)} WHERE id=?", tuple(params))
+
+
+def delete_client_key(kid: int) -> None:
+    db.execute("DELETE FROM client_keys WHERE id=?", (kid,))
+
+
+def auth_client(token: str) -> Optional[Dict[str, Any]]:
+    if not token:
+        return None
+    row = db.one("SELECT * FROM client_keys WHERE token=? AND enabled=1", (token,))
+    if row:
+        db.execute(
+            "UPDATE client_keys SET req_count=req_count+1, last_used_at=? WHERE id=?",
+            (now(), row["id"]),
+        )
+    return row
+
+
+def client_allows(client: Dict[str, Any], model: str) -> bool:
+    raw = (client.get("allowed_models") or "").strip()
+    if not raw:
+        return True
+    for pattern in [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]:
+        if pattern == "*" or pattern == model:
+            return True
+        if pattern.endswith("*") and model.startswith(pattern[:-1]):
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------
+# models / routing
+# --------------------------------------------------------------------------
+
+def exposed_id(provider: Dict[str, Any], model_id: str) -> str:
+    prefix = (provider.get("prefix") or "").strip()
+    return f"{prefix}{model_id}" if prefix else model_id
+
+
+def upsert_models(provider_id: int, models: List[Dict[str, Any]], prune: bool = True) -> int:
+    provider = get_provider(provider_id)
+    if not provider:
+        raise ValueError("provider not found")
+    rows = [
+        (provider_id, m["id"], exposed_id(provider, m["id"]), 1 if m.get("is_free") else 0)
+        for m in models
+    ]
+    db.executemany(
+        """INSERT INTO models (provider_id, model_id, exposed_id, is_free)
+           VALUES (?,?,?,?)
+           ON CONFLICT(provider_id, model_id)
+           DO UPDATE SET exposed_id=excluded.exposed_id, is_free=excluded.is_free""",
+        rows,
+    )
+    if prune and rows:
+        ids = [m["id"] for m in models]
+        placeholders = ",".join("?" * len(ids))
+        db.execute(
+            f"DELETE FROM models WHERE provider_id=? AND model_id NOT IN ({placeholders})",
+            tuple([provider_id] + ids),
+        )
+    return len(rows)
+
+
+def list_models(
+    provider_id: Optional[int] = None,
+    status: Optional[str] = None,
+    only_enabled: bool = False,
+    free_only: bool = False,
+    search: str = "",
+) -> List[Dict[str, Any]]:
+    sql = """SELECT m.*, p.name AS provider_name, p.kind AS provider_kind, p.enabled AS provider_enabled
+             FROM models m JOIN providers p ON p.id = m.provider_id WHERE 1=1"""
+    params: List[Any] = []
+    if provider_id:
+        sql += " AND m.provider_id=?"
+        params.append(provider_id)
+    if status:
+        sql += " AND m.status=?"
+        params.append(status)
+    if only_enabled:
+        sql += " AND m.enabled=1 AND p.enabled=1"
+    if free_only:
+        sql += " AND m.is_free=1"
+    if search:
+        sql += " AND m.exposed_id LIKE ?"
+        params.append(f"%{search}%")
+    sql += " ORDER BY p.name, m.model_id"
+    return db.query(sql, tuple(params))
+
+
+def set_model_status(
+    model_row_id: int, status: str, http_status: int, detail: str, latency_ms: int
+) -> None:
+    db.execute(
+        """UPDATE models SET status=?, http_status=?, detail=?, latency_ms=?, checked_at=?
+           WHERE id=?""",
+        (status, http_status, (detail or "")[:250], latency_ms, now(), model_row_id),
+    )
+
+
+def toggle_model(model_row_id: int, enabled: bool) -> None:
+    db.execute("UPDATE models SET enabled=? WHERE id=?", (1 if enabled else 0, model_row_id))
+
+
+def resolve_model(requested: str) -> List[Tuple[Dict[str, Any], str]]:
+    """Map a client-facing model id to candidate (provider, upstream_model_id).
+
+    Resolution order:
+      1. exact exposed_id match on an enabled model+provider
+      2. exact raw model_id match
+      3. "providername/model" convention
+    Multiple hits = failover candidates, healthiest first.
+    """
+    rows = db.query(
+        """SELECT m.*, p.name AS provider_name FROM models m
+           JOIN providers p ON p.id=m.provider_id
+           WHERE m.enabled=1 AND p.enabled=1 AND (m.exposed_id=? OR m.model_id=?)""",
+        (requested, requested),
+    )
+
+    if not rows and "/" in requested:
+        head, tail = requested.split("/", 1)
+        rows = db.query(
+            """SELECT m.*, p.name AS provider_name FROM models m
+               JOIN providers p ON p.id=m.provider_id
+               WHERE m.enabled=1 AND p.enabled=1
+                 AND LOWER(p.name)=LOWER(?) AND m.model_id=?""",
+            (head, tail),
+        )
+
+    rank = {adapters.OK: 0, "UNKNOWN": 1, adapters.RATE_LIMITED: 2}
+    rows.sort(key=lambda r: (rank.get(r["status"], 3), r["latency_ms"] or 9999))
+
+    out = []
+    for r in rows:
+        provider = get_provider(r["provider_id"])
+        if provider:
+            out.append((provider, r["model_id"]))
+    return out
+
+
+# --------------------------------------------------------------------------
+# stats
+# --------------------------------------------------------------------------
+
+def stats() -> Dict[str, Any]:
+    t = now()
+    return {
+        "providers": db.one("SELECT COUNT(*) c FROM providers")["c"],
+        "providers_enabled": db.one("SELECT COUNT(*) c FROM providers WHERE enabled=1")["c"],
+        "upstream_keys": db.one("SELECT COUNT(*) c FROM upstream_keys")["c"],
+        "upstream_keys_cooling": db.one(
+            "SELECT COUNT(*) c FROM upstream_keys WHERE cooldown_until > ?", (t,)
+        )["c"],
+        "client_keys": db.one("SELECT COUNT(*) c FROM client_keys")["c"],
+        "models": db.one("SELECT COUNT(*) c FROM models")["c"],
+        "models_ok": db.one("SELECT COUNT(*) c FROM models WHERE status='OK'")["c"],
+        "models_unknown": db.one("SELECT COUNT(*) c FROM models WHERE status='UNKNOWN'")["c"],
+        "requests_24h": db.one(
+            "SELECT COUNT(*) c FROM request_log WHERE ts > ?", (t - 86400,)
+        )["c"],
+        "errors_24h": db.one(
+            "SELECT COUNT(*) c FROM request_log WHERE ts > ? AND status >= 400", (t - 86400,)
+        )["c"],
+    }
+
+
+def recent_logs(limit: int = 100) -> List[Dict[str, Any]]:
+    return db.query(
+        """SELECT l.*, p.name AS provider_name, c.name AS client_name
+           FROM request_log l
+           LEFT JOIN providers p ON p.id = l.provider_id
+           LEFT JOIN client_keys c ON c.id = l.client_key_id
+           ORDER BY l.id DESC LIMIT ?""",
+        (limit,),
+    )

@@ -1,0 +1,53 @@
+# NovaRouter on Render.com
+#
+# Render Blueprint: New Web Service -> connect your GitHub repo; Render reads
+# this file automatically. You will be prompted for the secret values marked
+# sync: false on first create.
+#
+# Free-tier reality: free instances have NO persistent disk, so this blueprint
+# expects a Postgres DATABASE_URL (Neon free tier works great). If you later
+# upgrade to a paid plan and attach a persistent disk, see the commented
+# disk block at the bottom.
+
+services:
+  - type: web
+    name: novarouter
+    runtime: docker          # builds from the repo Dockerfile
+    plan: starter            # free tier; sleeps after 15 min idle
+    region: oregon
+    healthCheckPath: /healthz
+    autoDeploy: true         # deploy on every push to main
+    envVars:
+      # --- required secrets (prompted once at creation) ---
+      - key: NOVA_ADMIN_TOKEN
+        sync: false          # your dashboard/admin token - pick something strong
+      - key: DATABASE_URL
+        sync: false          # Postgres URL (Neon / Render Postgres / etc.)
+
+      # --- behaviour ---
+      - key: NOVA_HOST
+        value: 0.0.0.0
+      # Render routes external HTTPS to the container port; PORT is provided
+      # by Render at runtime (default 10000) and the entrypoint honors it.
+
+      # --- optional tuning (safe defaults; uncomment to change) ---
+      # - key: NOVA_TIMEOUT
+      #   value: "180"
+      # - key: NOVA_MAX_KEY_ATTEMPTS
+      #   value: "4"
+      # - key: NOVA_COOLDOWN_429
+      #   value: "60"
+
+    # ------------------------------------------------------------------
+    # PAID TIER + PERSISTENT DISK OPTION (SQLite instead of Postgres):
+    # Render free instances can't attach disks. On a paid plan, comment out
+    # DATABASE_URL above, uncomment this disk block, and add:
+    #   - key: NOVA_DATA_DIR
+    #     value: /data
+    #   - key: NOVA_ALLOW_EPHEMERAL
+    #     value: "1"
+    # disk:
+    #   name: novarouter-data
+    #   mountPath: /data
+    #   sizeGB: 5
+    # ------------------------------------------------------------------

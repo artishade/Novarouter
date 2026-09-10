@@ -9,6 +9,9 @@ set -eu
 
 DATA_DIR="${NOVA_DATA_DIR:-/data}"
 
+# Port resolution: NOVA_PORT (explicit) -> PORT (Render sets this) -> 8080.
+BIND_PORT="${NOVA_PORT:-${PORT:-8080}}"
+
 if [ "$(id -u)" = "0" ]; then
     mkdir -p "$DATA_DIR"
     # chown only when ownership is wrong (fresh Fly volumes mount as root:root).
@@ -28,23 +31,23 @@ if [ "$(id -u)" = "0" ]; then
         fi
     fi
 
-    echo "[novarouter] dropping to user 'nova', starting on ${NOVA_HOST:-0.0.0.0}:${NOVA_PORT:-8080}"
+    echo "[novarouter] dropping to user 'nova', starting on ${NOVA_HOST:-0.0.0.0}:$BIND_PORT"
     if command -v gosu >/dev/null 2>&1; then
         exec gosu nova:nova python -m uvicorn app.main:app \
             --host "${NOVA_HOST:-0.0.0.0}" \
-            --port "${NOVA_PORT:-8080}" \
+            --port "$BIND_PORT" \
             --workers "${NOVA_WORKERS:-1}" \
             --proxy-headers
     else
         # gosu missing (rare minimal hosts): fall back to su.
-        exec su -s /bin/sh nova -c "python -m uvicorn app.main:app --host ${NOVA_HOST:-0.0.0.0} --port ${NOVA_PORT:-8080} --workers ${NOVA_WORKERS:-1} --proxy-headers"
+        exec su -s /bin/sh nova -c "python -m uvicorn app.main:app --host ${NOVA_HOST:-0.0.0.0} --port $BIND_PORT --workers ${NOVA_WORKERS:-1} --proxy-headers"
     fi
 else
     # Already unprivileged (local docker run -u, fly ssh sessions, etc.)
-    echo "[novarouter] running as $(id -un), starting on ${NOVA_HOST:-0.0.0.0}:${NOVA_PORT:-8080}"
+    echo "[novarouter] running as $(id -un), starting on ${NOVA_HOST:-0.0.0.0}:$BIND_PORT"
     exec python -m uvicorn app.main:app \
         --host "${NOVA_HOST:-0.0.0.0}" \
-        --port "${NOVA_PORT:-8080}" \
+        --port "$BIND_PORT" \
         --workers "${NOVA_WORKERS:-1}" \
         --proxy-headers
 fi

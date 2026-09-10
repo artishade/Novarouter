@@ -24,6 +24,6 @@ ENV NOVA_HOST=0.0.0.0 NOVA_PORT=8080 NOVA_DATA_DIR=/data
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD curl -fsS http://127.0.0.1:${NOVA_PORT}/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD curl -fsS http://127.0.0.1:${NOVA_PORT:-${PORT:-8080}}/healthz || exit 1
 
 ENTRYPOINT ["/docker-entrypoint.sh"]

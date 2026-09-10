@@ -13,8 +13,8 @@ DATA_DIR = Path(os.environ.get("NOVA_DATA_DIR") or (BASE_DIR / "data"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()  # postgres://... -> Postgres backend
 STATIC_DIR = BASE_DIR / "app" / "static"
 
-# Vercel sets VERCEL=1 for all serverless builds/invocations.
-SERVERLESS = bool(os.environ.get("VERCEL"))
+# Vercel sets VERCEL=1; Render sets RENDER=true for all services.
+SERVERLESS = bool(os.environ.get("VERCEL") or os.environ.get("RENDER"))
 
 # Only create local dirs when actually running with the SQLite backend.
 def _use_sqlite() -> bool:
@@ -22,13 +22,21 @@ def _use_sqlite() -> bool:
 
 if _use_sqlite():
     if SERVERLESS:
-        # Deployed on Vercel without DATABASE_URL: SQLite would silently wipe
-        # data on every cold start. Refuse loudly instead.
-        raise RuntimeError(
-            "DATABASE_URL is not set on a serverless deployment. NovaRouter needs a "
-            "Postgres URL (e.g. Neon) when hosted on Vercel - SQLite only persists "
-            "on a real filesystem. Set DATABASE_URL and redeploy."
-        )
+        # Render (like Vercel) has an ephemeral filesystem on its default/free
+        # tiers - SQLite would silently wipe on every restart/deploy. Refuse
+        # loudly instead. (A paid Render instance with a persistent disk can
+        # set NOVA_DATA_DIR to the disk mount and NOVA_ALLOW_EPHEMERAL=1.)
+        platform = "Render" if os.environ.get("RENDER") else "Vercel"
+        allow = os.environ.get("NOVA_ALLOW_EPHEMERAL") == "1"
+        if not allow:
+            raise RuntimeError(
+                f"DATABASE_URL is not set on a {platform} deployment. NovaRouter needs "
+                f"a Postgres URL (e.g. Neon or {platform} Postgres) when hosted on {platform} - "
+                f"the default instances have no persistent disk, so SQLite data would not "
+                f"survive restarts. Set DATABASE_URL and redeploy. (Only if you attached a "
+                f"persistent disk: set NOVA_DATA_DIR to its mountPath and "
+                f"NOVA_ALLOW_EPHEMERAL=1.)"
+            )
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
     except OSError:

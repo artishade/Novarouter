@@ -16,7 +16,9 @@ Storage is dual-mode, covering local, Fly.io/Docker, and Vercel:
 |---|---|---|
 | Local / self-hosted | default (no `DATABASE_URL`) | SQLite file (`data/nova.db`) |
 | Fly.io / Docker | no `DATABASE_URL` + `/data` volume | SQLite on a persistent Fly volume |
-| Serverless (Vercel) / any host | `DATABASE_URL` env set | PostgreSQL (e.g. Neon — free tier works) |
+| Render.com free tier | `DATABASE_URL` env set | PostgreSQL (Neon — free tier works) |
+| Render.com paid + disk | disk mounted, no `DATABASE_URL` | SQLite on a Render persistent disk |
+| Vercel | `DATABASE_URL` env set | PostgreSQL (Neon — free tier works) |
 
 ---
 
@@ -71,6 +73,23 @@ docker build -t novarouter .
 docker run -d -p 8080:8080 -v novarouter-data:/data \
   -e NOVA_ADMIN_TOKEN=your-strong-token novarouter
 ```
+
+## Deploy to Render.com (Postgres on the free tier)
+
+The repo ships a `render.yaml` Blueprint, so Render deploys are nearly zero-config:
+
+1. Push this repo to GitHub.
+2. In Render: **New → Blueprint** → pick the repo. Render reads `render.yaml` and prompts you for the two secrets on creation:
+   - `NOVA_ADMIN_TOKEN` — your dashboard token
+   - `DATABASE_URL` — a Postgres URL (Neon free tier is the easiest; Render Postgres works too)
+3. Deploy. The Docker image builds, the health check (`/healthz`) gates traffic, and every push to `main` auto-deploys.
+
+Agents then point at `https://novarouter.onrender.com/v1`.
+
+Notes:
+- **Free tier (starter plan)**: sleeps after ~15 min idle, wakes on first request. No persistent disk — that's why the blueprint runs Postgres mode. If you try to deploy without `DATABASE_URL`, the app refuses to boot with a clear error instead of silently wiping your data.
+- **Paid tier + persistent disk (SQLite)**: upgrade the plan, comment out `DATABASE_URL`, uncomment the `disk:` block in `render.yaml`, and set `NOVA_DATA_DIR=/data` + `NOVA_ALLOW_EPHEMERAL=1`. SQLite then persists on Render's disk just like on Fly.
+- The container honors Render's `PORT` env (default 10000) automatically; no config needed.
 
 ## Deploy to Vercel (Postgres)
 

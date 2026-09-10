@@ -1,12 +1,11 @@
 """Storage layer. Two interchangeable backends behind one tiny facade:
 
-  * SQLite  - default for local/self-hosted runs (zero setup)
-  * Postgres - selected automatically when DATABASE_URL is set (Vercel/Neon)
+  * SQLite    - default for local/self-hosted runs (zero setup)
+  * Postgres  - selected automatically when DATABASE_URL is set (Vercel/Neon)
 
-Both implement the same five primitives (init/query/one/execute/executemany),
-so the rest of the app never cares which one is active. `execute()` returns
-lastrowid for inserts (both backends), and Postgres UPDATE/DELETE return the
-affected row count via `execute_rowcount()` where it matters.
+v2: adds lightweight migrations (ALTER TABLE on missing columns), token
+usage tracking columns, and model capability columns. Existing data always
+survives an upgrade.
 """
 from __future__ import annotations
 
@@ -54,6 +53,10 @@ CREATE TABLE IF NOT EXISTS client_keys (
     token           TEXT    NOT NULL UNIQUE,
     enabled         INTEGER NOT NULL DEFAULT 1,
     allowed_models  TEXT    NOT NULL DEFAULT '',
+    rpm_limit       INTEGER NOT NULL DEFAULT 0,
+    tpd_limit       INTEGER NOT NULL DEFAULT 0,
+    tokens_in       INTEGER NOT NULL DEFAULT 0,
+    tokens_out      INTEGER NOT NULL DEFAULT 0,
     req_count       INTEGER NOT NULL DEFAULT 0,
     last_used_at    REAL    NOT NULL DEFAULT 0,
     created_at      REAL    NOT NULL
@@ -70,6 +73,9 @@ CREATE TABLE IF NOT EXISTS models (
     latency_ms      INTEGER NOT NULL DEFAULT 0,
     checked_at      REAL    NOT NULL DEFAULT 0,
     enabled         INTEGER NOT NULL DEFAULT 1,
+    context_length  INTEGER NOT NULL DEFAULT 0,
+    max_output      INTEGER NOT NULL DEFAULT 0,
+    capabilities    TEXT    NOT NULL DEFAULT '{}',
     UNIQUE(provider_id, model_id)
 );
 CREATE TABLE IF NOT EXISTS request_log (
@@ -79,12 +85,17 @@ CREATE TABLE IF NOT EXISTS request_log (
     provider_id     INTEGER,
     upstream_key_id INTEGER,
     model           TEXT    NOT NULL DEFAULT '',
+    endpoint        TEXT    NOT NULL DEFAULT 'chat',
     status          INTEGER NOT NULL DEFAULT 0,
     latency_ms      INTEGER NOT NULL DEFAULT 0,
+    tokens_in       INTEGER NOT NULL DEFAULT 0,
+    tokens_out      INTEGER NOT NULL DEFAULT 0,
     error           TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_log_ts ON request_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_models_exposed ON models(exposed_id);
+CREATE INDEX IF NOT EXISTS idx_reqlog_client_ts ON request_log(client_key_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_reqlog_day ON request_log(client_key_id, CAST(ts/86400 AS INT) DESC);
 """
 
 SCHEMA_PG = """
@@ -118,6 +129,10 @@ CREATE TABLE IF NOT EXISTS client_keys (
     token           TEXT    NOT NULL UNIQUE,
     enabled         INTEGER NOT NULL DEFAULT 1,
     allowed_models  TEXT    NOT NULL DEFAULT '',
+    rpm_limit       INTEGER NOT NULL DEFAULT 0,
+    tpd_limit       INTEGER NOT NULL DEFAULT 0,
+    tokens_in       INTEGER NOT NULL DEFAULT 0,
+    tokens_out      INTEGER NOT NULL DEFAULT 0,
     req_count       INTEGER NOT NULL DEFAULT 0,
     last_used_at    DOUBLE PRECISION NOT NULL DEFAULT 0,
     created_at      DOUBLE PRECISION NOT NULL
@@ -134,6 +149,9 @@ CREATE TABLE IF NOT EXISTS models (
     latency_ms      INTEGER NOT NULL DEFAULT 0,
     checked_at      DOUBLE PRECISION NOT NULL DEFAULT 0,
     enabled         INTEGER NOT NULL DEFAULT 1,
+    context_length  INTEGER NOT NULL DEFAULT 0,
+    max_output      INTEGER NOT NULL DEFAULT 0,
+    capabilities    TEXT    NOT NULL DEFAULT '{}',
     UNIQUE(provider_id, model_id)
 );
 CREATE TABLE IF NOT EXISTS request_log (
@@ -143,23 +161,24 @@ CREATE TABLE IF NOT EXISTS request_log (
     provider_id     BIGINT,
     upstream_key_id BIGINT,
     model           TEXT    NOT NULL DEFAULT '',
+    endpoint        TEXT    NOT NULL DEFAULT 'chat',
     status          INTEGER NOT NULL DEFAULT 0,
     latency_ms      INTEGER NOT NULL DEFAULT 0,
+    tokens_in       INTEGER NOT NULL DEFAULT 0,
+    tokens_out      INTEGER NOT NULL DEFAULT 0,
     error           TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_log_ts ON request_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_models_exposed ON models(exposed_id);
+CREATE INDEX IF NOT EXISTS idx_reqlog_client_ts ON request_log(client_key_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_reqlog_day ON request_log(client_key_id, CAST(ts/86400 AS INT) DESC);
 """
 
 USE_POSTGRES = bool(config.DATABASE_URL)
 
 
 def _to_pg(sql: str) -> str:
-    """Translate sqlite-style `?` placeholders to psycopg `%s`.
-
-    Safe for this codebase: no SQL text contains a literal '?' or bare '%'
-    (LIKE patterns are always passed as parameter values, never inlined).
-    """
+    """Translate sqlite-style `?` placeholders to psycopg `%s`."""
     return sql.replace("?", "%s")
 
 
@@ -169,6 +188,59 @@ def _pg_dsn() -> str:
     if url.startswith("postgresql+"):
         url = url.split("+", 1)[0]
     return url
+
+
+# ---------------------------------------------------------------------------
+# migrations
+# ---------------------------------------------------------------------------
+
+# (table, column, sqlite_ddl, pg_ddl)
+_MIGRATIONS = [
+    ("client_keys", "rpm_limit", "ALTER TABLE client_keys ADD COLUMN rpm_limit INTEGER NOT NULL DEFAULT 0",
+     "ALTER TABLE client_keys ADD COLUMN IF NOT EXISTS rpm_limit INTEGER NOT NULL DEFAULT 0"),
+    ("client_keys", "tpd_limit", "ALTER TABLE client_keys ADD COLUMN tpd_limit INTEGER NOT NULL DEFAULT 0",
+     "ALTER TABLE client_keys ADD COLUMN IF NOT EXISTS tpd_limit INTEGER NOT NULL DEFAULT 0"),
+    ("client_keys", "tokens_in", "ALTER TABLE client_keys ADD COLUMN tokens_in INTEGER NOT NULL DEFAULT 0",
+     "ALTER TABLE client_keys ADD COLUMN IF NOT EXISTS tokens_in INTEGER NOT NULL DEFAULT 0"),
+    ("client_keys", "tokens_out", "ALTER TABLE client_keys ADD COLUMN tokens_out INTEGER NOT NULL DEFAULT 0",
+     "ALTER TABLE client_keys ADD COLUMN IF NOT EXISTS tokens_out INTEGER NOT NULL DEFAULT 0"),
+    ("models", "context_length", "ALTER TABLE models ADD COLUMN context_length INTEGER NOT NULL DEFAULT 0",
+     "ALTER TABLE models ADD COLUMN IF NOT EXISTS context_length INTEGER NOT NULL DEFAULT 0"),
+    ("models", "max_output", "ALTER TABLE models ADD COLUMN max_output INTEGER NOT NULL DEFAULT 0",
+     "ALTER TABLE models ADD COLUMN IF NOT EXISTS max_output INTEGER NOT NULL DEFAULT 0"),
+    ("models", "capabilities", "ALTER TABLE models ADD COLUMN capabilities TEXT NOT NULL DEFAULT '{}'",
+     "ALTER TABLE models ADD COLUMN IF NOT EXISTS capabilities TEXT NOT NULL DEFAULT '{}'"),
+    ("request_log", "endpoint", "ALTER TABLE request_log ADD COLUMN endpoint TEXT NOT NULL DEFAULT 'chat'",
+     "ALTER TABLE request_log ADD COLUMN IF NOT EXISTS endpoint TEXT NOT NULL DEFAULT 'chat'"),
+    ("request_log", "tokens_in", "ALTER TABLE request_log ADD COLUMN tokens_in INTEGER NOT NULL DEFAULT 0",
+     "ALTER TABLE request_log ADD COLUMN IF NOT EXISTS tokens_in INTEGER NOT NULL DEFAULT 0"),
+    ("request_log", "tokens_out", "ALTER TABLE request_log ADD COLUMN tokens_out INTEGER NOT NULL DEFAULT 0",
+     "ALTER TABLE request_log ADD COLUMN IF NOT EXISTS tokens_out INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+def _sqlite_migrate() -> None:
+    c = _sqlite_conn()
+    for table, column, sqlite_ddl, _pg in _MIGRATIONS:
+        cols = {r["name"] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            try:
+                c.execute(sqlite_ddl)
+            except Exception:  # noqa: BLE001 - already exists race
+                pass
+    c.commit()
+
+
+def _pg_migrate() -> None:
+    pool = _pg_pool_get()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            for _table, _column, _sq, pg_ddl in _MIGRATIONS:
+                try:
+                    cur.execute(pg_ddl)
+                except Exception:  # noqa: BLE001
+                    conn.rollback()
+                    raise
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +263,7 @@ def _sqlite_init() -> None:
         c = _sqlite_conn()
         c.executescript(SCHEMA_SQLITE)
         c.commit()
+        _sqlite_migrate()
 
 
 def _sqlite_query(sql: str, params: Sequence[Any] = ()) -> List[Dict[str, Any]]:
@@ -263,6 +336,7 @@ def _pg_init() -> None:
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_PG)
+    _pg_migrate()
 
 
 def _pg_query(sql: str, params: Sequence[Any] = ()) -> List[Dict[str, Any]]:
@@ -360,22 +434,55 @@ def executemany(sql: str, seq: Sequence[Sequence[Any]]) -> None:
 def log_request(**kw) -> None:
     execute(
         """INSERT INTO request_log
-           (ts, client_key_id, provider_id, upstream_key_id, model, status, latency_ms, error)
-           VALUES (?,?,?,?,?,?,?,?)""",
+           (ts, client_key_id, provider_id, upstream_key_id, model, endpoint, status, latency_ms, tokens_in, tokens_out, error)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             time.time(),
             kw.get("client_key_id"),
             kw.get("provider_id"),
             kw.get("upstream_key_id"),
             kw.get("model", ""),
+            kw.get("endpoint", "chat"),
             kw.get("status", 0),
             kw.get("latency_ms", 0),
+            kw.get("tokens_in", 0),
+            kw.get("tokens_out", 0),
             (kw.get("error") or "")[:300],
         ),
     )
-    # cheap retention trim
     if config.LOG_RETENTION > 0:
         execute_rowcount(
             "DELETE FROM request_log WHERE id < (SELECT MAX(id) - ? FROM request_log)",
             (config.LOG_RETENTION,),
         )
+
+
+def bump_client_usage(client_key_id: int, tokens_in: int, tokens_out: int) -> None:
+    if not client_key_id:
+        return
+    execute(
+        """UPDATE client_keys
+           SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ?,
+               req_count = req_count + 1, last_used_at = ?
+           WHERE id = ?""",
+        (int(tokens_in or 0), int(tokens_out or 0), time.time(), client_key_id),
+    )
+
+
+def client_rpm_used(client_key_id: int) -> int:
+    return int(
+        one(
+            "SELECT COUNT(*) c FROM request_log WHERE client_key_id=? AND ts > ?",
+            (client_key_id, time.time() - 60),
+        )["c"]
+    )
+
+
+def client_tpd_used(client_key_id: int) -> int:
+    return int(
+        one(
+            """SELECT COALESCE(SUM(tokens_in + tokens_out), 0) c FROM request_log
+               WHERE client_key_id=? AND ts > ?""",
+            (client_key_id, time.time() - 86400),
+        )["c"]
+    )

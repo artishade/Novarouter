@@ -30,8 +30,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="NovaRouter",
-    description="Lightweight multi-provider AI API gateway with key rotation and a model availability checker.",
-    version="1.0.0",
+    description="Multi-provider AI API gateway: chat, tools, vision, thinking, images, video, audio, "
+                "Responses + Anthropic APIs — with key rotation, failover, and a model availability checker.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 

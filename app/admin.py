@@ -99,12 +99,16 @@ class UpstreamKeyPatch(BaseModel):
 class ClientKeyIn(BaseModel):
     name: str
     allowed_models: str = ""
+    rpm_limit: int = 0
+    tpd_limit: int = 0
 
 
 class ClientKeyPatch(BaseModel):
     name: Optional[str] = None
     enabled: Optional[bool] = None
     allowed_models: Optional[str] = None
+    rpm_limit: Optional[int] = None
+    tpd_limit: Optional[int] = None
 
 
 class CheckIn(BaseModel):
@@ -248,7 +252,7 @@ async def get_client_keys(request: Request, reveal: bool = False):
 @router.post("/client-keys")
 async def create_client_key(request: Request, body: ClientKeyIn):
     require_admin(request)
-    return store.create_client_key(body.name, body.allowed_models)
+    return store.create_client_key(body.name, body.allowed_models, body.rpm_limit, body.tpd_limit)
 
 
 @router.patch("/client-keys/{kid}")
@@ -273,11 +277,13 @@ async def get_models(
     status: Optional[str] = None,
     free_only: bool = False,
     search: str = "",
+    capability: str = "",
     limit: int = 500,
 ):
     require_admin(request)
     rows = store.list_models(
-        provider_id=provider_id, status=status, free_only=free_only, search=search
+        provider_id=provider_id, status=status, free_only=free_only,
+        search=search, capability=capability,
     )
     return {"total": len(rows), "rows": rows[: max(1, limit)]}
 

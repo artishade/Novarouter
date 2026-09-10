@@ -1,4 +1,8 @@
-"""CRUD helpers + upstream key rotation + model routing resolution."""
+"""CRUD helpers + upstream key rotation + model routing resolution.
+
+v2: capability persistence, per-client rate limits (RPM) and daily token
+quotas (TPD), usage tracking hooks.
+"""
 
 import itertools
 import json
@@ -264,29 +268,42 @@ def list_client_keys(reveal: bool = False) -> List[Dict[str, Any]]:
     return rows
 
 
-def create_client_key(name: str, allowed_models: str = "") -> Dict[str, Any]:
+def create_client_key(
+    name: str, allowed_models: str = "", rpm_limit: int = 0, tpd_limit: int = 0
+) -> Dict[str, Any]:
     token = "nova-" + secrets.token_urlsafe(32)
     kid = db.execute(
-        """INSERT INTO client_keys (name, token, enabled, allowed_models, created_at)
-           VALUES (?,?,1,?,?)""",
-        (name.strip() or "unnamed", token, (allowed_models or "").strip(), now()),
+        """INSERT INTO client_keys (name, token, enabled, allowed_models, rpm_limit, tpd_limit, created_at)
+           VALUES (?,?,1,?,?,?,?)""",
+        (
+            name.strip() or "unnamed",
+            token,
+            (allowed_models or "").strip(),
+            max(0, int(rpm_limit or 0)),
+            max(0, int(tpd_limit or 0)),
+            now(),
+        ),
     )
     return {
         "id": kid,
         "name": name,
         "token": token,
         "allowed_models": (allowed_models or "").strip(),
+        "rpm_limit": int(rpm_limit or 0),
+        "tpd_limit": int(tpd_limit or 0),
     }
 
 
 def update_client_key(kid: int, **fields) -> None:
-    allowed = {"name", "enabled", "allowed_models"}
+    allowed = {"name", "enabled", "allowed_models", "rpm_limit", "tpd_limit"}
     sets, params = [], []
     for k, v in fields.items():
         if k not in allowed or v is None:
             continue
         if k == "enabled":
             v = 1 if v else 0
+        if k in ("rpm_limit", "tpd_limit"):
+            v = max(0, int(v))
         sets.append(f"{k}=?")
         params.append(v)
     if not sets:
@@ -323,6 +340,17 @@ def client_allows(client: Dict[str, Any], model: str) -> bool:
     return False
 
 
+def client_rate_limited(client: Dict[str, Any]) -> Optional[str]:
+    """Returns a reason string if this client key is over its limits."""
+    rpm = int(client.get("rpm_limit") or 0)
+    tpd = int(client.get("tpd_limit") or 0)
+    if rpm and db.client_rpm_used(client["id"]) >= rpm:
+        return f"rate limit exceeded ({rpm} req/min)"
+    if tpd and db.client_tpd_used(client["id"]) >= tpd:
+        return f"daily token quota exceeded ({tpd} tokens/day)"
+    return None
+
+
 # --------------------------------------------------------------------------
 # models / routing
 # --------------------------------------------------------------------------
@@ -332,19 +360,33 @@ def exposed_id(provider: Dict[str, Any], model_id: str) -> str:
     return f"{prefix}{model_id}" if prefix else model_id
 
 
+def _caps_to_json(caps: Any) -> str:
+    if isinstance(caps, dict):
+        return json.dumps({k: bool(v) for k, v in caps.items()})
+    return "{}"
+
+
 def upsert_models(provider_id: int, models: List[Dict[str, Any]], prune: bool = True) -> int:
     provider = get_provider(provider_id)
     if not provider:
         raise ValueError("provider not found")
     rows = [
-        (provider_id, m["id"], exposed_id(provider, m["id"]), 1 if m.get("is_free") else 0)
+        (
+            provider_id, m["id"], exposed_id(provider, m["id"]),
+            1 if m.get("is_free") else 0,
+            int(m.get("context_length") or 0),
+            int(m.get("max_output") or 0),
+            _caps_to_json(m.get("capabilities")),
+        )
         for m in models
     ]
     db.executemany(
-        """INSERT INTO models (provider_id, model_id, exposed_id, is_free)
-           VALUES (?,?,?,?)
+        """INSERT INTO models (provider_id, model_id, exposed_id, is_free, context_length, max_output, capabilities)
+           VALUES (?,?,?,?,?,?,?)
            ON CONFLICT(provider_id, model_id)
-           DO UPDATE SET exposed_id=excluded.exposed_id, is_free=excluded.is_free""",
+           DO UPDATE SET exposed_id=excluded.exposed_id, is_free=excluded.is_free,
+                         context_length=excluded.context_length, max_output=excluded.max_output,
+                         capabilities=excluded.capabilities""",
         rows,
     )
     if prune and rows:
@@ -363,6 +405,7 @@ def list_models(
     only_enabled: bool = False,
     free_only: bool = False,
     search: str = "",
+    capability: str = "",
 ) -> List[Dict[str, Any]]:
     sql = """SELECT m.*, p.name AS provider_name, p.kind AS provider_kind, p.enabled AS provider_enabled
              FROM models m JOIN providers p ON p.id = m.provider_id WHERE 1=1"""
@@ -380,8 +423,20 @@ def list_models(
     if search:
         sql += " AND m.exposed_id LIKE ?"
         params.append(f"%{search}%")
+    if capability:
+        sql += " AND m.capabilities LIKE ?"
+        params.append(f'%"{capability}": true%')
     sql += " ORDER BY p.name, m.model_id"
     return db.query(sql, tuple(params))
+
+
+def model_capabilities(row: Dict[str, Any]) -> Dict[str, bool]:
+    raw = row.get("capabilities") or "{}"
+    try:
+        data = json.loads(raw)
+        return {k: bool(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
 
 
 def set_model_status(
@@ -405,17 +460,23 @@ def resolve_model(requested: str) -> List[Tuple[Dict[str, Any], str]]:
       1. exact exposed_id match on an enabled model+provider
       2. exact raw model_id match
       3. "providername/model" convention
+      4. model suffix stripped (':thinking', ':free', ...) with suffix reattached
+         so upstream gateways that understand them (OpenRouter) still work.
     Multiple hits = failover candidates, healthiest first.
     """
+    # 4. suffix handling first: route on the bare id, remember the suffix
+    base, suffix = adapters.split_model_suffix(requested)
+    lookup = base if suffix else requested
+
     rows = db.query(
         """SELECT m.*, p.name AS provider_name FROM models m
            JOIN providers p ON p.id=m.provider_id
            WHERE m.enabled=1 AND p.enabled=1 AND (m.exposed_id=? OR m.model_id=?)""",
-        (requested, requested),
+        (lookup, lookup),
     )
 
-    if not rows and "/" in requested:
-        head, tail = requested.split("/", 1)
+    if not rows and "/" in lookup:
+        head, tail = lookup.split("/", 1)
         rows = db.query(
             """SELECT m.*, p.name AS provider_name FROM models m
                JOIN providers p ON p.id=m.provider_id
@@ -431,7 +492,10 @@ def resolve_model(requested: str) -> List[Tuple[Dict[str, Any], str]]:
     for r in rows:
         provider = get_provider(r["provider_id"])
         if provider:
-            out.append((provider, r["model_id"]))
+            # re-attach the OpenRouter-style suffix for openai-kind upstreams;
+            # anthropic natively thinks on every claude-3.7+ model.
+            upstream_id = r["model_id"] + (suffix if suffix and provider.get("kind") == "openai" else "")
+            out.append((provider, upstream_id))
     return out
 
 
@@ -457,6 +521,10 @@ def stats() -> Dict[str, Any]:
         )["c"],
         "errors_24h": db.one(
             "SELECT COUNT(*) c FROM request_log WHERE ts > ? AND status >= 400", (t - 86400,)
+        )["c"],
+        "tokens_24h": db.one(
+            "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) c FROM request_log WHERE ts > ?",
+            (t - 86400,),
         )["c"],
     }
 

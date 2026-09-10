@@ -1,7 +1,7 @@
 [project]
 name = "novarouter"
-version = "1.0.0"
-description = "Lightweight multi-provider AI API gateway with key rotation, model availability checker, and a built-in dashboard."
+version = "2.0.0"
+description = "Multi-provider AI API gateway: chat, tools, vision, thinking, images, video, audio, Responses + Anthropic APIs — with key rotation, failover, rate limits, and a model availability checker."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }

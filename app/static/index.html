@@ -84,6 +84,7 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
   <button data-v="access">Access Keys</button>
   <button data-v="models">Models</button>
   <button data-v="checker">Availability Checker</button>
+  <button data-v="playground">Playground</button>
   <button data-v="logs">Logs</button>
   <button data-v="help">Usage</button>
 </nav>
@@ -148,6 +149,8 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
     <div class="grid g2">
       <div><label class="mini">Name</label><input id="c_name" placeholder="my-agent"></div>
       <div><label class="mini">Allowed models (comma sep, wildcard *, blank = all)</label><input id="c_allow" placeholder="groq/*, deepseek/deepseek-chat"></div>
+      <div><label class="mini">RPM limit (0 = unlimited)</label><input id="c_rpm" type="number" value="0" min="0"></div>
+      <div><label class="mini">Daily token quota (0 = unlimited)</label><input id="c_tpd" type="number" value="0" min="0"></div>
     </div>
     <div class="row" style="margin-top:12px">
       <button class="primary" onclick="createClientKey()">Generate key</button>
@@ -157,7 +160,7 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
   <div class="card">
     <h2>Existing keys</h2>
     <div class="scroll"><table><thead><tr>
-      <th>Name</th><th>Key</th><th>Allowed models</th><th>Requests</th><th>Enabled</th><th></th>
+      <th>Name</th><th>Key</th><th>Allowed models</th><th>Limits</th><th>Tokens (in/out)</th><th>Requests</th><th>Enabled</th><th></th>
     </tr></thead><tbody id="clientBody"></tbody></table></div>
   </div>
 </section>
@@ -169,6 +172,7 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
     <div class="row">
       <select id="m_prov"><option value="">All providers</option></select>
       <select id="m_status"><option value="">Any status</option></select>
+      <select id="m_cap"><option value="">Any capability</option><option>tools</option><option>vision</option><option>reasoning</option><option>image_gen</option><option>video</option><option>tts</option><option>transcription</option><option>embeddings</option></select>
       <input id="m_search" placeholder="search model id" style="width:220px">
       <label class="row mini"><input type="checkbox" id="m_free" style="width:auto"> free only</label>
       <button onclick="loadModels()">Filter</button>
@@ -217,6 +221,40 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
     <div class="scroll" style="margin-top:10px"><table><thead><tr>
       <th>Provider</th><th>Model</th><th>Status</th><th>HTTP</th><th>ms</th><th>Detail</th>
     </tr></thead><tbody id="jobBody"></tbody></table></div>
+  </div>
+</section>
+
+<!-- PLAYGROUND -->
+<section class="view" id="v-playground">
+  <div class="card">
+    <h2>API Playground</h2>
+    <div class="row" style="margin-bottom:10px">
+      <input id="pg_model" placeholder="model id (from Models tab)" style="width:280px">
+      <select id="pg_mode">
+        <option value="chat">Chat</option>
+        <option value="chat_stream">Chat (stream)</option>
+        <option value="responses">Responses API</option>
+        <option value="images">Image generation</option>
+        <option value="video">Video generation</option>
+        <option value="tts">Text-to-speech</option>
+        <option value="moderations">Moderations</option>
+      </select>
+      <button class="primary" onclick="pgRun()">Send</button>
+    </div>
+    <div class="grid g2">
+      <div>
+        <label class="mini">Prompt / messages (JSON or plain text)</label>
+        <textarea id="pg_input" rows="8" style="width:100%" spellcheck="false"
+          placeholder='{"messages":[{"role":"user","content":"hello"}]}'></textarea>
+      </div>
+      <div>
+        <label class="mini">Response</label>
+        <div class="scroll" id="pg_output" style="height:220px;padding:10px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap">—</div>
+      </div>
+    </div>
+    <p class="mini dim" style="margin-top:8px">Playground uses a gateway key. Paste one below (or it uses the first generated key).</p>
+    <input id="pg_key" type="password" placeholder="nova-... gateway key" style="width:320px">
+    <div id="pg_audio" style="margin-top:8px"></div>
   </div>
 </section>
 
@@ -309,6 +347,117 @@ $$('nav button').forEach(b => b.onclick = () => {
   if(b.dataset.v==='logs') loadLogs();
 });
 
+// ---------------- playground ----------------
+async function pgGetKey(){
+  let k = $('#pg_key').value.trim();
+  if(k) return k;
+  const rows = await api('/client-keys?reveal=true');
+  if(rows.length){ $('#pg_key').value = rows[0].token; return rows[0].token; }
+  toast('Create a gateway key first (Access Keys tab)','err');
+  return '';
+}
+
+function pgParseInput(){
+  const raw = $('#pg_input').value.trim();
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+async function pgRun(){
+  const key = await pgGetKey();
+  if(!key) return;
+  const model = $('#pg_model').value.trim();
+  if(!model) return toast('Enter a model id','err');
+  const mode = $('#pg_mode').value;
+  const parsed = pgParseInput();
+  const out = $('#pg_output');
+  out.textContent = '…';
+  $('#pg_audio').innerHTML = '';
+  const H = {'Authorization':'Bearer '+key, 'Content-Type':'application/json'};
+  const base = (META?.base_url || location.origin+'/v1');
+
+  try{
+    if(mode === 'chat' || mode === 'chat_stream' || mode === 'responses'){
+      let body;
+      if(parsed && (parsed.messages || parsed.input)){ body = parsed; body.model = model; }
+      else { body = {model, messages:[{role:'user',content: $('#pg_input').value.trim()}]}; }
+      const path = mode === 'responses' ? '/responses' : '/chat/completions';
+      if(mode === 'chat_stream') body.stream = true;
+
+      if(body.stream){
+        const res = await fetch(base+path, {method:'POST', headers:H, body:JSON.stringify(body)});
+        if(!res.ok){ out.textContent = 'HTTP '+res.status+'\n'+(await res.text()); return; }
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let acc = '';
+        while(true){
+          const {done, value} = await reader.read();
+          if(done) break;
+          acc += dec.decode(value, {stream:true});
+          out.textContent = acc.slice(-4000);
+        }
+        return;
+      }
+      const res = await fetch(base+path, {method:'POST', headers:H, body:JSON.stringify(body)});
+      const txt = await res.text();
+      try { out.textContent = JSON.stringify(JSON.parse(txt), null, 2); }
+      catch { out.textContent = txt; }
+      return;
+    }
+
+    if(mode === 'images'){
+      let body = parsed || {prompt: $('#pg_input').value.trim(), n:1, size:"1024x1024"};
+      body.model = model;
+      const res = await fetch(base+'/images/generations', {method:'POST', headers:H, body:JSON.stringify(body)});
+      const data = await res.json();
+      out.textContent = JSON.stringify(data, null, 2);
+      const img = (data?.data||[])[0];
+      if(img?.b64_json){
+        $('#pg_audio').innerHTML = `<img src="data:image/png;base64,${img.b64_json}" style="max-width:100%;border-radius:8px;margin-top:8px">`;
+      } else if(img?.url){
+        $('#pg_audio').innerHTML = `<img src="${img.url}" style="max-width:100%;border-radius:8px;margin-top:8px">`;
+      }
+      return;
+    }
+
+    if(mode === 'video'){
+      let body = parsed || {prompt: $('#pg_input').value.trim(), seconds:"8", size:"1280x720"};
+      body.model = model;
+      const res = await fetch(base+'/videos', {method:'POST', headers:H, body:JSON.stringify(body)});
+      const data = await res.json();
+      out.textContent = JSON.stringify(data, null, 2);
+      const v = (data?.output||[])[0];
+      if(v?.url){
+        $('#pg_audio').innerHTML = `<div class="mini dim" style="margin-top:6px">URL: <a href="${v.url}" target="_blank">${v.url}</a></div>`;
+      }
+      return;
+    }
+
+    if(mode === 'tts'){
+      let body = parsed || {input: $('#pg_input').value.trim(), voice:"alloy", response_format:"mp3"};
+      body.model = model;
+      const res = await fetch(base+'/audio/speech', {method:'POST', headers:H, body:JSON.stringify(body)});
+      if(!res.ok){ out.textContent = 'HTTP '+res.status+'\n'+(await res.text()); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      $('#pg_audio').innerHTML = `<audio controls src="${url}" style="margin-top:8px;width:100%"></audio>`;
+      out.textContent = `audio: ${blob.size} bytes, ${blob.type}`;
+      return;
+    }
+
+    if(mode === 'moderations'){
+      let body = parsed || {input: $('#pg_input').value.trim()};
+      body.model = model;
+      const res = await fetch(base+'/moderations', {method:'POST', headers:H, body:JSON.stringify(body)});
+      const txt = await res.text();
+      try { out.textContent = JSON.stringify(JSON.parse(txt), null, 2); }
+      catch { out.textContent = txt; }
+      return;
+    }
+  }catch(e){
+    out.textContent = 'Error: ' + e.message;
+  }
+}
+
 function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function pill(s){ return `<span class="pill p-${esc(s)}">${esc(s)}</span>`; }
 function ago(ts){
@@ -347,6 +496,7 @@ async function loadStats(){
     ['Unchecked', s.models_unknown],
     ['Reqs 24h', s.requests_24h],
     ['Errors 24h', s.errors_24h],
+    ['Tokens 24h', s.tokens_24h ?? '—'],
   ];
   $('#stats').innerHTML = cards.map(([k,v])=>`<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
 }
@@ -490,20 +640,34 @@ async function loadClientKeys(){
     <td>${esc(k.name)}</td>
     <td class="mono">${esc(k.masked)}</td>
     <td class="mini">${esc(k.allowed_models||'all')}</td>
+    <td class="mini dim">${k.rpm_limit?k.rpm_limit+' rpm':''}${k.rpm_limit&&k.tpd_limit?' / ':''}${k.tpd_limit?(k.tpd_limit>=1000?(k.tpd_limit/1000)+'k':k.tpd_limit)+' tpd':''}${!k.rpm_limit&&!k.tpd_limit?'unlimited':''}</td>
+    <td class="mini">${k.tokens_in||0} / ${k.tokens_out||0}</td>
     <td>${k.req_count}</td>
     <td>${k.enabled?pill('OK'):pill('UNKNOWN')}</td>
     <td class="row">
       <button class="sm" onclick="toggleClient(${k.id},${k.enabled?0:1})">${k.enabled?'Disable':'Enable'}</button>
       <button class="sm" onclick="revealClient(${k.id})">Reveal</button>
+      <button class="sm" onclick="editClientLimits(${k.id},${k.rpm_limit||0},${k.tpd_limit||0})">Limits</button>
       <button class="sm danger" onclick="delClient(${k.id})">✕</button>
-    </td></tr>`).join('') || '<tr><td colspan="6" class="dim">No gateway keys yet.</td></tr>';
+    </td></tr>`).join('') || '<tr><td colspan="8" class="dim">No gateway keys yet.</td></tr>';
 }
 async function createClientKey(){
-  const r = await api('/client-keys',{method:'POST',body:JSON.stringify({name:$('#c_name').value,allowed_models:$('#c_allow').value})});
+  const r = await api('/client-keys',{method:'POST',body:JSON.stringify({
+    name:$('#c_name').value, allowed_models:$('#c_allow').value,
+    rpm_limit:+($('#c_rpm').value||0), tpd_limit:+($('#c_tpd').value||0)
+  })});
   navigator.clipboard?.writeText(r.token).catch(()=>{});
   prompt('Your new gateway API key (copied to clipboard):', r.token);
   $('#c_name').value=''; $('#c_allow').value='';
   loadClientKeys(); loadStats();
+}
+async function editClientLimits(id, rpm, tpd){
+  const nr = prompt('RPM limit (0 = unlimited):', rpm);
+  if(nr===null) return;
+  const nt = prompt('Daily token quota (0 = unlimited):', tpd);
+  if(nt===null) return;
+  await api('/client-keys/'+id,{method:'PATCH',body:JSON.stringify({rpm_limit:+nr, tpd_limit:+nt})});
+  toast('Limits updated','ok'); loadClientKeys();
 }
 async function toggleClient(id,enabled){ await api('/client-keys/'+id,{method:'PATCH',body:JSON.stringify({enabled:!!enabled})}); loadClientKeys(); }
 async function delClient(id){ if(!confirm('Delete this gateway key? Anything using it stops working.')) return; await api('/client-keys/'+id,{method:'DELETE'}); loadClientKeys(); loadStats(); }
@@ -519,19 +683,25 @@ async function loadModels(){
   if($('#m_status').value) q.set('status',$('#m_status').value);
   if($('#m_search').value) q.set('search',$('#m_search').value);
   if($('#m_free').checked) q.set('free_only','true');
+  if($('#m_cap').value) q.set('capability',$('#m_cap').value);
   const r = await api('/models?'+q);
   $('#m_count').textContent = `${r.rows.length} shown / ${r.total} total`;
-  $('#modelBody').innerHTML = r.rows.map(m=>`<tr>
+  $('#modelBody').innerHTML = r.rows.map(m=>{
+    let caps = [];
+    try{ caps = Object.entries(JSON.parse(m.capabilities||'{}')).filter(([k,v])=>v).map(([k])=>k); }catch{}
+    const capTags = caps.map(c=>`<span class="tag" title="capability">${esc(c)}</span>`).join(' ');
+    return `<tr>
     <td class="mono">${esc(m.exposed_id)}</td>
     <td>${esc(m.provider_name)}</td>
     <td class="mono dim">${esc(m.model_id)}</td>
     <td>${m.is_free?'<span class="pill p-OK">free</span>':'<span class="tag">paid</span>'}</td>
+    <td>${capTags}</td>
     <td>${pill(m.status)}</td>
     <td>${m.http_status||'—'}</td>
     <td>${m.latency_ms||'—'}</td>
     <td class="mini dim">${ago(m.checked_at)}</td>
     <td><input type="checkbox" ${m.enabled?'checked':''} onchange="toggleModel(${m.id},this.checked)"></td>
-  </tr>`).join('') || '<tr><td colspan="9" class="dim">No models. Add a provider + key, then Sync catalogues.</td></tr>';
+  </tr>`}).join('') || '<tr><td colspan="10" class="dim">No models. Add a provider + key, then Sync catalogues.</td></tr>';
 }
 async function toggleModel(id,enabled){ await api(`/models/${id}?enabled=${enabled}`,{method:'PATCH'}); }
 async function pruneDead(){

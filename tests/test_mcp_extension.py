@@ -5,10 +5,11 @@ import os
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 os.environ["NOVA_DATA_DIR"] = tempfile.mkdtemp(prefix="nova-mcp-")
 os.environ["NOVA_ADMIN_TOKEN"] = "t"
-sys.path.insert(0, "/root/novarouter")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402

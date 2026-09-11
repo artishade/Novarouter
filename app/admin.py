@@ -123,6 +123,22 @@ class CheckIn(BaseModel):
     sync_first: bool = True
 
 
+class RouteIn(BaseModel):
+    public_id: str
+    fallbacks: Union[str, List[str]]
+    auto: bool = True
+    note: str = ""
+    enabled: bool = True
+
+
+class RoutePatch(BaseModel):
+    public_id: Optional[str] = None
+    fallbacks: Optional[Union[str, List[str]]] = None
+    auto: Optional[bool] = None
+    enabled: Optional[bool] = None
+    note: Optional[str] = None
+
+
 # ----------------------------------------------------------------- extensions
 class ExtensionIn(BaseModel):
     kind: str
@@ -153,6 +169,11 @@ async def meta(request: Request):
         ],
         "base_url": _base_url(request),
         "storage": "postgres" if db.USE_POSTGRES else "sqlite",
+        "fallback": {
+            "auto": config.AUTO_FALLBACK,
+            "spoof_model": config.SPOOF_MODEL,
+            "max": config.FALLBACK_MAX,
+        },
         "cooldowns": {
             "429": config.COOLDOWN_429,
             "402": config.COOLDOWN_402,
@@ -327,6 +348,77 @@ async def prune_dead(request: Request):
         "UPDATE models SET enabled=0 WHERE status NOT IN ('OK','RATE_LIMITED','UNKNOWN')"
     )
     return {"ok": True, "affected": n}
+
+
+# ----------------------------------------------------------------- model routes (fallbacks)
+@router.get("/routes")
+async def get_routes(request: Request):
+    require_admin(request)
+    return store.list_routes()
+
+
+@router.post("/routes")
+async def create_route(request: Request, body: RouteIn):
+    """Register a fallback chain: public_id -> ordered fallback models."""
+    require_admin(request)
+    try:
+        rid = store.add_route(body.public_id, body.fallbacks, body.auto, body.note)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 - unique violation etc.
+        raise HTTPException(status_code=400, detail=f"route '{body.public_id}' already exists")
+    if not body.enabled:
+        store.update_route(rid, enabled=False)
+    return {"id": rid}
+
+
+@router.patch("/routes/{rid}")
+async def patch_route(request: Request, rid: int, body: RoutePatch):
+    require_admin(request)
+    if not db.one("SELECT id FROM model_routes WHERE id=?", (rid,)):
+        raise HTTPException(status_code=404, detail="route not found")
+    try:
+        store.update_route(rid, **body.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@router.delete("/routes/{rid}")
+async def remove_route(request: Request, rid: int):
+    require_admin(request)
+    store.delete_route(rid)
+    return {"ok": True}
+
+
+@router.get("/routes/preview")
+async def preview_route(request: Request, model: str = ""):
+    """What would happen for a request asking for `model`: stages laid bare."""
+    require_admin(request)
+    if not model:
+        raise HTTPException(status_code=400, detail="query param 'model' is required")
+
+    chain, allow_auto = store.fallback_chain(model)
+    direct = store.resolve_model(model)
+    stages = []
+    if direct:
+        stages.append({"label": model, "models": [m for _p, m in direct]})
+    for fid in chain:
+        cands = store.resolve_model(fid)
+        if cands:
+            stages.append({"label": fid, "models": [m for _p, m in cands]})
+    auto = []
+    if allow_auto and config.AUTO_FALLBACK:
+        auto = store.auto_fallback_targets(model, limit=config.FALLBACK_MAX)
+    return {
+        "model": model,
+        "direct": bool(direct),
+        "explicit_chain": chain,
+        "auto_allowed": allow_auto and config.AUTO_FALLBACK,
+        "auto_targets": auto,
+        "stages": stages,
+        "spoof_model": config.SPOOF_MODEL,
+    }
 
 
 # ----------------------------------------------------------------- checker

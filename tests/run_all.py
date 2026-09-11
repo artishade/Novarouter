@@ -1,10 +1,12 @@
 """Run the complete v2 test battery."""
 import subprocess
+import sys
+from pathlib import Path
 
-PY = "/root/.code_runner/py/bin/python"
-CWD = "/root/novarouter"
+PY = sys.executable
+CWD = str(Path(__file__).resolve().parent.parent)
 
-r = subprocess.run([PY, "-m", "pytest", "tests/test_basic.py", "-q"],
+r = subprocess.run([PY, "-m", "pytest", "tests/test_basic.py", "tests/test_model_fallback.py", "-q"],
                    capture_output=True, text=True, cwd=CWD, timeout=120)
 last = [l for l in r.stdout.strip().split("\n") if "passed" in l or "failed" in l]
 print("PYTEST     :", last[-1] if last else r.stdout[-200:])

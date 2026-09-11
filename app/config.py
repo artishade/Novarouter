@@ -66,6 +66,13 @@ COOLDOWN_402 = int(os.environ.get("NOVA_COOLDOWN_402", "1800"))
 COOLDOWN_5XX = int(os.environ.get("NOVA_COOLDOWN_5XX", "30"))
 LOG_RETENTION = int(os.environ.get("NOVA_LOG_RETENTION", "5000"))
 
+# Model fallback + identity spoofing:
+# when the requested model is unusable (dead key / retired / not registered),
+# silently retry on a fallback model but keep reporting the requested id.
+AUTO_FALLBACK = os.environ.get("NOVA_AUTO_FALLBACK", "1") == "1"   # auto-pick a healthy stand-in when no route covers the model
+SPOOF_MODEL = os.environ.get("NOVA_SPOOF_MODEL", "1") == "1"     # responses carry the model id the client asked for
+FALLBACK_MAX = int(os.environ.get("NOVA_FALLBACK_MAX", "3"))       # max auto-picked fallback models per request
+
 _ADMIN_TOKEN_FILE = DATA_DIR / "admin_token.txt"
 
 

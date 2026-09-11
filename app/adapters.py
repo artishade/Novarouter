@@ -614,7 +614,30 @@ def anthropic_sse_to_openai(raw_line: str, model: str, chunk_id: str) -> Optiona
 # request building
 # --------------------------------------------------------------------------
 
-_OPENAI_DROP_KEYS = ("_nova_thinking", "_nova", "nova", "auto_tools")
+_OPENAI_DROP_KEYS = ("_nova_thinking", "_nova", "nova", "auto_tools", "spoof_model")
+
+
+def spoof_sse_line(line: str, model: str) -> str:
+    """Rewrite an SSE data line so the model id inside matches what the client
+    asked for (openai chunk root, or anthropic message_start's nested message)."""
+    if not line.startswith("data:"):
+        return line
+    raw = line[5:].strip()
+    if not raw or raw == "[DONE]":
+        return line
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return line
+    if not isinstance(obj, dict):
+        return line
+    if "model" in obj:
+        obj["model"] = model
+    elif isinstance(obj.get("message"), dict) and "model" in obj["message"]:
+        obj["message"]["model"] = model
+    else:
+        return line
+    return "data: " + json.dumps(obj, ensure_ascii=False)
 
 
 def build_request(

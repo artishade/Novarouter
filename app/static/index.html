@@ -83,6 +83,7 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
   <button data-v="providers">Providers &amp; Keys</button>
   <button data-v="access">Access Keys</button>
   <button data-v="models">Models</button>
+  <button data-v="fallback">Fallbacks</button>
   <button data-v="extensions">Extensions</button>
   <button data-v="checker">Availability Checker</button>
   <button data-v="playground">Playground</button>
@@ -187,6 +188,49 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
       <th>Exposed id (use this)</th><th>Provider</th><th>Upstream id</th><th>Free</th>
       <th>Status</th><th>HTTP</th><th>ms</th><th>Checked</th><th>On</th>
     </tr></thead><tbody id="modelBody"></tbody></table></div>
+  </div>
+</section>
+
+<!-- FALLBACKS -->
+<section class="view" id="v-fallback">
+  <div class="card">
+    <h2>Model fallback routes</h2>
+    <p class="mini dim">Agents keep asking for a model id — this chain decides what actually serves the request when that model is unusable. The response always reports the requested id, so the agent never sees the switch.</p>
+    <div class="grid g2">
+      <div><label class="mini">Public model id (what clients ask for; * = default for every model)</label><input id="r_pub" placeholder="claude-opus-4-6  or  *"></div>
+      <div><label class="mini">Fallback chain (ordered, comma separated)</label><input id="r_chain" placeholder="anthropic/claude-sonnet-4, groq/llama-4, openai/gpt-5"></div>
+      <div><label class="mini">Note (optional)</label><input id="r_note" placeholder="opus outage 2026-09"></div>
+      <div class="row" style="align-items:flex-end">
+        <label class="row mini"><input type="checkbox" id="r_auto" checked style="width:auto"> + auto-pick healthy stand-ins after the chain</label>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" onclick="addRoute()">Add route</button>
+      <span class="dim mini">Each chain entry is tried top-to-bottom; ids resolve like normal model requests.</span>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Installed routes</h2>
+    <div class="scroll"><table><thead><tr>
+      <th>Public id</th><th>Fallback chain</th><th>Auto</th><th>Note</th><th>On</th><th></th>
+    </tr></thead><tbody id="routeBody"></tbody></table></div>
+  </div>
+  <div class="card">
+    <h2>Preview a request</h2>
+    <div class="row">
+      <input id="r_preview_model" placeholder="model id a client would send" style="width:320px">
+      <button onclick="previewRoute()">Show stages</button>
+    </div>
+    <div id="r_preview_out" class="mini" style="margin-top:10px">—</div>
+  </div>
+  <div class="card">
+    <h2>How it works</h2>
+    <ul class="mini dim">
+      <li>Request flow: the requested model's own providers first; if all fail (or the model doesn't exist), the explicit chain, then auto-picked healthy stand-ins.</li>
+      <li>Auto-pick ranks healthy models by matching capabilities (tools always, reasoning/vision preferred) and lowest latency.</li>
+      <li>The response <code>model</code> field (and every SSE chunk) always shows the requested id — <code>_nova.upstream_model</code> and the Logs tab reveal what really served it.</li>
+      <li>Env switches: <code>NOVA_AUTO_FALLBACK</code>, <code>NOVA_SPOOF_MODEL</code>, <code>NOVA_FALLBACK_MAX</code>. Per-request opt-out: <code>{"nova":{"spoof_model":false}}</code>.</li>
+    </ul>
   </div>
 </section>
 
@@ -392,7 +436,8 @@ print(c.chat.completions.create(model="groq/llama-3.3-70b-versatile",
       <li>Requested model id is matched against <code>exposed_id</code>, then raw upstream id, then <code>providername/model</code>.</li>
       <li>If several providers serve the same id, the healthiest/fastest one goes first, the rest are failover.</li>
       <li>Within a provider, keys rotate round-robin by weight; a key hitting 429/402/401/5xx gets a cooldown and is skipped.</li>
-      <li>Non-retryable upstream errors (like a malformed request) are returned immediately instead of burning other keys.</li>
+      <li>Non-retryable upstream errors (like a malformed request) are returned immediately instead of burning other keys — unless a fallback route remains, since the model itself may be the problem.</li>
+      <li><b>Model fallback</b> (Fallbacks tab): when every provider for the requested model fails — or the model isn't registered at all — the configured chain, then auto-picked healthy stand-ins, serve the request instead. The response (and every stream chunk) still reports the model id the client asked for; the Logs tab and <code>_nova</code> metadata record what actually answered.</li>
     </ul>
   </div>
 </section>
@@ -440,6 +485,7 @@ $$('nav button').forEach(b => b.onclick = () => {
   if(b.dataset.v==='models') loadModels();
   if(b.dataset.v==='logs') loadLogs();
   if(b.dataset.v==='extensions') loadExtensions();
+  if(b.dataset.v==='fallback') loadRoutes();
 });
 
 // ---------------- playground ----------------
@@ -589,6 +635,7 @@ async function loadStats(){
     ['Models', s.models],
     ['Models OK', s.models_ok],
     ['Unchecked', s.models_unknown],
+    ['Fallback routes', s.routes],
     ['Reqs 24h', s.requests_24h],
     ['Errors 24h', s.errors_24h],
     ['Tokens 24h', s.tokens_24h ?? '—'],
@@ -812,6 +859,60 @@ async function syncModels(pid){
   loadProviders(); loadStats(); loadModels();
 }
 
+// ---------------- fallback routes ----------------
+async function loadRoutes(){
+  const rows = await api('/routes');
+  $('#routeBody').innerHTML = rows.map(r=>`<tr>
+    <td class="mono">${esc(r.public_id)}</td>
+    <td class="mono mini">${esc(r.fallback_list.join(' → '))}</td>
+    <td>${r.auto?'✓':'—'}</td>
+    <td class="mini dim">${esc(r.note||'')}</td>
+    <td><input type="checkbox" ${r.enabled?'checked':''} onchange="toggleRoute(${r.id},this.checked)"></td>
+    <td class="row">
+      <button class="sm" onclick="editRoute(${r.id})">Edit</button>
+      <button class="sm danger" onclick="delRoute(${r.id})">✕</button>
+    </td></tr>`).join('') || '<tr><td colspan="6" class="dim">No routes. Every unusable model relies on auto-pick (or fails hard when NOVA_AUTO_FALLBACK=0).</td></tr>';
+}
+async function addRoute(){
+  const public_id = $('#r_pub').value.trim();
+  const fallbacks = $('#r_chain').value.trim();
+  if(!public_id) return toast('Public model id is required','err');
+  if(!fallbacks) return toast('At least one fallback model is required','err');
+  try{
+    await api('/routes',{method:'POST',body:JSON.stringify({
+      public_id, fallbacks, auto:$('#r_auto').checked, note:$('#r_note').value.trim()
+    })});
+    toast('Route added','ok');
+    $('#r_pub').value=''; $('#r_chain').value=''; $('#r_note').value='';
+    loadRoutes(); loadStats();
+  }catch(e){ /* toast already fired */ }
+}
+async function toggleRoute(id,enabled){ await api('/routes/'+id,{method:'PATCH',body:JSON.stringify({enabled:!!enabled})}); loadRoutes(); }
+async function editRoute(id){
+  const rows = await api('/routes');
+  const r = rows.find(x=>x.id===id); if(!r) return;
+  const chain = prompt('Fallback chain (ordered, comma separated):', r.fallback_list.join(', '));
+  if(chain===null) return;
+  if(!chain.trim()) return toast('Chain cannot be empty','err');
+  await api('/routes/'+id,{method:'PATCH',body:JSON.stringify({fallbacks:chain})});
+  toast('Route updated','ok'); loadRoutes();
+}
+async function delRoute(id){ if(!confirm('Delete this fallback route?')) return; await api('/routes/'+id,{method:'DELETE'}); loadRoutes(); loadStats(); }
+async function previewRoute(){
+  const model = $('#r_preview_model').value.trim();
+  if(!model) return toast('Enter a model id','err');
+  const r = await api('/routes/preview?model='+encodeURIComponent(model));
+  const stageHtml = (r.stages||[]).map(s=>
+    `<div class="row" style="margin:4px 0"><span class="tag">${esc(s.label)}</span><span class="mono mini dim">→ ${esc(s.models.join(', '))}</span></div>`
+  ).join('') || '<span class="dim">no stage resolves</span>';
+  $('#r_preview_out').innerHTML = `
+    <div>Requested: <b class="mono">${esc(r.model)}</b> — ${r.direct?'known model':'<span class="warn">unknown to every provider</span>'}</div>
+    <div style="margin-top:6px">Stages tried in order:</div>
+    ${stageHtml}
+    ${r.auto_allowed?`<div class="mini warn" style="margin-top:6px">then auto-pick (${(r.auto_targets||[]).slice(0,5).join(', ')||'nothing healthy'})</div>`:''}
+    <div class="mini dim" style="margin-top:6px">Response model id spoofing: ${r.spoof_model?'ON':'OFF'} — _nova.upstream_model and Logs reveal the truth.</div>`;
+}
+
 function startCheckForm(){
   const ids = [...$('#k_prov').selectedOptions].map(o=>+o.value);
   startCheck({
@@ -854,7 +955,7 @@ async function loadLogs(){
     <td class="mini dim">${ago(l.ts)} ago</td>
     <td>${esc(l.client_name||'—')}</td>
     <td>${esc(l.provider_name||'—')}</td>
-    <td class="mono">${esc(l.model)}</td>
+    <td class="mono">${esc(l.model)}${l.via?` <span class="pill p-RATE_LIMITED" title="served by fallback">↦ ${esc(l.via)}</span>`:''}</td>
     <td>${l.status>=400||l.status===0?`<span class="pill p-NO_ACCESS">${l.status}</span>`:`<span class="pill p-OK">${l.status}</span>`}</td>
     <td>${l.latency_ms}</td>
     <td class="mini dim">${esc(l.error)}</td></tr>`).join('') || '<tr><td colspan="7" class="dim">No requests yet.</td></tr>';

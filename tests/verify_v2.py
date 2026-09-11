@@ -2,11 +2,12 @@
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 tmp = tempfile.mkdtemp(prefix="nova-ver-")
 os.environ["NOVA_DATA_DIR"] = tmp
 os.environ["NOVA_ADMIN_TOKEN"] = "t"
-sys.path.insert(0, "/root/novarouter")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.main import app  # noqa: E402
 

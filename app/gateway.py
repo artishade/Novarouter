@@ -132,6 +132,66 @@ def _resolve_candidates(client: Dict[str, Any], requested: str) -> Tuple[
     return candidates, None, requested
 
 
+def _fallback_stages(
+    client: Dict[str, Any],
+    requested: str,
+    direct: List[Any],
+    used_fallback_ids: Optional[Set[str]] = None,
+) -> List[List[Tuple[Dict[str, Any], str]]]:
+    """Build the ordered list of attempt stages after the direct one.
+
+    Stage = list of (provider, upstream_model) pairs. The requested id is
+    what gets reported back to the client no matter which stage serves,
+    so stages don't need to carry it. Explicit route chain first, then
+    (if allowed) auto-picked stand-ins. `used_fallback_ids` marks chain
+    ids an earlier stage already covered.
+    """
+    if not store.client_allows(client, requested):
+        return []
+    stages: List[List[Tuple[Dict[str, Any], str]]] = []
+    seen_providers: Set[Tuple[int, str]] = {
+        (p["id"], m) for p, m in direct
+    }
+    used_fallback_ids = used_fallback_ids or set()
+    chain, allow_auto = store.fallback_chain(requested)
+
+    def stage_for(fid: str) -> List[Tuple[Dict[str, Any], str]]:
+        out: List[Tuple[Dict[str, Any], str]] = []
+        for provider, upstream_model in store.resolve_model(fid):
+            if (provider["id"], upstream_model) in seen_providers:
+                continue
+            seen_providers.add((provider["id"], upstream_model))
+            out.append((provider, upstream_model))
+        return out
+
+    for fid in chain:
+        if fid == requested or fid in used_fallback_ids:
+            continue
+        stage = stage_for(fid)
+        if stage:
+            stages.append(stage)
+    if allow_auto and config.AUTO_FALLBACK:
+        for fid in store.auto_fallback_targets(requested, limit=config.FALLBACK_MAX):
+            if fid == requested or fid in chain or fid in used_fallback_ids:
+                continue
+            stage = stage_for(fid)
+            if stage:
+                stages.append(stage)
+    return stages
+
+
+def _spoof_enabled(payload: Dict[str, Any]) -> bool:
+    """Global flag on, no per-request opt-out."""
+    if not config.SPOOF_MODEL:
+        return False
+    nova = payload.get("nova")
+    if isinstance(nova, dict) and nova.get("spoof_model") is False:
+        return False
+    if payload.get("spoof_model") is False:
+        return False
+    return True
+
+
 async def _attempt(
     provider: Dict[str, Any],
     key: Dict[str, Any],
@@ -165,7 +225,7 @@ async def _attempt(
 
 # ------------------------------------------------------------------ dispatch core
 async def dispatch(
-    request: Request,
+    request: Optional[Request],
     endpoint: str,
     *,
     payload_override: Optional[Dict[str, Any]] = None,
@@ -173,7 +233,13 @@ async def dispatch(
     client_override: Optional[Dict[str, Any]] = None,
     allow_suffix_fallback: bool = False,
 ) -> Any:
-    """Core fan-out. `endpoint` selects the upstream path + translation."""
+    """Core fan-out. `endpoint` selects the upstream path + translation.
+
+    Requests run in stages: the requested model's own providers first, then
+    (only if those are all unusable) the fallback chain, then auto-picked
+    healthy stand-ins. The response always reports the requested model id,
+    so clients never see the fallback that actually served them.
+    """
     client = client_override or require_client(request)
     if payload_override is not None:
         payload = payload_override
@@ -183,61 +249,95 @@ async def dispatch(
             return err
     requested = str(payload.get("model") or "")
     candidates, err, _ = _resolve_candidates(client, requested)
-    if err:
-        return err
+    direct = candidates or []
+
+    # permission check happens even when the model is unknown (403 beats 404)
+    if not requested:
+        return _err(400, "Field 'model' is required", "invalid_request_error")
+    if not store.client_allows(client, requested):
+        return _err(403, f"Key not allowed to use model '{requested}'", "permission_error")
+
+    stages: List[List[Tuple[Dict[str, Any], str]]] = []
+    if direct:
+        stages.append(list(direct))
+        extra_stages = _fallback_stages(client, requested, direct)
+    else:
+        # unknown model: a route's chain or auto-pick may still save it
+        chain, _ = store.fallback_chain(requested)
+        used: Set[str] = set()
+        for fid in chain:
+            cands = store.resolve_model(fid)
+            if cands:
+                stages.append(list(cands))
+                used.add(fid)
+                break
+        extra_stages = _fallback_stages(client, requested, [], used)
+    if err is not None and not stages and not extra_stages:
+        return err  # unknown everywhere, no fallback applies
+    stages.extend(extra_stages)
 
     stream = bool(payload.get("stream"))
     tried: List[str] = []
     last_status, last_error = 502, "no upstream attempt succeeded"
-    for provider, upstream_model in candidates:
-        keys = store.pick_keys(provider["id"])
-        if not keys:
-            tried.append(f"{provider['name']}: no keys")
-            continue
-        upstream_payload = dict(payload)
-        upstream_payload["model"] = upstream_model
-        for key in keys:
-            started = time.perf_counter()
-            if stream and endpoint == "chat":
-                result = await _stream_attempt(provider, key, upstream_payload, client, requested)
-                if result is not None:
-                    return result
-                last_status, last_error = 502, f"{provider['name']} stream failed"
-                tried.append(f"{provider['name']}#{key['id']}: stream fail")
+    for stage in stages:
+        for provider, upstream_model in stage:
+            keys = store.pick_keys(provider["id"])
+            if not keys:
+                tried.append(f"{provider['name']}: no keys")
                 continue
-            status, body, error = await _attempt(provider, key, endpoint, upstream_payload)
-            latency = int((time.perf_counter() - started) * 1000)
-            tokens_in, tokens_out = adapters.extract_usage(body) if status == 200 else (0, 0)
-            db.log_request(
-                client_key_id=client["id"],
-                provider_id=provider["id"],
-                upstream_key_id=key["id"],
-                model=requested,
-                endpoint=endpoint_label or endpoint,
-                status=status,
-                latency_ms=latency,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                error=error,
-            )
-            if status == 200:
-                store.reward_key(key["id"])
-                db.bump_client_usage(client["id"], tokens_in, tokens_out)
-                if isinstance(body, str):
-                    return JSONResponse(status_code=200, content={"raw": body})
-                if isinstance(body, dict):
-                    body.setdefault("model", requested)
-                    body["_nova"] = {
-                        "provider": provider["name"],
-                        "upstream_model": upstream_model,
-                        "latency_ms": latency,
-                    }
-                return JSONResponse(status_code=200, content=body)
-            store.penalize_key(key["id"], status, error)
-            last_status, last_error = status, error
-            tried.append(f"{provider['name']}#{key['id']} -> {status}")
-            if status not in RETRYABLE:
-                return _err(status, error or f"upstream returned {status}", "invalid_request_error")
+            upstream_payload = dict(payload)
+            upstream_payload["model"] = upstream_model
+            for key in keys:
+                started = time.perf_counter()
+                if stream and endpoint == "chat":
+                    result = await _stream_attempt(
+                        provider, key, upstream_payload, client, requested
+                    )
+                    if result is not None:
+                        return result
+                    last_status, last_error = 502, f"{provider['name']} stream failed"
+                    tried.append(f"{provider['name']}#{key['id']}: stream fail")
+                    continue
+                status, body, error = await _attempt(provider, key, endpoint, upstream_payload)
+                latency = int((time.perf_counter() - started) * 1000)
+                tokens_in, tokens_out = adapters.extract_usage(body) if status == 200 else (0, 0)
+                db.log_request(
+                    client_key_id=client["id"],
+                    provider_id=provider["id"],
+                    upstream_key_id=key["id"],
+                    model=requested,
+                    endpoint=endpoint_label or endpoint,
+                    status=status,
+                    latency_ms=latency,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    error=error,
+                    via=upstream_model if upstream_model != requested else "",
+                )
+                if status == 200:
+                    store.reward_key(key["id"])
+                    db.bump_client_usage(client["id"], tokens_in, tokens_out)
+                    if isinstance(body, str):
+                        return JSONResponse(status_code=200, content={"raw": body})
+                    if isinstance(body, dict):
+                        if _spoof_enabled(payload):
+                            body["model"] = requested
+                        else:
+                            body.setdefault("model", requested)
+                        body["_nova"] = {
+                            "provider": provider["name"],
+                            "upstream_model": upstream_model,
+                            "latency_ms": latency,
+                            "routed_from": requested if upstream_model != requested else "",
+                        }
+                    return JSONResponse(status_code=200, content=body)
+                store.penalize_key(key["id"], status, error)
+                last_status, last_error = status, error
+                tried.append(f"{provider['name']}#{key['id']} -> {status}")
+                # non-retryable errors end the request immediately — unless
+                # fallbacks remain, since the model itself may be the problem
+                if status not in RETRYABLE and not extra_stages:
+                    return _err(status, error or f"upstream returned {status}", "invalid_request_error")
     return _err(
         last_status if last_status >= 400 else 502,
         f"All upstreams failed for '{requested}'. Last error: {last_error}. Tried: {', '.join(tried[:8])}",
@@ -252,7 +352,11 @@ async def _stream_attempt(
     client_row: Dict[str, Any],
     requested_model: str,
 ) -> Optional[StreamingResponse]:
-    """Open an upstream SSE stream. Returns None if the upstream refused."""
+    """Open an upstream SSE stream. Returns None if the upstream refused.
+
+    Every chunk is rewritten to carry `requested_model` — the id the client
+    asked for, not whatever fallback ended up serving.
+    """
     try:
         url, headers, body = adapters.build_request(provider, key["api_key"], "chat", payload)
     except ValueError:
@@ -295,7 +399,8 @@ async def _stream_attempt(
                     if converted:
                         yield converted + "\n\n"
                 else:
-                    yield (line + "\n" if line.startswith(":") else line + "\n\n")
+                    out_line = adapters.spoof_sse_line(line, requested_model)
+                    yield (out_line + "\n" if line.startswith(":") else out_line + "\n\n")
         finally:
             await resp.aclose()
             if translator:
@@ -312,6 +417,7 @@ async def _stream_attempt(
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
+                via=payload.get("model", "") if payload.get("model") != requested_model else "",
             )
             db.bump_client_usage(client_row["id"], tokens_in, tokens_out)
 
@@ -393,6 +499,38 @@ async def list_models(request: Request):
                     "image_gen": caps.get("image_gen", False),
                     "video": caps.get("video", False),
                     "audio": caps.get("tts", False),
+                },
+            }
+        )
+    # fallback route ids the client may ask for even when no provider serves
+    # them directly — agents see these in their model pickers
+    for route in store.list_routes():
+        rid = route["public_id"]
+        if rid == "*" or rid in seen or not store.client_allows(client, rid):
+            continue
+        seen.add(rid)
+        route_caps = adapters.infer_capabilities(rid)
+        data.append(
+            {
+                "id": rid,
+                "object": "model",
+                "created": int(route.get("created_at") or time.time()),
+                "owned_by": "novarouter-route",
+                "context_length": 0,
+                "max_output_tokens": 0,
+                "capabilities": route_caps,
+                "nova": {
+                    "provider": "fallback route",
+                    "upstream_id": ",".join(route["fallback_list"][:3]) + ("…" if len(route["fallback_list"]) > 3 else ""),
+                    "status": "OK",
+                    "latency_ms": 0,
+                    "free": False,
+                    "thinking": route_caps.get("reasoning", False),
+                    "vision": route_caps.get("vision", False),
+                    "tools": route_caps.get("tools", False),
+                    "image_gen": route_caps.get("image_gen", False),
+                    "video": route_caps.get("video", False),
+                    "audio": route_caps.get("tts", False),
                 },
             }
         )
@@ -573,10 +711,17 @@ async def responses_endpoint(request: Request):
         return err
     requested = str(payload.get("model") or "")
     candidates, err, _ = _resolve_candidates(client, requested)
-    if err:
-        return err
+    # NB: `err` is only acted on after fallback staging below — an unknown
+    # model may still be served through its route chain
     stream = bool(payload.get("stream"))
     chat_payload = adapters.responses_to_chat(payload)
+    # carry the spoof opt-out through the translation (responses_to_chat
+    # rebuilds the body and would otherwise drop the nova flag)
+    nova = payload.get("nova")
+    if isinstance(nova, dict) and nova.get("spoof_model") is False:
+        chat_payload["nova"] = {"spoof_model": False}
+    if payload.get("spoof_model") is False:
+        chat_payload["spoof_model"] = False
     if not stream:
         # reuse the dispatch machinery on the translated payload, then
         # re-wrap the chat response back into Responses API shape.
@@ -600,16 +745,34 @@ async def responses_endpoint(request: Request):
         return result
 
     # streaming: fan out with translation, emitting Responses SSE events
+    stages: List[List[Tuple[Dict[str, Any], str]]] = []
+    used: Set[str] = set()
+    if candidates:
+        stages.append(list(candidates))
+    else:
+        chain, _ = store.fallback_chain(requested)
+        for fid in chain:
+            cands = store.resolve_model(fid)
+            if cands:
+                stages.append(list(cands))
+                used.add(fid)
+                break
+    extra_stages = _fallback_stages(client, requested, candidates or [], used)
+    if err is not None and not stages and not extra_stages:
+        return err
+    stages.extend(extra_stages)
+
     tried: List[str] = []
-    for provider, upstream_model in candidates:
-        keys = store.pick_keys(provider["id"])
-        for key in keys:
-            chat_payload_m = dict(chat_payload)
-            chat_payload_m["model"] = upstream_model
-            result = await _stream_responses_attempt(provider, key, chat_payload_m, client, requested)
-            if result is not None:
-                return result
-            tried.append(f"{provider['name']}#{key['id']}")
+    for stage in stages:
+        for provider, upstream_model in stage:
+            keys = store.pick_keys(provider["id"])
+            for key in keys:
+                chat_payload_m = dict(chat_payload)
+                chat_payload_m["model"] = upstream_model
+                result = await _stream_responses_attempt(provider, key, chat_payload_m, client, requested)
+                if result is not None:
+                    return result
+                tried.append(f"{provider['name']}#{key['id']}")
     return _err(502, f"All upstreams failed for '{requested}'. Tried: {', '.join(tried[:8])}")
 
 
@@ -691,93 +854,130 @@ async def _stream_responses_attempt(
 # ------------------------------------------------------------------ /v1/messages (Anthropic native)
 @router.post("/messages")
 async def messages_endpoint(request: Request):
-    """Anthropic Messages API on ANY provider (anthropic native or translated)."""
+    """Anthropic Messages API on ANY provider (anthropic native or translated).
+
+    Same staged fallback as the OpenAI endpoints: requested model first, then
+    the fallback chain / auto-picked stand-ins — always reporting the
+    requested model id back to the client.
+    """
     client = require_client(request)
     payload, err = await _parse_json(request)
     if err:
         return err
     requested = str(payload.get("model") or "")
     candidates, err, _ = _resolve_candidates(client, requested)
-    if err:
+    direct = candidates or []
+
+    if not requested:
+        return _anthropic_err(400, "invalid_request_error", "Field 'model' is required")
+    if not store.client_allows(client, requested):
+        return _anthropic_err(403, "permission_error", f"Key not allowed to use model '{requested}'")
+
+    stages: List[List[Tuple[Dict[str, Any], str]]] = []
+    if direct:
+        stages.append(list(direct))
+        extra_stages = _fallback_stages(client, requested, direct)
+    else:
+        # unknown model: try the route's chain first before erroring
+        chain, _ = store.fallback_chain(requested)
+        used: Set[str] = set()
+        for fid in chain:
+            cands = store.resolve_model(fid)
+            if cands:
+                stages.append(list(cands))
+                used.add(fid)
+                break
+        extra_stages = _fallback_stages(client, requested, [], used)
+    if err is not None and not stages and not extra_stages:
         return err
+    stages.extend(extra_stages)
+
     stream = bool(payload.get("stream"))
 
     tried: List[str] = []
     last_status, last_error = 502, "no upstream attempt succeeded"
-    for provider, upstream_model in candidates:
-        keys = store.pick_keys(provider["id"])
-        if not keys:
-            tried.append(f"{provider['name']}: no keys")
-            continue
-        is_anthropic = provider.get("kind") == "anthropic"
-        # anthropic-kind upstream: forward as-is (native protocol)
-        # openai-kind upstream: translate request
-        upstream_payload = dict(payload) if is_anthropic else adapters.anthropic_request_to_openai(payload)
-        if is_anthropic:
-            upstream_payload["model"] = upstream_model
-        else:
-            upstream_payload["model"] = upstream_model
-        for key in keys:
-            started = time.perf_counter()
-            if stream:
-                result = await _stream_messages_attempt(
-                    provider, key, upstream_payload, client, requested, is_anthropic
-                )
-                if result is not None:
-                    return result
-                tried.append(f"{provider['name']}#{key['id']}: stream fail")
+    for stage in stages:
+        for provider, upstream_model in stage:
+            keys = store.pick_keys(provider["id"])
+            if not keys:
+                tried.append(f"{provider['name']}: no keys")
                 continue
-            # non-streaming
-            try:
-                if is_anthropic:
-                    url = f"{(provider.get('base_url') or '').rstrip('/')}/messages"
-                    headers = adapters.auth_headers(provider, key["api_key"])
-                    body = upstream_payload
-                else:
-                    url, headers, body = adapters.build_request(
-                        provider, key["api_key"], "chat", upstream_payload
+            is_anthropic = provider.get("kind") == "anthropic"
+            # anthropic-kind upstream: forward as-is (native protocol)
+            # openai-kind upstream: translate request
+            upstream_payload = dict(payload) if is_anthropic else adapters.anthropic_request_to_openai(payload)
+            upstream_payload["model"] = upstream_model
+            for key in keys:
+                started = time.perf_counter()
+                if stream:
+                    result = await _stream_messages_attempt(
+                        provider, key, upstream_payload, client, requested, is_anthropic
                     )
-            except ValueError as e:
-                return _anthropic_err(400, "invalid_request_error", str(e))
-            try:
-                resp = await http_client().post(url, headers=headers, json=body)
-            except httpx.TimeoutException:
-                return _anthropic_err(504, "api_error", f"timeout contacting {provider['name']}")
-            except Exception as e:  # noqa: BLE001
-                return _anthropic_err(502, "api_error", f"{type(e).__name__}: {e}"[:200])
-            latency = int((time.perf_counter() - started) * 1000)
-            if resp.status_code != 200:
-                error = adapters.extract_error(resp.status_code, resp.text)
-                store.penalize_key(key["id"], resp.status_code, error)
+                    if result is not None:
+                        return result
+                    tried.append(f"{provider['name']}#{key['id']}: stream fail")
+                    continue
+                # non-streaming
+                try:
+                    if is_anthropic:
+                        url = f"{(provider.get('base_url') or '').rstrip('/')}/messages"
+                        headers = adapters.auth_headers(provider, key["api_key"])
+                        body = upstream_payload
+                    else:
+                        url, headers, body = adapters.build_request(
+                            provider, key["api_key"], "chat", upstream_payload
+                        )
+                except ValueError as e:
+                    return _anthropic_err(400, "invalid_request_error", str(e))
+                try:
+                    resp = await http_client().post(url, headers=headers, json=body)
+                except httpx.TimeoutException:
+                    last_status, last_error = 504, f"timeout contacting {provider['name']}"
+                    tried.append(f"{provider['name']}#{key['id']}: timeout")
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    last_status, last_error = 502, f"{type(e).__name__}: {e}"[:200]
+                    tried.append(f"{provider['name']}#{key['id']}: {type(e).__name__}")
+                    continue
+                latency = int((time.perf_counter() - started) * 1000)
+                if resp.status_code != 200:
+                    error = adapters.extract_error(resp.status_code, resp.text)
+                    store.penalize_key(key["id"], resp.status_code, error)
+                    db.log_request(
+                        client_key_id=client["id"], provider_id=provider["id"],
+                        upstream_key_id=key["id"], model=requested, endpoint="messages",
+                        status=resp.status_code, latency_ms=latency, error=error,
+                        via=upstream_model if upstream_model != requested else "",
+                    )
+                    last_status, last_error = resp.status_code, error
+                    tried.append(f"{provider['name']}#{key['id']} -> {resp.status_code}")
+                    if resp.status_code not in RETRYABLE and not extra_stages:
+                        return _anthropic_err(resp.status_code, "api_error", error or f"HTTP {resp.status_code}")
+                    continue
+                try:
+                    data = resp.json()
+                except ValueError:
+                    return _anthropic_err(502, "api_error", "upstream returned non-JSON body")
+                inline = adapters.response_has_error(data)
+                if inline:
+                    return _anthropic_err(502, "api_error", inline)
+                store.reward_key(key["id"])
+                tokens_in, tokens_out = adapters.extract_usage(data)
                 db.log_request(
                     client_key_id=client["id"], provider_id=provider["id"],
                     upstream_key_id=key["id"], model=requested, endpoint="messages",
-                    status=resp.status_code, latency_ms=latency, error=error,
+                    status=200, latency_ms=latency, tokens_in=tokens_in, tokens_out=tokens_out,
+                    via=upstream_model if upstream_model != requested else "",
                 )
-                last_status, last_error = resp.status_code, error
-                tried.append(f"{provider['name']}#{key['id']} -> {resp.status_code}")
-                if resp.status_code not in RETRYABLE:
-                    return _anthropic_err(resp.status_code, "api_error", error or f"HTTP {resp.status_code}")
-                continue
-            try:
-                data = resp.json()
-            except ValueError:
-                return _anthropic_err(502, "api_error", "upstream returned non-JSON body")
-            inline = adapters.response_has_error(data)
-            if inline:
-                return _anthropic_err(502, "api_error", inline)
-            store.reward_key(key["id"])
-            tokens_in, tokens_out = adapters.extract_usage(data)
-            db.log_request(
-                client_key_id=client["id"], provider_id=provider["id"],
-                upstream_key_id=key["id"], model=requested, endpoint="messages",
-                status=200, latency_ms=latency, tokens_in=tokens_in, tokens_out=tokens_out,
-            )
-            db.bump_client_usage(client["id"], tokens_in, tokens_out)
-            # openai-kind upstream -> convert response back to anthropic shape
-            if not is_anthropic:
-                data = adapters.openai_chat_to_anthropic(data, requested)
-            return JSONResponse(status_code=200, content=data)
+                db.bump_client_usage(client["id"], tokens_in, tokens_out)
+                # openai-kind upstream -> convert response back to anthropic shape
+                if not is_anthropic:
+                    data = adapters.openai_chat_to_anthropic(data, requested)
+                if _spoof_enabled(payload):
+                    data["model"] = requested
+                else:
+                    data.setdefault("model", requested)
+                return JSONResponse(status_code=200, content=data)
     return _anthropic_err(
         last_status if last_status >= 400 else 502,
         "api_error",
@@ -821,7 +1021,10 @@ async def _stream_messages_attempt(
                 if not line:
                     continue
                 if a_pass:
-                    yield line + "\n\n" if not line.startswith("event:") else line + "\n"
+                    # native anthropic stream: rewrite the model id so the
+                    # client keeps seeing the model it asked for
+                    out_line = adapters.spoof_sse_line(line, requested_model)
+                    yield out_line + "\n\n" if not out_line.startswith("event:") else out_line + "\n"
                 else:
                     # openai upstream: parse chat chunk -> anthropic events
                     if line.startswith("data:") and line.strip() != "data: [DONE]":
@@ -846,6 +1049,7 @@ async def _stream_messages_attempt(
                 status=200,
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 tokens_out=o_translator.usage_out if o_translator else 0,
+                via=upstream_payload.get("model", "") if upstream_payload.get("model") != requested_model else "",
             )
             db.bump_client_usage(client_row["id"], 0, o_translator.usage_out if o_translator else 0)
 
@@ -871,56 +1075,84 @@ def _img_out(body: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 async def _image_dispatch(request: Request, path: str, payload: Dict[str, Any]) -> Any:
-    """images/generations | images/edits with provider fan-out."""
+    """images/generations | images/edits with provider fan-out + model fallback."""
     client = require_client(request)
     requested = str(payload.get("model") or "")
     candidates, err, _ = _resolve_candidates(client, requested)
-    if err:
+    direct = candidates or []
+
+    stages: List[List[Tuple[Dict[str, Any], str]]] = []
+    used: Set[str] = set()
+    if direct:
+        stages.append(list(direct))
+    else:
+        chain, _ = store.fallback_chain(requested)
+        for fid in chain:
+            cands = store.resolve_model(fid)
+            if cands:
+                stages.append(list(cands))
+                used.add(fid)
+                break
+    extra_stages = _fallback_stages(client, requested, direct, used)
+    if err is not None and not stages and not extra_stages:
         return err
+    stages.extend(extra_stages)
+
     tried: List[str] = []
     last_status, last_error = 502, "no upstream attempt succeeded"
-    for provider, upstream_model in candidates:
-        keys = store.pick_keys(provider["id"])
-        if not keys:
-            tried.append(f"{provider['name']}: no keys")
-            continue
-        body = dict(payload)
-        body["model"] = upstream_model
-        url = f"{(provider.get('base_url') or '').rstrip('/')}{path}"
-        for key in keys:
-            started = time.perf_counter()
-            headers = adapters.auth_headers(provider, key["api_key"])
-            try:
-                resp = await http_client().post(url, headers=headers, json=body)
-            except httpx.TimeoutException:
-                return _err(504, f"timeout contacting {provider['name']}")
-            except Exception as e:  # noqa: BLE001
-                return _err(502, f"{type(e).__name__}: {e}"[:200])
-            latency = int((time.perf_counter() - started) * 1000)
-            if resp.status_code == 200:
+    n_stages = len(stages)
+    for stage_no, stage in enumerate(stages):
+        for provider, upstream_model in stage:
+            keys = store.pick_keys(provider["id"])
+            if not keys:
+                tried.append(f"{provider['name']}: no keys")
+                continue
+            body = dict(payload)
+            body["model"] = upstream_model
+            url = f"{(provider.get('base_url') or '').rstrip('/')}{path}"
+            for key in keys:
+                started = time.perf_counter()
+                headers = adapters.auth_headers(provider, key["api_key"])
                 try:
-                    data = resp.json()
-                except ValueError:
-                    return _err(502, "upstream returned non-JSON body")
-                store.reward_key(key["id"])
+                    resp = await http_client().post(url, headers=headers, json=body)
+                except httpx.TimeoutException:
+                    last_status, last_error = 504, f"timeout contacting {provider['name']}"
+                    tried.append(f"{provider['name']}#{key['id']}: timeout")
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    last_status, last_error = 502, f"{type(e).__name__}: {e}"[:200]
+                    tried.append(f"{provider['name']}#{key['id']}: {type(e).__name__}")
+                    continue
+                latency = int((time.perf_counter() - started) * 1000)
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        return _err(502, "upstream returned non-JSON body")
+                    store.reward_key(key["id"])
+                    db.log_request(
+                        client_key_id=client["id"], provider_id=provider["id"],
+                        upstream_key_id=key["id"], model=requested, endpoint="images",
+                        status=200, latency_ms=latency,
+                        via=upstream_model if upstream_model != requested else "",
+                    )
+                    db.bump_client_usage(client["id"], 0, 0)
+                    return JSONResponse(status_code=200, content=data)
+                error = adapters.extract_error(resp.status_code, resp.text)
+                store.penalize_key(key["id"], resp.status_code, error)
                 db.log_request(
                     client_key_id=client["id"], provider_id=provider["id"],
                     upstream_key_id=key["id"], model=requested, endpoint="images",
-                    status=200, latency_ms=latency,
+                    status=resp.status_code, latency_ms=latency, error=error,
+                    via=upstream_model if upstream_model != requested else "",
                 )
-                db.bump_client_usage(client["id"], 0, 0)
-                return JSONResponse(status_code=200, content=data)
-            error = adapters.extract_error(resp.status_code, resp.text)
-            store.penalize_key(key["id"], resp.status_code, error)
-            db.log_request(
-                client_key_id=client["id"], provider_id=provider["id"],
-                upstream_key_id=key["id"], model=requested, endpoint="images",
-                status=resp.status_code, latency_ms=latency, error=error,
-            )
-            last_status, last_error = resp.status_code, error
-            tried.append(f"{provider['name']}#{key['id']} -> {resp.status_code}")
-            if resp.status_code not in RETRYABLE:
-                return _err(resp.status_code, error or f"upstream returned {resp.status_code}")
+                last_status, last_error = resp.status_code, error
+                tried.append(f"{provider['name']}#{key['id']} -> {resp.status_code}")
+                if resp.status_code not in RETRYABLE:
+                    # non-retryable: only keep going when another fallback
+                    # stage remains (a different model may still work)
+                    if stage_no + 1 >= n_stages:
+                        return _err(resp.status_code, error or f"upstream returned {resp.status_code}")
     return _err(
         last_status if last_status >= 400 else 502,
         f"All upstreams failed for '{requested}'. Last error: {last_error}. Tried: {', '.join(tried[:8])}",

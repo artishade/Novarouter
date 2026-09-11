@@ -6,11 +6,12 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 
 tmp = tempfile.mkdtemp()
 os.environ["NOVA_DATA_DIR"] = tmp
 os.environ["NOVA_ADMIN_TOKEN"] = "t"
-sys.path.insert(0, "/root/novarouter")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx  # noqa: E402
 import uvicorn  # noqa: E402

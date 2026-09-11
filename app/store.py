@@ -2,6 +2,9 @@
 
 v2: capability persistence, per-client rate limits (RPM) and daily token
 quotas (TPD), usage tracking hooks.
+v2.1: model fallback routes — map a client-facing model id to an ordered
+fallback chain, plus auto-pick of a healthy stand-in when the requested
+model is unusable, so agents keep working through model outages.
 """
 
 import itertools
@@ -500,6 +503,153 @@ def resolve_model(requested: str) -> List[Tuple[Dict[str, Any], str]]:
 
 
 # --------------------------------------------------------------------------
+# model fallback routes
+# --------------------------------------------------------------------------
+
+def _chain_list(raw: Any) -> List[str]:
+    """'a, b\nc' -> ['a','b','c'] — ordered, deduped."""
+    out: List[str] = []
+    if not raw:
+        return out
+    text = raw if isinstance(raw, str) else ",".join(str(x) for x in raw)
+    for part in text.replace("\n", ",").replace(";", ",").split(","):
+        t = part.strip()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def list_routes() -> List[Dict[str, Any]]:
+    rows = db.query("SELECT * FROM model_routes ORDER BY public_id")
+    for r in rows:
+        r["fallback_list"] = _chain_list(r["fallbacks"])
+        r["auto"] = bool(r["auto"])
+        r["enabled"] = bool(r["enabled"])
+    return rows
+
+
+def add_route(public_id: str, fallbacks: str, auto: bool = True, note: str = "") -> int:
+    public_id = (public_id or "").strip()
+    if not public_id:
+        raise ValueError("public_id is required ('*' = the default chain for every model)")
+    chain = _chain_list(fallbacks)
+    if not chain:
+        raise ValueError("at least one fallback model id is required")
+    return db.execute(
+        """INSERT INTO model_routes (public_id, fallbacks, auto, enabled, note, created_at)
+           VALUES (?,?,?,1,?,?)""",
+        (public_id, ",".join(chain), 1 if auto else 0, (note or "").strip()[:250], now()),
+    )
+
+
+def update_route(rid: int, **fields) -> None:
+    allowed = {"public_id", "fallbacks", "auto", "enabled", "note"}
+    sets, params = [], []
+    for k, v in fields.items():
+        if k not in allowed or v is None:
+            continue
+        if k == "public_id":
+            v = str(v).strip()
+            if not v:
+                raise ValueError("public_id cannot be empty")
+        if k == "fallbacks":
+            chain = _chain_list(v)
+            if not chain:
+                raise ValueError("at least one fallback model id is required")
+            v = ",".join(chain)
+        if k in ("auto", "enabled"):
+            v = 1 if v else 0
+        sets.append(f"{k}=?")
+        params.append(v)
+    if not sets:
+        return
+    params.append(rid)
+    db.execute(f"UPDATE model_routes SET {', '.join(sets)} WHERE id=?", tuple(params))
+
+
+def delete_route(rid: int) -> None:
+    db.execute("DELETE FROM model_routes WHERE id=?", (rid,))
+
+
+def route_for(public_id: str) -> Optional[Dict[str, Any]]:
+    """Most specific enabled route: exact id first, then the '*' default."""
+    row = db.one("SELECT * FROM model_routes WHERE public_id=? AND enabled=1", (public_id,))
+    if row:
+        return row
+    return db.one("SELECT * FROM model_routes WHERE public_id='*' AND enabled=1")
+
+
+def fallback_chain(requested: str) -> Tuple[List[str], bool]:
+    """Ordered fallback ids for a requested model. Returns (chain, allow_auto).
+
+    A specific route fully governs its model; the '*' default chain is
+    appended after it. With no route at all, auto-pick follows the env flag.
+    """
+    row = route_for(requested)
+    if not row:
+        return [], bool(config.AUTO_FALLBACK)
+    chain = _chain_list(row["fallbacks"])
+    if row["public_id"] == "*":
+        return chain, bool(row["auto"])
+    dflt = db.one("SELECT * FROM model_routes WHERE public_id='*' AND enabled=1")
+    if dflt:
+        for t in _chain_list(dflt["fallbacks"]):
+            if t not in chain:
+                chain.append(t)
+    return chain, bool(row["auto"])
+
+
+def _requested_profile(requested: str) -> Dict[str, bool]:
+    """Capability profile of the requested id: registry row if known, else inferred."""
+    row = db.one(
+        "SELECT capabilities FROM models WHERE exposed_id=? OR model_id=? LIMIT 1",
+        (requested, requested),
+    )
+    if row:
+        caps = model_capabilities(row)
+        if any(caps.values()):
+            return caps
+    return adapters.infer_capabilities(requested)
+
+
+def auto_fallback_targets(requested: str, limit: int = 0) -> List[str]:
+    """Healthy enabled model ids that can stand in for `requested`, best match first.
+
+    A candidate must match the requested profile's tools/embeddings
+    capability (agents break without them); reasoning/vision are preferred.
+    Known-bad models (rate-limited, no access, ...) never auto-serve.
+    """
+    prof = _requested_profile(requested)
+    rows = db.query(
+        """SELECT m.exposed_id, m.capabilities, m.latency_ms, m.status FROM models m
+           JOIN providers p ON p.id=m.provider_id
+           WHERE m.enabled=1 AND p.enabled=1 AND m.status IN ('OK','UNKNOWN')
+             AND m.exposed_id != ?""",
+        (requested,),
+    )
+    hard = {"tools", "embeddings"}
+    soft = {"reasoning", "vision", "audio_in"}
+    scored: List[Tuple[Any, ...]] = []
+    for r in rows:
+        caps = model_capabilities(r)
+        if any(prof.get(k) and not caps.get(k) for k in hard):
+            continue
+        smiss = sum(1 for k in soft if prof.get(k) and not caps.get(k))
+        bad_status = 0 if r["status"] == "OK" else 1
+        lat = r["latency_ms"] or 999999
+        scored.append((bad_status, smiss, lat, r["exposed_id"]))
+    scored.sort()
+    out: List[str] = []
+    for t in scored:
+        mid = t[3]
+        if mid not in out:
+            out.append(mid)
+    if limit:
+        out = out[:limit]
+    return out
+
+
+# --------------------------------------------------------------------------
 # stats
 # --------------------------------------------------------------------------
 
@@ -516,6 +666,7 @@ def stats() -> Dict[str, Any]:
         "models": db.one("SELECT COUNT(*) c FROM models")["c"],
         "models_ok": db.one("SELECT COUNT(*) c FROM models WHERE status='OK'")["c"],
         "models_unknown": db.one("SELECT COUNT(*) c FROM models WHERE status='UNKNOWN'")["c"],
+        "routes": db.one("SELECT COUNT(*) c FROM model_routes")["c"],
         "requests_24h": db.one(
             "SELECT COUNT(*) c FROM request_log WHERE ts > ?", (t - 86400,)
         )["c"],

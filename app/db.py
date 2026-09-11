@@ -90,12 +90,22 @@ CREATE TABLE IF NOT EXISTS request_log (
     latency_ms      INTEGER NOT NULL DEFAULT 0,
     tokens_in       INTEGER NOT NULL DEFAULT 0,
     tokens_out      INTEGER NOT NULL DEFAULT 0,
-    error           TEXT    NOT NULL DEFAULT ''
+    error           TEXT    NOT NULL DEFAULT '',
+    via             TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_log_ts ON request_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_models_exposed ON models(exposed_id);
 CREATE INDEX IF NOT EXISTS idx_reqlog_client_ts ON request_log(client_key_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reqlog_day ON request_log(client_key_id, CAST(ts/86400 AS INT) DESC);
+CREATE TABLE IF NOT EXISTS model_routes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    public_id       TEXT    NOT NULL UNIQUE,
+    fallbacks       TEXT    NOT NULL DEFAULT '',
+    auto            INTEGER NOT NULL DEFAULT 1,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    note            TEXT    NOT NULL DEFAULT '',
+    created_at      REAL    NOT NULL
+);
 CREATE TABLE IF NOT EXISTS extensions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     kind            TEXT    NOT NULL,
@@ -188,12 +198,22 @@ CREATE TABLE IF NOT EXISTS request_log (
     latency_ms      INTEGER NOT NULL DEFAULT 0,
     tokens_in       INTEGER NOT NULL DEFAULT 0,
     tokens_out      INTEGER NOT NULL DEFAULT 0,
-    error           TEXT    NOT NULL DEFAULT ''
+    error           TEXT    NOT NULL DEFAULT '',
+    via             TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_log_ts ON request_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_models_exposed ON models(exposed_id);
 CREATE INDEX IF NOT EXISTS idx_reqlog_client_ts ON request_log(client_key_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reqlog_day ON request_log(client_key_id, CAST(ts/86400 AS INT) DESC);
+CREATE TABLE IF NOT EXISTS model_routes (
+    id              BIGSERIAL PRIMARY KEY,
+    public_id       TEXT    NOT NULL UNIQUE,
+    fallbacks       TEXT    NOT NULL DEFAULT '',
+    auto            INTEGER NOT NULL DEFAULT 1,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    note            TEXT    NOT NULL DEFAULT '',
+    created_at      DOUBLE PRECISION NOT NULL
+);
 CREATE TABLE IF NOT EXISTS extensions (
     id              BIGSERIAL PRIMARY KEY,
     kind            TEXT    NOT NULL,
@@ -260,6 +280,8 @@ _MIGRATIONS = [
      "ALTER TABLE request_log ADD COLUMN IF NOT EXISTS tokens_in INTEGER NOT NULL DEFAULT 0"),
     ("request_log", "tokens_out", "ALTER TABLE request_log ADD COLUMN tokens_out INTEGER NOT NULL DEFAULT 0",
      "ALTER TABLE request_log ADD COLUMN IF NOT EXISTS tokens_out INTEGER NOT NULL DEFAULT 0"),
+    ("request_log", "via", "ALTER TABLE request_log ADD COLUMN via TEXT NOT NULL DEFAULT ''",
+     "ALTER TABLE request_log ADD COLUMN IF NOT EXISTS via TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -478,8 +500,8 @@ def executemany(sql: str, seq: Sequence[Sequence[Any]]) -> None:
 def log_request(**kw) -> None:
     execute(
         """INSERT INTO request_log
-           (ts, client_key_id, provider_id, upstream_key_id, model, endpoint, status, latency_ms, tokens_in, tokens_out, error)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           (ts, client_key_id, provider_id, upstream_key_id, model, endpoint, status, latency_ms, tokens_in, tokens_out, error, via)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             time.time(),
             kw.get("client_key_id"),
@@ -492,6 +514,7 @@ def log_request(**kw) -> None:
             kw.get("tokens_in", 0),
             kw.get("tokens_out", 0),
             (kw.get("error") or "")[:300],
+            (kw.get("via") or "")[:250],
         ),
     )
     if config.LOG_RETENTION > 0:

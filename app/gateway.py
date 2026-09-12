@@ -31,7 +31,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from . import adapters, config, db, extensions, store
+from . import adapters, config, db, extensions, modality, store
 
 router = APIRouter()
 
@@ -223,6 +223,48 @@ async def _attempt(
     return 200, data, ""
 
 
+# ------------------------------------------------------------------ media routing
+def _media_stage(
+    client: Dict[str, Any],
+    requested: str,
+    payload: Dict[str, Any],
+    direct: List[Tuple[Dict[str, Any], str]],
+    endpoint: str = "chat",
+) -> Tuple[Optional[List[Tuple[Dict[str, Any], str]]], bool]:
+    """Detect media the selected model can't read and pick capable stand-ins.
+
+    Returns (media_stage, rerouted) where media_stage is the list of
+    (provider, upstream_model) pairs that CAN read the payload's media —
+    inserted ahead of the normal stages so the request succeeds on the
+    first try. rerouted is True when the requested model itself was
+    displaced (its own candidates are unusable for this payload).
+
+    Only chat-shaped endpoints reroute: embeddings/moderations never carry
+    media parts, and rerouting them to a chat model would be wrong.
+    """
+    if not config.MEDIA_ROUTING or endpoint not in ("chat",):
+        return None, False
+    modality.prepare(payload)  # inline text docs so every model can read them
+    needs = modality.detect(payload)
+    if not needs:
+        return None, False
+    caps = store.model_row_capabilities(requested)
+    if modality.covers(caps, needs):
+        return None, False  # selected model reads this media just fine
+    # selected model can't read the media: find stand-ins that can, and
+    # require the client be allowed to use them
+    out: List[Tuple[Dict[str, Any], str]] = []
+    for fid in store.auto_fallback_targets(requested, limit=config.FALLBACK_MAX, need_caps={k: True for k in needs}):
+        if not store.client_allows(client, fid):
+            continue
+        for provider, upstream_model in store.resolve_model(fid):
+            if (provider["id"], upstream_model) not in {(p["id"], m) for p, m in direct}:
+                out.append((provider, upstream_model))
+    if not out:
+        return None, False  # no capable stand-in: let the normal flow try anyway
+    return out, True
+
+
 # ------------------------------------------------------------------ dispatch core
 async def dispatch(
     request: Optional[Request],
@@ -274,6 +316,11 @@ async def dispatch(
         extra_stages = _fallback_stages(client, requested, [], used)
     if err is not None and not stages and not extra_stages:
         return err  # unknown everywhere, no fallback applies
+    # media routing: when the payload carries media the requested model can't
+    # read, capable stand-ins go FIRST — the request succeeds on attempt one
+    media_stage, _media_rerouted = _media_stage(client, requested, payload, direct, endpoint)
+    if media_stage:
+        stages = [media_stage] + stages
     stages.extend(extra_stages)
 
     stream = bool(payload.get("stream"))
@@ -760,6 +807,11 @@ async def responses_endpoint(request: Request):
     extra_stages = _fallback_stages(client, requested, candidates or [], used)
     if err is not None and not stages and not extra_stages:
         return err
+    # media routing: capable stand-ins first when the payload carries media
+    # the requested model can't read (translated payload, same scan)
+    media_stage, _media_rerouted = _media_stage(client, requested, chat_payload, candidates or [])
+    if media_stage:
+        stages = [media_stage] + stages
     stages.extend(extra_stages)
 
     tried: List[str] = []
@@ -890,6 +942,11 @@ async def messages_endpoint(request: Request):
         extra_stages = _fallback_stages(client, requested, [], used)
     if err is not None and not stages and not extra_stages:
         return err
+    # media routing: capable stand-ins first when the payload carries media
+    # the requested model can't read (anthropic-shape blocks are scanned too)
+    media_stage, _media_rerouted = _media_stage(client, requested, payload, direct)
+    if media_stage:
+        stages = [media_stage] + stages
     stages.extend(extra_stages)
 
     stream = bool(payload.get("stream"))
@@ -902,8 +959,7 @@ async def messages_endpoint(request: Request):
             if not keys:
                 tried.append(f"{provider['name']}: no keys")
                 continue
-            is_anthropic = provider.get("kind") == "anthropic"
-            # anthropic-kind upstream: forward as-is (native protocol)
+            is_anthropic = provider.get("kind") == "anthropic"            # anthropic-kind upstream: forward as-is (native protocol)
             # openai-kind upstream: translate request
             upstream_payload = dict(payload) if is_anthropic else adapters.anthropic_request_to_openai(payload)
             upstream_payload["model"] = upstream_model

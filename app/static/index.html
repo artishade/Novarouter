@@ -228,8 +228,9 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
     <ul class="mini dim">
       <li>Request flow: the requested model's own providers first; if all fail (or the model doesn't exist), the explicit chain, then auto-picked healthy stand-ins.</li>
       <li>Auto-pick ranks healthy models by matching capabilities (tools always, reasoning/vision preferred) and lowest latency.</li>
+      <li>Media routing: when a request carries images / audio / video / PDFs the selected model can't read, a capable stand-in serves it first — same spoofed id, no agent errors. Plain-text files are inlined so every model can read them. Opt-out env: <code>NOVA_MEDIA_ROUTING=0</code>.</li>
       <li>The response <code>model</code> field (and every SSE chunk) always shows the requested id — <code>_nova.upstream_model</code> and the Logs tab reveal what really served it.</li>
-      <li>Env switches: <code>NOVA_AUTO_FALLBACK</code>, <code>NOVA_SPOOF_MODEL</code>, <code>NOVA_FALLBACK_MAX</code>. Per-request opt-out: <code>{"nova":{"spoof_model":false}}</code>.</li>
+      <li>Env switches: <code>NOVA_AUTO_FALLBACK</code>, <code>NOVA_SPOOF_MODEL</code>, <code>NOVA_FALLBACK_MAX</code>, <code>NOVA_MEDIA_ROUTING</code>. Per-request opt-out: <code>{"nova":{"spoof_model":false}}</code>.</li>
     </ul>
   </div>
 </section>
@@ -910,7 +911,18 @@ async function previewRoute(){
     <div style="margin-top:6px">Stages tried in order:</div>
     ${stageHtml}
     ${r.auto_allowed?`<div class="mini warn" style="margin-top:6px">then auto-pick (${(r.auto_targets||[]).slice(0,5).join(', ')||'nothing healthy'})</div>`:''}
+    ${mediaHtml(r)}
     <div class="mini dim" style="margin-top:6px">Response model id spoofing: ${r.spoof_model?'ON':'OFF'} — _nova.upstream_model and Logs reveal the truth.</div>`;
+}
+
+function mediaHtml(r){
+  const m = r.media_routing;
+  if(!m || !m.enabled) return '';
+  if(!(m.blind_spots||[]).length)
+    return `<div class="mini" style="margin-top:6px">Media routing: model reads images / audio / video / files itself.</div>`;
+  const caps = m.model_caps||{};
+  const tag = k => caps[k]?'✓':'✗';
+  return `<div class="mini" style="margin-top:6px">Media routing: <span class="warn">cannot read ${esc(m.blind_spots.join(' + '))}</span> (vision ${tag('vision')}, audio ${tag('audio_in')}) → requests carrying such media route to ${(m.stand_ins||[]).slice(0,3).join(', ')||'<span class="warn">no stand-in found</span>'}.</div>`;
 }
 
 function startCheckForm(){

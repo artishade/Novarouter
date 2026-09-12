@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from . import modality
+
 ANTHROPIC_VERSION = "2023-06-01"
 
 # result buckets (shared with the checker + dashboard)
@@ -283,6 +285,14 @@ def _parts_to_anthropic(content: Any) -> List[Dict[str, Any]]:
                     "type": "audio",
                     "source": {"type": "base64", "media_type": f"audio/{fmt}", "data": ia.get("data", "")},
                 })
+            elif t == "file":
+                converted = modality.file_part_to_anthropic(p)
+                if converted:
+                    parts.append(converted)
+            elif t == "document":
+                # already an anthropic-shaped block riding in an openai payload
+                # (pdf / url document that prepare() couldn't inline)
+                parts.append(p)
     return parts
 
 
@@ -727,7 +737,11 @@ def _resp_content_to_openai(content: Any) -> Any:
         if t in ("input_text", "output_text", "text"):
             parts.append({"type": "text", "text": p.get("text", "")})
         elif t == "input_image":
-            url = (p.get("image_url") or {}).get("url") or p.get("url") or ""
+            iu = p.get("image_url")
+            if isinstance(iu, str):  # responses API allows a bare url string
+                url = iu
+            else:
+                url = (iu or {}).get("url") or p.get("url") or ""
             if url:
                 parts.append({"type": "image_url", "image_url": {"url": url}})
         elif t == "input_audio":
@@ -735,6 +749,17 @@ def _resp_content_to_openai(content: Any) -> Any:
                 "data": p.get("data") or (p.get("input_audio") or {}).get("data", ""),
                 "format": p.get("format") or (p.get("input_audio") or {}).get("format", "wav"),
             }})
+        elif t == "input_file":
+            fd = p.get("file") or (p.get("input_file") or {})
+            data = (fd.get("file_data") if isinstance(fd, dict) else "") or ""
+            if data:
+                entry = {"type": "file", "file": {"file_data": data}}
+                name = (fd.get("filename") if isinstance(fd, dict) else "") or ""
+                if name:
+                    entry["file"]["filename"] = name
+                parts.append(entry)
+            elif isinstance(fd, dict) and fd.get("file_id"):
+                parts.append({"type": "text", "text": f"[file_id: {fd['file_id']}]"})
     return parts or ""
 
 
@@ -769,7 +794,7 @@ def responses_to_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(it, dict):
             continue
         t = it.get("type")
-        if t == "message":
+        if t == "message" or (t is None and "content" in it and it.get("role")):
             role = it.get("role") or "user"
             if role == "developer":
                 role = "system"
@@ -1099,6 +1124,18 @@ def anthropic_request_to_openai(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "data": src.get("data", ""),
                     "format": (src.get("media_type") or "audio/wav").split("/")[-1],
                 }})
+            elif bt == "document":
+                src = b.get("source") or {}
+                if src.get("type") == "base64" and src.get("data"):
+                    user_parts.append({"type": "file", "file": {
+                        "filename": b.get("title") or "document.pdf",
+                        "file_data": f"data:{src.get('media_type') or 'application/pdf'};base64,{src.get('data', '')}",
+                    }})
+                elif src.get("type") == "url" and src.get("url"):
+                    # pdf behind a url: fetchable by vision readers; pass as an
+                    # image_url so multimodal upstreams at least see the reference
+                    user_parts.append({"type": "text",
+                                       "text": f"[document url: {src.get('url')}]"})
             elif bt == "tool_result":
                 pass  # handled above in theory; skip stragglers
         messages.append({"role": "user",

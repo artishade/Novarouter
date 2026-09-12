@@ -73,6 +73,11 @@ AUTO_FALLBACK = os.environ.get("NOVA_AUTO_FALLBACK", "1") == "1"   # auto-pick a
 SPOOF_MODEL = os.environ.get("NOVA_SPOOF_MODEL", "1") == "1"     # responses carry the model id the client asked for
 FALLBACK_MAX = int(os.environ.get("NOVA_FALLBACK_MAX", "3"))       # max auto-picked fallback models per request
 
+# Media routing: when a request carries media (images / audio / video /
+# documents) the selected model can't read, serve it with a capable
+# stand-in model instead — spoofed id, so the agent never sees an error.
+MEDIA_ROUTING = os.environ.get("NOVA_MEDIA_ROUTING", "1") == "1"
+
 _ADMIN_TOKEN_FILE = DATA_DIR / "admin_token.txt"
 
 

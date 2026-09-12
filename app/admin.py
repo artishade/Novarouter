@@ -410,6 +410,16 @@ async def preview_route(request: Request, model: str = ""):
     auto = []
     if allow_auto and config.AUTO_FALLBACK:
         auto = store.auto_fallback_targets(model, limit=config.FALLBACK_MAX)
+    # media routing preview: capabilities of the requested model + which
+    # stand-ins would take over when a request carries media it can't read
+    caps = store.model_row_capabilities(model)
+    media_needs = [k for k in ("vision", "audio_in") if not caps.get(k)]
+    media_targets = []
+    if config.MEDIA_ROUTING and media_needs:
+        media_targets = store.auto_fallback_targets(
+            model, limit=config.FALLBACK_MAX,
+            need_caps={k: True for k in media_needs},
+        )
     return {
         "model": model,
         "direct": bool(direct),
@@ -418,6 +428,12 @@ async def preview_route(request: Request, model: str = ""):
         "auto_targets": auto,
         "stages": stages,
         "spoof_model": config.SPOOF_MODEL,
+        "media_routing": {
+            "enabled": config.MEDIA_ROUTING,
+            "model_caps": caps,
+            "blind_spots": media_needs,
+            "stand_ins": media_targets,
+        },
     }
 
 

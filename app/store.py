@@ -612,14 +612,42 @@ def _requested_profile(requested: str) -> Dict[str, bool]:
     return adapters.infer_capabilities(requested)
 
 
-def auto_fallback_targets(requested: str, limit: int = 0) -> List[str]:
+def model_row_capabilities(model_id: str) -> Dict[str, bool]:
+    """Capability map for a model id as registered in the catalogue (any
+    provider), or inferred from the id when unknown. Used by media routing
+    to decide whether the selected model can read a request's media."""
+    row = db.one(
+        """SELECT m.capabilities FROM models m
+           JOIN providers p ON p.id = m.provider_id
+           WHERE p.enabled = 1 AND (m.exposed_id=? OR m.model_id=?)
+           ORDER BY m.enabled DESC LIMIT 1""",
+        (model_id, model_id),
+    )
+    if row:
+        caps = model_capabilities(row)
+        if any(caps.values()):
+            return caps
+    return adapters.infer_capabilities(model_id)
+
+
+def auto_fallback_targets(
+    requested: str,
+    limit: int = 0,
+    need_caps: Optional[Dict[str, bool]] = None,
+) -> List[str]:
     """Healthy enabled model ids that can stand in for `requested`, best match first.
 
     A candidate must match the requested profile's tools/embeddings
     capability (agents break without them); reasoning/vision are preferred.
     Known-bad models (rate-limited, no access, ...) never auto-serve.
+
+    `need_caps` extends the hard requirements — media routing passes the
+    capabilities a request's media actually needs (e.g. vision for images)
+    so stand-ins can always read the payload.
     """
     prof = _requested_profile(requested)
+    if need_caps:
+        prof = {**prof, **{k: True for k, v in need_caps.items() if v}}
     rows = db.query(
         """SELECT m.exposed_id, m.capabilities, m.latency_ms, m.status FROM models m
            JOIN providers p ON p.id=m.provider_id
@@ -628,6 +656,7 @@ def auto_fallback_targets(requested: str, limit: int = 0) -> List[str]:
         (requested,),
     )
     hard = {"tools", "embeddings"}
+    hard |= {k for k, v in (need_caps or {}).items() if v}
     soft = {"reasoning", "vision", "audio_in"}
     scored: List[Tuple[Any, ...]] = []
     for r in rows:

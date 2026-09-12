@@ -25,6 +25,11 @@ client → POST /v1/messages  model=claude-opus-4-6
                  _nova.upstream_model=...    ← the model that actually answered
 ```
 
+The same promise covers **media**: when the request carries images, video,
+audio or documents the selected model can't read, a capable stand-in serves
+it first — same spoofed id, so agents never hit "this model doesn't support
+image input" errors. See [Media routing](#media-routing-agents-never-hit-model-cant-read-images).
+
 ## What's new in v2
 
 | Area | v1 | v2 |
@@ -139,6 +144,35 @@ Behavior:
 Env vars: `NOVA_AUTO_FALLBACK` (default `1`), `NOVA_SPOOF_MODEL` (default `1`),
 `NOVA_FALLBACK_MAX` (default `3`, auto-picked stand-ins per request).
 
+## Media routing (agents never hit "model can't read images")
+
+Suppose the selected model can't read images, video, audio or documents —
+NovaRouter detects the media parts in the request, and when the selected
+model lacks the capability (`vision` / `audio_in`), the request is served
+by a capable stand-in model instead. The response still carries the
+requested model id, so the AI agent never sees an error or a model switch.
+
+- **Detects**: `image_url` / `input_image` / anthropic `image` blocks,
+  `video_url` / `input_video`, `input_audio` / anthropic `audio` blocks,
+  OpenAI `file` parts, anthropic `document` blocks — in `/v1/chat/completions`,
+  `/v1/messages` and `/v1/responses` (translated too).
+- **Inlines plain text**: `.txt`, `.md`, `.csv`, `.json`, code files and
+  plain-text document blocks become text parts — every model can read them,
+  no reroute needed.
+- **Normalizes images**: image `file` parts become `image_url` data URIs;
+  PDFs stay file/document blocks for native readers.
+- **Cross-protocol**: media blocks are translated between OpenAI and
+  Anthropic shapes in both directions, so a vision stand-in behind either
+  protocol can serve the rerouted request.
+- **Respects client keys**: stand-ins are only chosen from models the
+  client key is allowed to use.
+- **Opt-out**: globally with `NOVA_MEDIA_ROUTING=0` (the selected model then
+  gets the request as-is, upstream behavior unchanged).
+
+Env var: `NOVA_MEDIA_ROUTING` (default `1`). The route preview
+(`GET /admin/api/routes/preview?model=...`) shows each model's blind spots
+and which stand-ins would take over.
+
 ## Deployments
 
 - **Docker**: `docker build -t novarouter .` → run with `DATABASE_URL` (Postgres)
@@ -147,7 +181,7 @@ Env vars: `NOVA_AUTO_FALLBACK` (default `1`), `NOVA_SPOOF_MODEL` (default `1`),
 
 Env vars: `DATABASE_URL`, `NOVA_ADMIN_TOKEN`, `NOVA_TIMEOUT`,
 `NOVA_MAX_KEY_ATTEMPTS`, `NOVA_COOLDOWN_429/402/5XX`, `NOVA_LOG_RETENTION`,
-`NOVA_AUTO_FALLBACK`, `NOVA_SPOOF_MODEL`, `NOVA_FALLBACK_MAX`.
+`NOVA_AUTO_FALLBACK`, `NOVA_SPOOF_MODEL`, `NOVA_FALLBACK_MAX`, `NOVA_MEDIA_ROUTING`.
 
 ## Tests
 

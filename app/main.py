@@ -11,20 +11,40 @@ The same `app` object is served by:
   * uvicorn locally           -> `novarouter serve` or uvicorn app.main:app
   * Vercel (Python runtime)   -> tool.vercel.entrypoint = "app.main:app"
 """
+import asyncio
 import contextlib
+from typing import List
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import admin, config, db, gateway
+from . import admin, batch, checker, config, db, gateway
 
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    bg: List["asyncio.Task[None]"] = []
+    # periodic availability checks (NOVA_CHECK_INTERVAL, 0 = off)
+    if config.CHECK_INTERVAL > 0:
+        bg.append(asyncio.create_task(checker.scheduler_loop(config.CHECK_INTERVAL)))
+    # batch expiry sweep: runs every 60s but only does work when batches exist
+    async def batch_sweep() -> None:
+        while True:
+            try:
+                await asyncio.sleep(60)
+                batch.sweep_expired()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - sweep must never die
+                continue
+
+    bg.append(asyncio.create_task(batch_sweep()))
     yield
+    for t in bg:
+        t.cancel()
     await gateway.close_client()
 
 

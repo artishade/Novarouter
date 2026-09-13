@@ -110,6 +110,15 @@ async def ping_model(
 
         if provider.get("kind") == "anthropic":
             reply = adapters._text_of(data.get("content"))
+        elif provider.get("kind") == "gemini":
+            try:
+                cand = (data.get("candidates") or [])[0]
+                reply = "".join(
+                    p.get("text", "") for p in (cand.get("content") or {}).get("parts") or []
+                    if isinstance(p, dict)
+                )
+            except (IndexError, TypeError, KeyError):
+                reply = ""
         else:
             choices = data.get("choices") or [{}]
             reply = ((choices[0].get("message") or {}).get("content")) or ""
@@ -316,3 +325,22 @@ async def start_background_check(**kwargs) -> str:
 
     asyncio.create_task(runner())
     return job_id
+
+
+# ---------------------------------------------------------------- scheduled checks
+
+async def scheduler_loop(interval: float) -> None:
+    """Periodic background model check. Runs forever; cancelled on shutdown.
+
+    Conservative: only UNKNOWN-status models + low worker count, so a big
+    catalogue doesn't burn quota in the background. A full check (all models)
+    still needs the manual dashboard trigger.
+    """
+    while True:
+        try:
+            await asyncio.sleep(max(60.0, float(interval)))
+            await run_check(only_unknown=True, workers=3, timeout=20.0, sync_first=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - scheduler must never die
+            await asyncio.sleep(max(60.0, float(interval)))

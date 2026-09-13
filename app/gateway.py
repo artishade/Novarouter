@@ -30,8 +30,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel
 
-from . import adapters, config, db, extensions, modality, store
+from . import adapters, batch, cache, config, db, extensions, modality, store
 
 router = APIRouter()
 
@@ -220,7 +221,69 @@ async def _attempt(
         return 502, data, inline
     if provider.get("kind") == "anthropic" and endpoint == "chat":
         data = adapters.anthropic_to_openai(data, payload.get("model", ""))
+    elif provider.get("kind") == "gemini" and endpoint == "chat":
+        data = adapters.gemini_to_openai(data, payload.get("model", ""))
     return 200, data, ""
+
+
+async def _hedged_attempt(
+    primary: Tuple[Dict[str, Any], Dict[str, Any], str],   # (provider, key, upstream_model)
+    hedge: Optional[Tuple[Dict[str, Any], Dict[str, Any], str]],
+    endpoint: str,
+    payload: Dict[str, Any],
+) -> Tuple[int, Any, str, Dict[str, Any], Dict[str, Any], str, str]:
+    """Race primary against a hedge provider after HEDGE_DELAY seconds.
+
+    Returns (status, body, error, provider, key, upstream_model, winner) — the
+    provider/key/model identity the caller should attribute the result to
+    (the winner, not necessarily the primary). The primary gets HEDGE_DELAY
+    seconds alone first; only when it's still outstanding does the hedge
+    launch. Losers are cancelled.
+    """
+    p_prov, p_key, p_model = primary
+
+    async def run_one(prov, key, model, tag):
+        body = dict(payload)
+        body["model"] = model
+        status, data, err = await _attempt(prov, key, endpoint, body)
+        return status, data, err, prov, key, model, tag
+
+    primary_task = asyncio.create_task(run_one(p_prov, p_key, p_model, "primary"))
+    hedge_task: Optional[asyncio.Task] = None
+    if hedge is not None:
+        try:
+            # primary gets HEDGE_DELAY seconds alone before the race starts
+            return await asyncio.wait_for(asyncio.shield(primary_task), timeout=config.HEDGE_DELAY)
+        except asyncio.TimeoutError:
+            if not primary_task.done():
+                h_prov, h_key, h_model = hedge
+                hedge_task = asyncio.create_task(run_one(h_prov, h_key, h_model, "hedge"))
+        except asyncio.CancelledError:
+            primary_task.cancel()
+            raise
+
+    if hedge_task is None:
+        return await primary_task
+
+    done, pending = await asyncio.wait(
+        {primary_task, hedge_task}, return_when=asyncio.FIRST_COMPLETED
+    )
+    # both may have completed before wait returned -> both land in `done`
+    results = [t.result() for t in done if not t.cancelled()]
+    for t in pending:
+        t.cancel()
+    # any 200 wins; otherwise the first completed result (an error -> failover)
+    for r in results:
+        if r[0] == 200:
+            return r[0], r[1], r[2], r[3], r[4], r[5], r[6]
+    if results:
+        r = results[0]
+        return r[0], r[1], r[2], r[3], r[4], r[5], r[6]
+    # both cancelled/empty -> fall back to whatever the primary got
+    if primary_task.done() and not primary_task.cancelled():
+        r = primary_task.result()
+        return r[0], r[1], r[2], r[3], r[4], r[5], r[6]
+    return 0, None, "hedged attempts cancelled", p_prov, p_key, p_model, ""
 
 
 # ------------------------------------------------------------------ media routing
@@ -323,9 +386,35 @@ async def dispatch(
         stages = [media_stage] + stages
     stages.extend(extra_stages)
 
+    # response cache: identical chat requests served from memory
     stream = bool(payload.get("stream"))
+    if config.CACHE_TTL > 0 and endpoint == "chat" and not stream:
+        hit = cache.get(payload)
+        if hit is not None:
+            body = dict(hit)
+            body["_nova"] = {**(body.get("_nova") or {}), "cached": True}
+            db.log_request(
+                client_key_id=client["id"], model=requested,
+                endpoint=endpoint_label or endpoint, status=200, latency_ms=0,
+                via="cache",
+            )
+            return JSONResponse(status_code=200, content=body)
+
+    # request hedging: pre-pick the race partner — the next provider that
+    # serves the requested model (first key of its rotation)
+    hedge_target: Optional[Tuple[Dict[str, Any], Dict[str, Any], str]] = None
+    if config.HEDGE_DELAY > 0 and not stream and endpoint == "chat":
+        for stage in stages:
+            if len(stage) >= 2:
+                h_provider, h_model = stage[1]
+                h_keys = store.pick_keys(h_provider["id"], limit=1)
+                if h_keys:
+                    hedge_target = (h_provider, h_keys[0], h_model)
+                break
+
     tried: List[str] = []
     last_status, last_error = 502, "no upstream attempt succeeded"
+    first_attempt_done = False
     for stage in stages:
         for provider, upstream_model in stage:
             keys = store.pick_keys(provider["id"])
@@ -345,7 +434,24 @@ async def dispatch(
                     last_status, last_error = 502, f"{provider['name']} stream failed"
                     tried.append(f"{provider['name']}#{key['id']}: stream fail")
                     continue
-                status, body, error = await _attempt(provider, key, endpoint, upstream_payload)
+                # request hedging: race the first attempt against the next
+                # provider when the primary is slow (not dead). The winner's
+                # provider/key/model replace the primary's for accounting.
+                winner_tag = ""
+                if (
+                    config.HEDGE_DELAY > 0
+                    and not first_attempt_done
+                    and endpoint == "chat"
+                    and hedge_target is not None
+                ):
+                    first_attempt_done = True
+                    status, body, error, provider, key, upstream_model, winner_tag = (
+                        await _hedged_attempt(
+                            (provider, key, upstream_model), hedge_target, endpoint, payload
+                        )
+                    )
+                else:
+                    status, body, error = await _attempt(provider, key, endpoint, upstream_payload)
                 latency = int((time.perf_counter() - started) * 1000)
                 tokens_in, tokens_out = adapters.extract_usage(body) if status == 200 else (0, 0)
                 db.log_request(
@@ -377,10 +483,15 @@ async def dispatch(
                             "latency_ms": latency,
                             "routed_from": requested if upstream_model != requested else "",
                         }
+                        if winner_tag:
+                            body["_nova"]["hedged"] = True
+                        # cache for identical follow-up requests
+                        if config.CACHE_TTL > 0 and endpoint == "chat" and not stream:
+                            cache.put(payload, body, provider["name"], upstream_model)
                     return JSONResponse(status_code=200, content=body)
                 store.penalize_key(key["id"], status, error)
                 last_status, last_error = status, error
-                tried.append(f"{provider['name']}#{key['id']} -> {status}")
+                tried.append(f"{provider['name']}#{key['id']}{'~hedge' if winner_tag else ''} -> {status}")
                 # non-retryable errors end the request immediately — unless
                 # fallbacks remain, since the model itself may be the problem
                 if status not in RETRYABLE and not extra_stages:
@@ -409,7 +520,12 @@ async def _stream_attempt(
     except ValueError:
         return None
     is_anthropic = provider.get("kind") == "anthropic"
-    translator = adapters.AnthropicSSETranslator(requested_model) if is_anthropic else None
+    is_gemini = provider.get("kind") == "gemini"
+    translator = (
+        adapters.AnthropicSSETranslator(requested_model) if is_anthropic
+        else adapters.GeminiSSETranslator(requested_model) if is_gemini
+        else None
+    )
     started = time.perf_counter()
     req = http_client().build_request("POST", url, headers=headers, json=body)
     try:
@@ -1485,6 +1601,147 @@ async def audio_translations(request: Request):
 @router.post("/moderations")
 async def moderations(request: Request):
     return await dispatch(request, "moderations", endpoint_label="moderations")
+
+
+# ------------------------------------------------------------------ files
+_FILE_PURPOSES = {"batch", "batch_output", "fine-tune", "assistants", "vision", "user_data"}
+
+
+def _file_envelope(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "object": "file",
+        "bytes": row.get("bytes") or 0,
+        "created_at": int(row.get("created_at") or 0),
+        "filename": row.get("filename") or "",
+        "purpose": row.get("purpose") or "",
+        "status": row.get("status") or "processed",
+    }
+
+
+@router.post("/files")
+async def upload_file(request: Request):
+    """Multipart upload: file + purpose. Returns the OpenAI file envelope."""
+    client = require_client(request)
+    form = await request.form()
+    f = form.get("file")
+    if f is None:
+        return _err(400, "multipart field 'file' is required", "invalid_request_error")
+    purpose = str(form.get("purpose") or "")
+    if purpose not in _FILE_PURPOSES:
+        return _err(400, f"purpose must be one of {sorted(_FILE_PURPOSES)}", "invalid_request_error")
+    content = await f.read()
+    if len(content) > config.FILE_MAX_MB * 1024 * 1024:
+        return _err(413, f"file exceeds the {config.FILE_MAX_MB}MB limit", "invalid_request_error")
+    row = store.create_file(
+        client["id"], getattr(f, "filename", "upload") or "upload", purpose, content
+    )
+    return _file_envelope(row)
+
+
+@router.get("/files")
+async def list_files(request: Request, purpose: str = "", limit: int = 100):
+    client = require_client(request)
+    rows = store.list_files(client_key_id=client["id"], purpose=purpose)[: min(max(limit, 1), 200)]
+    return {"object": "list", "data": [_file_envelope(r) for r in rows]}
+
+
+@router.get("/files/{fid}")
+async def file_meta(request: Request, fid: str):
+    client = require_client(request)
+    row = store.get_file(fid, client["id"])
+    if not row:
+        return _err(404, f"file '{fid}' not found", "not_found")
+    return _file_envelope(row)
+
+
+@router.get("/files/{fid}/content")
+async def file_content(request: Request, fid: str):
+    client = require_client(request)
+    content = store.get_file_content(fid, client["id"])
+    if content is None:
+        return _err(404, f"file '{fid}' not found", "not_found")
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{fid}"'},
+    )
+
+
+@router.delete("/files/{fid}")
+async def delete_file(request: Request, fid: str):
+    client = require_client(request)
+    if not store.delete_file(fid, client["id"]):
+        return _err(404, f"file '{fid}' not found", "not_found")
+    return {"id": fid, "object": "file", "deleted": True}
+
+
+# ------------------------------------------------------------------ batches
+def _batch_envelope(row: Dict[str, Any]) -> Dict[str, Any]:
+    out = {
+        "id": row["id"],
+        "object": "batch",
+        "status": row.get("status") or "validating",
+        "model": row.get("model") or "",
+        "created_at": int(row.get("created_at") or 0),
+        "expires_at": int(row.get("expires_at") or 0),
+        "request_counts": {
+            "total": row.get("total") or 0,
+            "completed": (row.get("done") or 0) + (row.get("failed") or 0),
+            "failed": row.get("failed") or 0,
+        },
+    }
+    if row.get("output_file_id"):
+        out["output_file_id"] = row["output_file_id"]
+    if row.get("error"):
+        out["errors"] = {"data": [{"message": row["error"]}]}
+    if row.get("completed_at"):
+        out["completed_at"] = int(row["completed_at"])
+    return out
+
+
+class BatchIn(BaseModel):
+    input_file_id: str
+    metadata: Optional[Dict[str, str]] = None
+
+
+@router.post("/batches")
+async def create_batch(request: Request, body: BatchIn):
+    """Create a batch from a purpose='batch' JSONL input file and start it."""
+    client = require_client(request)
+    try:
+        info = batch.create_batch(client, body.input_file_id, body.metadata)
+    except ValueError as e:
+        return _err(400, str(e), "invalid_request_error")
+    items = info.pop("_items", [])
+    batch.start(info["id"], client, items)
+    row = store.get_batch(info["id"]) or info
+    return _batch_envelope(row)
+
+
+@router.get("/batches")
+async def list_batches(request: Request, limit: int = 50):
+    client = require_client(request)
+    rows = store.list_batches(client_key_id=client["id"], limit=limit)
+    return {"object": "list", "data": [_batch_envelope(r) for r in rows]}
+
+
+@router.get("/batches/{bid}")
+async def get_batch(request: Request, bid: str):
+    client = require_client(request)
+    row = store.get_batch(bid)
+    if not row or row.get("client_key_id") != client["id"]:
+        return _err(404, f"batch '{bid}' not found", "not_found")
+    return _batch_envelope(row)
+
+
+@router.post("/batches/{bid}/cancel")
+async def cancel_batch(request: Request, bid: str):
+    client = require_client(request)
+    row = await batch.cancel(bid, client["id"])
+    if not row:
+        return _err(404, f"batch '{bid}' not found", "not_found")
+    return _batch_envelope(row)
 
 
 # ------------------------------------------------------------------ legacy aliases

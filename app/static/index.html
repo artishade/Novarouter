@@ -86,6 +86,7 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
   <button data-v="fallback">Fallbacks</button>
   <button data-v="extensions">Extensions</button>
   <button data-v="checker">Availability Checker</button>
+  <button data-v="analytics">Analytics</button>
   <button data-v="playground">Playground</button>
   <button data-v="logs">Logs</button>
   <button data-v="help">Usage</button>
@@ -106,6 +107,7 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
       <button onclick="startCheck({free_only:false})">Check all models</button>
       <button onclick="startCheck({free_only:true})">Check free models only</button>
       <button onclick="clearCooldowns()">Clear all key cooldowns</button>
+      <button onclick="clearCache()">Clear response cache</button>
       <button onclick="exportCfg(false)">Export config</button>
     </div>
   </div>
@@ -125,9 +127,10 @@ label.mini{display:block;color:var(--dim);margin-bottom:4px}
       <div><label class="mini">Preset</label><select id="p_preset" onchange="applyPreset()"><option value="">— custom —</option></select></div>
       <div><label class="mini">Name (unique)</label><input id="p_name" placeholder="groq"></div>
       <div><label class="mini">Base URL (OpenAI-style, ends at /v1)</label><input id="p_url" placeholder="https://api.groq.com/openai/v1"></div>
-      <div><label class="mini">API kind</label><select id="p_kind"><option value="openai">openai (compatible)</option><option value="anthropic">anthropic (native)</option></select></div>
+      <div><label class="mini">API kind</label><select id="p_kind"><option value="openai">openai (compatible)</option><option value="anthropic">anthropic (native)</option><option value="gemini">gemini (native)</option></select></div>
       <div><label class="mini">Model prefix (namespacing, optional)</label><input id="p_prefix" placeholder="groq/"></div>
       <div><label class="mini">Extra headers (JSON, optional)</label><input id="p_headers" placeholder='{"HTTP-Referer":"http://localhost"}'></div>
+      <div><label class="mini">Priority (lower = tried first, default 100)</label><input id="p_priority" type="number" value="100" min="1"></div>
     </div>
     <div style="margin-top:12px">
       <label class="mini">API key(s) — one per line, or comma separated. Ekta provider e joto key chao paste koro.</label>
@@ -363,6 +366,42 @@ placeholder='[{"name":"lookup","description":"Look something up","parameters":{"
   </div>
 </section>
 
+<!-- ANALYTICS -->
+<section class="view" id="v-analytics">
+  <div class="card">
+    <h2>Analytics</h2>
+    <div class="row" style="margin-bottom:10px">
+      <select id="an_hours" onchange="loadAnalytics()">
+        <option value="24">last 24h</option>
+        <option value="168">last 7d</option>
+        <option value="720">last 30d</option>
+      </select>
+      <select id="an_group" onchange="loadAnalytics()">
+        <option value="hour">hourly buckets</option>
+        <option value="day">daily buckets</option>
+      </select>
+      <div class="sp"></div>
+      <span class="mini dim" id="an_meta"></span>
+    </div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h2>Requests &amp; errors</h2><div id="an_req_chart"></div></div>
+    <div class="card"><h2>Tokens</h2><div id="an_tok_chart"></div></div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h2>Top models</h2>
+      <div class="scroll" style="max-height:300px"><table><thead><tr>
+        <th>Model</th><th>Reqs</th><th>Errors</th><th>Tokens</th><th>Avg ms</th>
+      </tr></thead><tbody id="an_models"></tbody></table></div>
+    </div>
+    <div class="card"><h2>Top providers</h2>
+      <div class="scroll" style="max-height:300px"><table><thead><tr>
+        <th>Provider</th><th>Reqs</th><th>Errors</th><th>Tokens</th><th>Avg ms</th>
+      </tr></thead><tbody id="an_prov"></tbody></table></div>
+    </div>
+  </div>
+</section>
+
 <!-- PLAYGROUND -->
 <section class="view" id="v-playground">
   <div class="card">
@@ -487,6 +526,7 @@ $$('nav button').forEach(b => b.onclick = () => {
   if(b.dataset.v==='logs') loadLogs();
   if(b.dataset.v==='extensions') loadExtensions();
   if(b.dataset.v==='fallback') loadRoutes();
+  if(b.dataset.v==='analytics') loadAnalytics();
 });
 
 // ---------------- playground ----------------
@@ -640,8 +680,61 @@ async function loadStats(){
     ['Reqs 24h', s.requests_24h],
     ['Errors 24h', s.errors_24h],
     ['Tokens 24h', s.tokens_24h ?? '—'],
+    ['Cache hits 24h', s.cache_hits_24h ?? 0],
+    ['Active batches', s.batches_active ?? 0],
   ];
   $('#stats').innerHTML = cards.map(([k,v])=>`<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
+}
+
+// ---------------------------------------------------------------- analytics
+async function loadAnalytics(){
+  const hours = $('#an_hours')?.value || '24';
+  const group = $('#an_group')?.value || 'hour';
+  const a = await api(`/analytics?hours=${hours}&group_by=${group}`);
+  const ts = a.timeseries || [];
+  $('#an_meta').textContent =
+    `${ts.reduce((n,b)=>n+b.requests,0)} requests · ${ts.reduce((n,b)=>n+(b.errors||0),0)} errors · ` +
+    `${ts.reduce((n,b)=>n+(b.cache_hits||0),0)} cached`;
+
+  const barChart = (rows, fn, opts={}) => {
+    if(!rows.length) return '<p class="dim mini">No data yet — make some requests first.</p>';
+    const W = 640, H = 160, PAD = 26;
+    const max = Math.max(1, ...rows.map(fn));
+    const bw = Math.max(2, (W - PAD*2) / rows.length - 2);
+    const x = i => PAD + i * ((W - PAD*2) / rows.length);
+    const h = v => (v / max) * (H - PAD*2);
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%">`;
+    rows.forEach((r,i)=>{
+      const v = fn(r);
+      svg += `<rect x="${x(i)+1}" y="${H-PAD-h(v)}" width="${bw}" height="${h(v)}" `+
+             `fill="var(--acc)" rx="2"><title>${esc(r.label)}: ${v}${opts.unit||''}</title></rect>`;
+    });
+    svg += `<text x="${PAD}" y="14" class="mini" fill="var(--dim)">max ${max}${opts.unit||''}</text>`;
+    svg += `<text x="${PAD}" y="${H-8}" class="mini" fill="var(--dim)">${esc(rows[0].label)}</text>`;
+    svg += `<text x="${W-PAD}" y="${H-8}" text-anchor="end" class="mini" fill="var(--dim)">${esc(rows[rows.length-1].label)}</text>`;
+    return svg + '</svg>';
+  };
+
+  const label = b => {
+    const d = new Date(b.bucket*1000);
+    return group === 'day'
+      ? d.toLocaleDateString(undefined,{month:'short',day:'numeric'})
+      : d.toLocaleTimeString(undefined,{hour:'2-digit'});
+  };
+  const rows = ts.map(b=>({...b, label:label(b)}));
+  $('#an_req_chart').innerHTML = barChart(rows, r=>r.requests, {unit:''}) +
+    (rows.some(r=>r.errors) ? `<div class="mini warn">${rows.reduce((n,r)=>n+(r.errors||0),0)} errors total</div>` : '');
+  $('#an_tok_chart').innerHTML = barChart(rows, r=>(r.tokens_in||0)+(r.tokens_out||0), {unit:' tok'});
+
+  const topTable = (rows, el) => {
+    $(el).innerHTML = rows.map(r=>`<tr>
+      <td class="mono">${esc(r.name)}</td><td>${r.requests}</td>
+      <td>${r.errors?`<span class="warn">${r.errors}</span>`:'0'}</td>
+      <td class="mini">${(r.tokens||0).toLocaleString()}</td><td class="mini dim">${r.avg_latency_ms}</td>
+    </tr>`).join('') || `<tr><td colspan="5" class="dim">—</td></tr>`;
+  };
+  topTable(a.top_models||[], '#an_models');
+  topTable(a.top_providers||[], '#an_prov');
 }
 
 function applyPreset(){
@@ -678,7 +771,8 @@ async function addProvider(){
 
   const r = await api('/providers',{method:'POST',body:JSON.stringify({
     name, base_url, kind:$('#p_kind').value,
-    prefix:$('#p_prefix').value.trim(), extra_headers:extra, api_keys
+    prefix:$('#p_prefix').value.trim(), extra_headers:extra, api_keys,
+    priority:+$('#p_priority').value || 100
   })});
   toast(`Provider "${name}" added with ${r.keys_added} key(s)`,'ok');
 
@@ -716,6 +810,7 @@ async function loadProviders(){
         <span class="tag">${esc(p.kind)}</span>
         <span class="tag mono">${esc(p.base_url)}</span>
         ${p.prefix?`<span class="tag mono">prefix ${esc(p.prefix)}</span>`:''}
+        <span class="tag" title="lower = tried first">prio ${p.priority??100}</span>
         <span class="tag">${p.model_count} models</span>
         <div class="sp" style="flex:1"></div>
         <button class="sm" onclick="toggleProvider(${p.id},${p.enabled?0:1})">${p.enabled?'Disable':'Enable'}</button>
@@ -761,7 +856,9 @@ async function editProvider(id){
   const p = PROVIDERS.find(x=>x.id===id);
   const base_url = prompt('Base URL', p.base_url); if(base_url===null) return;
   const prefix = prompt('Model prefix', p.prefix); if(prefix===null) return;
-  await api('/providers/'+id,{method:'PATCH',body:JSON.stringify({base_url,prefix})});
+  const priority = prompt('Priority (lower = tried first)', p.priority??100);
+  if(priority===null) return;
+  await api('/providers/'+id,{method:'PATCH',body:JSON.stringify({base_url,prefix,priority:+priority||100})});
   toast('Updated — re-sync models so prefixes apply','ok'); loadProviders();
 }
 async function addKeys(pid){
@@ -775,6 +872,11 @@ async function delKey(id){ if(!confirm('Delete this API key?')) return; await ap
 async function clearCooldowns(pid){
   await api('/keys/clear-cooldowns'+(pid?('?provider_id='+pid):''),{method:'POST'});
   toast('Cooldowns cleared','ok'); loadProviders(); loadStats();
+}
+async function clearCache(){
+  const s = await api('/cache/stats');
+  await api('/cache/clear',{method:'POST'});
+  toast(`Cache cleared (${s.entries} entries, ${s.hits} hits served)`,'ok'); loadStats();
 }
 
 async function loadClientKeys(){

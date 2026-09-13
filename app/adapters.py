@@ -35,7 +35,7 @@ BAD_REQUEST = "BAD_REQUEST"
 SERVER_ERROR = "SERVER_ERROR"
 NETWORK_ERROR = "NETWORK_ERROR"
 
-KNOWN_KINDS = ("openai", "anthropic")
+KNOWN_KINDS = ("openai", "anthropic", "gemini")
 
 # reasoning_effort (OpenAI style) -> anthropic thinking budget
 REASONING_EFFORT_BUDGETS = {"low": 1024, "medium": 8192, "high": 16000}
@@ -91,6 +91,8 @@ def auth_headers(provider: Dict[str, Any], api_key: str) -> Dict[str, str]:
     if kind == "anthropic":
         headers["x-api-key"] = api_key
         headers["anthropic-version"] = ANTHROPIC_VERSION
+    elif kind == "gemini":
+        headers["x-goog-api-key"] = api_key
     else:
         headers["Authorization"] = f"Bearer {api_key}"
     headers.update(extra_headers(provider))
@@ -220,6 +222,12 @@ async def list_models(
             mx = int(tp.get("max_completion_tokens") or 0)
         except (TypeError, ValueError):
             mx = 0
+        # Google native list entries: inputTokenLimit carries the context window
+        if m.get("inputTokenLimit"):
+            try:
+                ctx = int(ctx or m.get("inputTokenLimit"))
+            except (TypeError, ValueError):
+                pass
         out.append({
             "id": mid,
             "is_free": _is_free(m),
@@ -510,6 +518,301 @@ def anthropic_to_openai(body: Dict[str, Any], model: str) -> Dict[str, Any]:
     }
 
 
+# --------------------------------------------------------------------------
+# gemini native: openai <-> gemini translation
+# --------------------------------------------------------------------------
+
+def _data_uri_to_gemini(url: str) -> Optional[Dict[str, Any]]:
+    """data:<mime>;base64,<b64> -> {"inlineData": {"mimeType": mime, "data": b64}}."""
+    if not url.startswith("data:"):
+        return {"fileData": {"fileUri": url}}
+    header, _, b64 = url.partition(",")
+    media = header[5:].split(";")[0] or "image/png"
+    return {"inlineData": {"mimeType": media, "data": b64}}
+
+
+def _parts_to_gemini(content: Any) -> List[Dict[str, Any]]:
+    """OpenAI content (str | parts list) -> gemini parts (text/inlineData/functionResponse)."""
+    if isinstance(content, str):
+        return [{"text": content}] if content else []
+    parts: List[Dict[str, Any]] = []
+    if isinstance(content, list):
+        for p in content:
+            if not isinstance(p, dict):
+                continue
+            t = p.get("type")
+            if t == "text":
+                if p.get("text"):
+                    parts.append({"text": p["text"]})
+            elif t == "image_url":
+                url = (p.get("image_url") or {}).get("url", "")
+                if url:
+                    conv = _data_uri_to_gemini(url)
+                    if conv:
+                        parts.append(conv)
+            elif t == "input_audio":
+                ia = p.get("input_audio") or {}
+                if ia.get("data"):
+                    parts.append({"inlineData": {
+                        "mimeType": f"audio/{ia.get('format') or 'wav'}",
+                        "data": ia["data"],
+                    }})
+    return parts
+
+
+def _tools_to_gemini(tools: List[Any]) -> List[Dict[str, Any]]:
+    """OpenAI tools -> gemini functionDeclarations."""
+    out: List[Dict[str, Any]] = []
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        fn = t.get("function") if t.get("type") == "function" else t
+        if isinstance(fn, dict) and fn.get("name"):
+            decl = {"name": fn["name"]}
+            if fn.get("description"):
+                decl["description"] = fn["description"]
+            params = fn.get("parameters") or fn.get("input_schema")
+            if isinstance(params, dict):
+                decl["parameters"] = params
+            out.append({"functionDeclaration": decl})
+    return out
+
+
+def openai_to_gemini(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """OpenAI chat payload -> gemini generateContent body."""
+    system_parts: List[str] = []
+    contents: List[Dict[str, Any]] = []
+
+    for msg in payload.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role in ("system", "developer"):
+            system_parts.append(_text_of(msg.get("content")))
+            continue
+        if role == "tool":
+            try:
+                result = json.loads(msg.get("content") or "null")
+            except (ValueError, TypeError):
+                result = str(msg.get("content") or "")
+            contents.append({
+                "role": "user",  # gemini has no tool role: functionResponse rides a user turn
+                "parts": [{"functionResponse": {
+                    "name": msg.get("name") or "",
+                    "response": result if isinstance(result, dict) else {"result": result},
+                }}],
+            })
+            continue
+        if role == "assistant":
+            parts: List[Dict[str, Any]] = []
+            for cp in _parts_to_gemini(msg.get("content")):
+                parts.append(cp)
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except (ValueError, TypeError):
+                    args = {"_raw": fn.get("arguments")}
+                parts.append({"functionCall": {"name": fn.get("name") or "", "args": args}})
+            contents.append({"role": "model", "parts": parts or [{"text": ""}]})
+            continue
+        # user
+        contents.append({"role": "user", "parts": _parts_to_gemini(msg.get("content")) or [{"text": ""}]})
+
+    gen_cfg: Dict[str, Any] = {}
+    requested_max = payload.get("max_tokens") or payload.get("max_completion_tokens")
+    if requested_max:
+        try:
+            gen_cfg["maxOutputTokens"] = int(requested_max)
+        except (TypeError, ValueError):
+            pass
+    # sampling params only legal when thinking is off (same rule as anthropic)
+    budget = thinking_budget_from_payload(payload)
+    if not budget:
+        if payload.get("temperature") is not None:
+            gen_cfg["temperature"] = payload.get("temperature")
+        if payload.get("top_p") is not None:
+            gen_cfg["topP"] = payload.get("top_p")
+        stop = payload.get("stop")
+        if stop:
+            gen_cfg["stopSequences"] = [stop] if isinstance(stop, str) else list(stop)
+    else:
+        gen_cfg["thinkingConfig"] = {"thinkingBudget": budget}
+
+    body: Dict[str, Any] = {"contents": contents or [{"role": "user", "parts": [{"text": "hi"}]}]}
+    if system_parts:
+        body["systemInstruction"] = {"parts": [{"text": "\n\n".join(p for p in system_parts if p)}]}
+    if gen_cfg:
+        body["generationConfig"] = gen_cfg
+    tools = _tools_to_gemini(payload.get("tools"))
+    if tools:
+        body["tools"] = tools
+        tc = payload.get("tool_choice")
+        if tc == "required":
+            body["toolConfig"] = {"functionCallingConfig": {"mode": "ANY"}}
+        elif isinstance(tc, dict) and (tc.get("function") or {}).get("name"):
+            body["toolConfig"] = {"functionCallingConfig": {
+                "mode": "ANY",
+                "allowedFunctionNames": [tc["function"]["name"]],
+            }}
+    if payload.get("user"):
+        body["labels"] = {"user": str(payload["user"])[:63]}
+    return body
+
+
+def gemini_to_openai(data: Dict[str, Any], model: str) -> Dict[str, Any]:
+    """Gemini generateContent response -> OpenAI chat.completion body."""
+    text_parts: List[str] = []
+    thinking_parts: List[str] = []
+    tool_calls: List[Dict[str, Any]] = []
+    finish = "stop"
+    try:
+        cand = (data.get("candidates") or [])[0]
+    except (IndexError, TypeError, KeyError):
+        cand = {}
+    for part in (cand.get("content") or {}).get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("thought") and part.get("text"):
+            thinking_parts.append(part.get("text", ""))
+        elif part.get("text"):
+            text_parts.append(part["text"])
+        elif isinstance(part.get("functionCall"), dict):
+            fc = part["functionCall"]
+            tool_calls.append({
+                "id": f"call_{uuid.uuid4().hex[:16]}",
+                "type": "function",
+                "function": {
+                    "name": fc.get("name") or "",
+                    "arguments": json.dumps(fc.get("args") or {}),
+                },
+            })
+    # finish mapping: gemini finishReason MAX_TOKENS -> length, STOP -> stop,
+    # SAFETY/RECITATION etc -> content_filter
+    reason = str(cand.get("finishReason") or "STOP").upper()
+    if reason == "MAX_TOKENS":
+        finish = "length"
+    elif reason in ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"):
+        finish = "content_filter"
+    elif reason == "MALFORMED_FUNCTION_CALL":
+        finish = "tool_calls" if tool_calls else "stop"
+    elif tool_calls:
+        finish = "tool_calls"
+
+    text = "".join(text_parts)
+    message: Dict[str, Any] = {"role": "assistant", "content": text if (text or not tool_calls) else None}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    if thinking_parts:
+        joined = "".join(thinking_parts)
+        message["reasoning"] = joined
+        message["reasoning_content"] = joined
+    um = data.get("usageMetadata") or {}
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": data.get("modelVersion") or model,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+        "usage": {
+            "prompt_tokens": int(um.get("promptTokenCount") or 0),
+            "completion_tokens": int(um.get("candidatesTokenCount") or 0),
+            "total_tokens": int(um.get("totalTokenCount") or 0),
+        },
+    }
+
+
+class GeminiSSETranslator:
+    """Stateful line-by-line Gemini SSE -> OpenAI chat.completion.chunk converter.
+
+    Each `data: {...}` line is one generateContent response chunk. Text and
+    thought parts stream as content/reasoning deltas, functionCall parts as
+    tool_calls deltas; usageMetadata lands on the final chunk.
+    """
+
+    def __init__(self, model: str, chunk_id: Optional[str] = None):
+        self.model = model
+        self.chunk_id = chunk_id or f"chatcmpl-{uuid.uuid4().hex[:20]}"
+        self.usage_in = 0
+        self.usage_out = 0
+        self.started = False
+
+    def _chunk(self, delta: Dict[str, Any], finish: Optional[str] = None) -> str:
+        obj = {
+            "id": self.chunk_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+        if finish is not None:
+            obj["usage"] = {
+                "prompt_tokens": self.usage_in,
+                "completion_tokens": self.usage_out,
+                "total_tokens": self.usage_in + self.usage_out,
+            }
+        return "data: " + json.dumps(obj, ensure_ascii=False)
+
+    def convert(self, raw_line: str) -> Optional[str]:
+        if not raw_line.startswith("data:"):
+            return None
+        data = raw_line[5:].strip()
+        if not data or data == "[DONE]":
+            return None
+        try:
+            evt = json.loads(data)
+        except ValueError:
+            return None
+        if not isinstance(evt, dict):
+            return None
+        out: Optional[str] = None
+        if not self.started:
+            self.started = True
+        um = evt.get("usageMetadata") or {}
+        if um.get("promptTokenCount"):
+            self.usage_in = int(um.get("promptTokenCount") or 0)
+        if um.get("candidatesTokenCount"):
+            self.usage_out = int(um.get("candidatesTokenCount") or 0)
+        try:
+            cand = (evt.get("candidates") or [])[0]
+        except (IndexError, TypeError, KeyError):
+            cand = {}
+        parts = (cand.get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts
+                       if isinstance(p, dict) and p.get("text") and not p.get("thought"))
+        thought = "".join(p.get("text", "") for p in parts
+                          if isinstance(p, dict) and p.get("text") and p.get("thought"))
+        deltas: List[Dict[str, Any]] = []
+        if text:
+            deltas.append({"content": text})
+        if thought:
+            deltas.append({"reasoning": thought, "reasoning_content": thought})
+        for p in parts:
+            if isinstance(p, dict) and isinstance(p.get("functionCall"), dict):
+                fc = p["functionCall"]
+                deltas.append({"tool_calls": [{
+                    "index": len(deltas),
+                    "id": f"call_{uuid.uuid4().hex[:16]}",
+                    "type": "function",
+                    "function": {"name": fc.get("name") or "", "arguments": json.dumps(fc.get("args") or {})},
+                }]})
+        # finish: last chunk carries finishReason
+        reason = str(cand.get("finishReason") or "").upper()
+        finish = None
+        if reason == "MAX_TOKENS":
+            finish = "length"
+        elif reason in ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"):
+            finish = "content_filter"
+        elif reason == "STOP":
+            finish = "stop"
+        if deltas:
+            out = "\n\n".join(self._chunk(d) for d in deltas)
+        if finish is not None:
+            fin = self._chunk({}, finish=finish)
+            out = f"{out}\n\n{fin}" if out else fin
+        return out
+
+
 class AnthropicSSETranslator:
     """Stateful line-by-line Anthropic SSE -> OpenAI chat.completion.chunk converter.
 
@@ -624,7 +927,7 @@ def anthropic_sse_to_openai(raw_line: str, model: str, chunk_id: str) -> Optiona
 # request building
 # --------------------------------------------------------------------------
 
-_OPENAI_DROP_KEYS = ("_nova_thinking", "_nova", "nova", "auto_tools", "spoof_model")
+_OPENAI_DROP_KEYS = ("_nova_thinking", "_nova", "nova", "auto_tools", "spoof_model", "cache")
 
 
 def spoof_sse_line(line: str, model: str) -> str:
@@ -664,6 +967,13 @@ def build_request(
         if endpoint != "chat":
             raise ValueError(f"anthropic provider does not support endpoint '{endpoint}'")
         return f"{_base(provider)}/messages", headers, openai_to_anthropic(payload)
+
+    if kind == "gemini":
+        if endpoint != "chat":
+            raise ValueError(f"gemini provider does not support endpoint '{endpoint}'")
+        model_id = str(payload.get("model") or "")
+        method = "streamGenerateContent?alt=sse" if payload.get("stream") else "generateContent"
+        return f"{_base(provider)}/models/{model_id}:{method}", headers, openai_to_gemini(payload)
 
     path = {
         "chat": "/chat/completions",

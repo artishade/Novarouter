@@ -56,12 +56,13 @@ def add_provider(
     prefix: str = "",
     extra_headers: Optional[Dict[str, str]] = None,
     enabled: bool = True,
+    priority: int = 100,
 ) -> int:
     if kind not in adapters.KNOWN_KINDS:
         raise ValueError(f"kind must be one of {adapters.KNOWN_KINDS}")
     return db.execute(
-        """INSERT INTO providers (name, base_url, kind, prefix, enabled, extra_headers, created_at)
-           VALUES (?,?,?,?,?,?,?)""",
+        """INSERT INTO providers (name, base_url, kind, prefix, enabled, extra_headers, priority, created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
         (
             name.strip(),
             base_url.strip().rstrip("/"),
@@ -69,13 +70,14 @@ def add_provider(
             (prefix or "").strip(),
             1 if enabled else 0,
             json.dumps(extra_headers or {}),
+            max(1, int(priority or 100)),
             now(),
         ),
     )
 
 
 def update_provider(pid: int, **fields) -> None:
-    allowed = {"name", "base_url", "kind", "prefix", "enabled", "extra_headers"}
+    allowed = {"name", "base_url", "kind", "prefix", "enabled", "extra_headers", "priority"}
     sets, params = [], []
     for k, v in fields.items():
         if k not in allowed or v is None:
@@ -84,6 +86,8 @@ def update_provider(pid: int, **fields) -> None:
             raise ValueError(f"kind must be one of {adapters.KNOWN_KINDS}")
         if k == "enabled":
             v = 1 if v else 0
+        if k == "priority":
+            v = max(1, int(v))
         if k == "extra_headers" and isinstance(v, dict):
             v = json.dumps(v)
         if k == "base_url":
@@ -488,8 +492,19 @@ def resolve_model(requested: str) -> List[Tuple[Dict[str, Any], str]]:
             (head, tail),
         )
 
+    # provider priority map for ordering (lower number = tried earlier)
+    prio_map = {
+        p["id"]: int(p.get("priority") or 100)
+        for p in db.query("SELECT id, priority FROM providers")
+    }
+
     rank = {adapters.OK: 0, "UNKNOWN": 1, adapters.RATE_LIMITED: 2}
-    rows.sort(key=lambda r: (rank.get(r["status"], 3), r["latency_ms"] or 9999))
+    # provider priority first (lower = tried earlier), then health, then latency
+    rows.sort(key=lambda r: (
+        int((prio_map or {}).get(r["provider_id"], 100)),
+        rank.get(r["status"], 3),
+        r["latency_ms"] or 9999,
+    ))
 
     out = []
     for r in rows:
@@ -649,7 +664,7 @@ def auto_fallback_targets(
     if need_caps:
         prof = {**prof, **{k: True for k, v in need_caps.items() if v}}
     rows = db.query(
-        """SELECT m.exposed_id, m.capabilities, m.latency_ms, m.status FROM models m
+        """SELECT m.exposed_id, m.capabilities, m.latency_ms, m.status, m.provider_id FROM models m
            JOIN providers p ON p.id=m.provider_id
            WHERE m.enabled=1 AND p.enabled=1 AND m.status IN ('OK','UNKNOWN')
              AND m.exposed_id != ?""",
@@ -658,6 +673,10 @@ def auto_fallback_targets(
     hard = {"tools", "embeddings"}
     hard |= {k for k, v in (need_caps or {}).items() if v}
     soft = {"reasoning", "vision", "audio_in"}
+    prio_map = {
+        p["id"]: int(p.get("priority") or 100)
+        for p in db.query("SELECT id, priority FROM providers")
+    }
     scored: List[Tuple[Any, ...]] = []
     for r in rows:
         caps = model_capabilities(r)
@@ -666,11 +685,12 @@ def auto_fallback_targets(
         smiss = sum(1 for k in soft if prof.get(k) and not caps.get(k))
         bad_status = 0 if r["status"] == "OK" else 1
         lat = r["latency_ms"] or 999999
-        scored.append((bad_status, smiss, lat, r["exposed_id"]))
+        prio = int(prio_map.get(r["provider_id"], 100))
+        scored.append((bad_status, smiss, prio, lat, r["exposed_id"]))
     scored.sort()
     out: List[str] = []
     for t in scored:
-        mid = t[3]
+        mid = t[4]
         if mid not in out:
             out.append(mid)
     if limit:
@@ -706,6 +726,12 @@ def stats() -> Dict[str, Any]:
             "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) c FROM request_log WHERE ts > ?",
             (t - 86400,),
         )["c"],
+        "cache_hits_24h": db.one(
+            "SELECT COUNT(*) c FROM request_log WHERE ts > ? AND via='cache'", (t - 86400,)
+        )["c"],
+        "batches_active": db.one(
+            "SELECT COUNT(*) c FROM batches WHERE status IN ('validating','in_progress')",
+        )["c"],
     }
 
 
@@ -717,4 +743,213 @@ def recent_logs(limit: int = 100) -> List[Dict[str, Any]]:
            LEFT JOIN client_keys c ON c.id = l.client_key_id
            ORDER BY l.id DESC LIMIT ?""",
         (limit,),
+    )
+
+
+# --------------------------------------------------------------------------
+# analytics
+# --------------------------------------------------------------------------
+
+def usage_timeseries(
+    hours: int = 24,
+    group_by: str = "hour",
+    model: str = "",
+    provider_id: Optional[int] = None,
+    client_key_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Request log aggregated into time buckets.
+
+    group_by: 'hour' (default) or 'day'. Portable SQL: integer division on
+    the unix ts, the same expression idx_reqlog_day uses.
+    """
+    hours = max(1, min(int(hours or 24), 720))
+    width = 3600 if (group_by or "hour") != "day" else 86400
+    since = now() - hours * 3600
+    sql = f"""
+        SELECT (CAST(ts / {width} AS INT)) * {width} AS bucket,
+               COUNT(*) AS requests,
+               SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS errors,
+               SUM(CASE WHEN via='cache' THEN 1 ELSE 0 END) AS cache_hits,
+               SUM(tokens_in) AS tokens_in,
+               SUM(tokens_out) AS tokens_out,
+               AVG(latency_ms) AS avg_latency_ms
+        FROM request_log
+        WHERE ts > ?"""
+    params: List[Any] = [since]
+    if model:
+        sql += " AND model=?"
+        params.append(model)
+    if provider_id:
+        sql += " AND provider_id=?"
+        params.append(provider_id)
+    if client_key_id:
+        sql += " AND client_key_id=?"
+        params.append(client_key_id)
+    sql += f" GROUP BY bucket ORDER BY bucket ASC"
+    rows = db.query(sql, tuple(params))
+    for r in rows:
+        r["avg_latency_ms"] = int(r.get("avg_latency_ms") or 0)
+    return rows
+
+
+def _top_by(column: str, hours: int) -> List[Dict[str, Any]]:
+    """Top-N aggregation over request_log grouped by `column` (model | provider_id | client_key_id)."""
+    hours = max(1, min(int(hours or 24), 720))
+    since = now() - hours * 3600
+    label = {
+        "model": "model",
+        "provider_id": "p.name",
+        "client_key_id": "c.name",
+    }[column]
+    join = ""
+    if column == "provider_id":
+        join = "LEFT JOIN providers p ON p.id = request_log.provider_id"
+    elif column == "client_key_id":
+        join = "LEFT JOIN client_keys c ON c.id = request_log.client_key_id"
+    rows = db.query(
+        f"""SELECT {label} AS name, COUNT(*) AS requests,
+                   SUM(CASE WHEN request_log.status >= 400 THEN 1 ELSE 0 END) AS errors,
+                   SUM(request_log.tokens_in + request_log.tokens_out) AS tokens,
+                   AVG(request_log.latency_ms) AS avg_latency_ms
+            FROM request_log {join}
+            WHERE request_log.ts > ? GROUP BY {label} ORDER BY requests DESC LIMIT 10""",
+        (since,),
+    )
+    for r in rows:
+        r["name"] = r.get("name") or "(unknown)"
+        r["avg_latency_ms"] = int(r.get("avg_latency_ms") or 0)
+    return rows
+
+
+def top_models(hours: int = 24) -> List[Dict[str, Any]]:
+    return _top_by("model", hours)
+
+
+def top_providers(hours: int = 24) -> List[Dict[str, Any]]:
+    return _top_by("provider_id", hours)
+
+
+def top_clients(hours: int = 24) -> List[Dict[str, Any]]:
+    return _top_by("client_key_id", hours)
+
+
+# --------------------------------------------------------------------------
+# files
+# --------------------------------------------------------------------------
+
+def create_file(client_key_id: int, filename: str, purpose: str, content: bytes) -> Dict[str, Any]:
+    fid = "file-" + secrets.token_urlsafe(16)
+    db.execute(
+        """INSERT INTO files (id, client_key_id, filename, purpose, bytes, content, status, created_at)
+           VALUES (?,?,?,?,?,?, 'processed', ?)""",
+        (fid, client_key_id, filename.strip() or "upload", (purpose or "").strip(),
+         len(content), content, now()),
+    )
+    return get_file(fid, client_key_id) or {"id": fid}
+
+
+def get_file(fid: str, client_key_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    row = db.one("SELECT * FROM files WHERE id=?", (fid,))
+    if not row:
+        return None
+    if client_key_id is not None and row.get("client_key_id") not in (None, client_key_id):
+        return None  # files belong to the uploading client key
+    row.pop("content", None)  # metadata view; content fetched explicitly
+    return row
+
+
+def get_file_content(fid: str, client_key_id: Optional[int] = None) -> Optional[bytes]:
+    row = db.one("SELECT content, client_key_id FROM files WHERE id=?", (fid,))
+    if not row:
+        return None
+    if client_key_id is not None and row.get("client_key_id") not in (None, client_key_id):
+        return None
+    return row.get("content") or b""
+
+
+def list_files(client_key_id: Optional[int] = None, purpose: str = "") -> List[Dict[str, Any]]:
+    sql = "SELECT id, client_key_id, filename, purpose, bytes, status, created_at FROM files WHERE 1=1"
+    params: List[Any] = []
+    if client_key_id is not None:
+        sql += " AND client_key_id=?"
+        params.append(client_key_id)
+    if purpose:
+        sql += " AND purpose=?"
+        params.append(purpose)
+    sql += " ORDER BY created_at DESC LIMIT 200"
+    return db.query(sql, tuple(params))
+
+
+def delete_file(fid: str, client_key_id: Optional[int] = None) -> bool:
+    if not get_file(fid, client_key_id):
+        return False
+    db.execute("DELETE FROM files WHERE id=?", (fid,))
+    return True
+
+
+def append_file_content(fid: str, chunk: bytes) -> None:
+    """Concatenate onto a file's content (batch output building)."""
+    row = db.one("SELECT content FROM files WHERE id=?", (fid,))
+    if not row:
+        return
+    existing = row.get("content") or b""
+    db.execute(
+        "UPDATE files SET content=?, bytes=? WHERE id=?",
+        (existing + chunk, len(existing) + len(chunk), fid),
+    )
+
+
+# --------------------------------------------------------------------------
+# batches
+# --------------------------------------------------------------------------
+
+def create_batch(client_key_id: int, model: str, total: int, input_file_id: str) -> Dict[str, Any]:
+    bid = "batch-" + secrets.token_urlsafe(16)
+    t = now()
+    db.execute(
+        """INSERT INTO batches (id, client_key_id, status, model, total, input_file_id,
+                                created_at, expires_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (bid, client_key_id, "in_progress", model.strip(), int(total), input_file_id,
+         t, t + 24 * 3600),
+    )
+    return get_batch(bid) or {"id": bid}
+
+
+def get_batch(bid: str) -> Optional[Dict[str, Any]]:
+    return db.one("SELECT * FROM batches WHERE id=?", (bid,))
+
+
+def update_batch(bid: str, **fields) -> None:
+    allowed = {"status", "done", "failed", "output_file_id", "error", "completed_at"}
+    sets, params = [], []
+    for k, v in fields.items():
+        if k not in allowed or v is None:
+            continue
+        sets.append(f"{k}=?")
+        params.append(v)
+    if not sets:
+        return
+    params.append(bid)
+    db.execute(f"UPDATE batches SET {', '.join(sets)} WHERE id=?", tuple(params))
+
+
+def list_batches(client_key_id: Optional[int] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    if client_key_id is not None:
+        return db.query(
+            "SELECT * FROM batches WHERE client_key_id=? ORDER BY created_at DESC LIMIT ?",
+            (client_key_id, min(max(limit, 1), 200)),
+        )
+    return db.query(
+        "SELECT * FROM batches ORDER BY created_at DESC LIMIT ?",
+        (min(max(limit, 1), 200),),
+    )
+
+
+def expire_stale_batches() -> int:
+    """Mark in-progress batches past their 24h window as expired. Returns count."""
+    return db.execute_rowcount(
+        """UPDATE batches SET status='expired', error='24h window elapsed'
+           WHERE status IN ('validating','in_progress') AND expires_at < ?""",
+        (now(),),
     )

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import adapters, checker, config, db, extensions, store
+from . import adapters, cache, checker, config, db, extensions, store
 
 router = APIRouter()
 
@@ -19,7 +19,7 @@ PRESETS = [
     {"name": "xai", "base_url": "https://api.x.ai/v1", "kind": "openai", "prefix": "xai/", "key_hint": "xai-..."},
     {"name": "fireworks", "base_url": "https://api.fireworks.ai/inference/v1", "kind": "openai", "prefix": "fireworks/", "key_hint": "fw_..."},
     {"name": "openai", "base_url": "https://api.openai.com/v1", "kind": "openai", "prefix": "openai/", "key_hint": "sk-proj-..."},
-    {"name": "gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "kind": "openai", "prefix": "gemini/", "key_hint": "AIza..."},
+    {"name": "gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta", "kind": "gemini", "prefix": "gemini/", "key_hint": "AIza..."},
     {"name": "anthropic", "base_url": "https://api.anthropic.com/v1", "kind": "anthropic", "prefix": "anthropic/", "key_hint": "sk-ant-..."},
     {"name": "ollama-local", "base_url": "http://127.0.0.1:11434/v1", "kind": "openai", "prefix": "local/", "key_hint": "ollama (any placeholder works)"},
 ]
@@ -61,6 +61,7 @@ class ProviderIn(BaseModel):
     prefix: str = ""
     enabled: bool = True
     extra_headers: Dict[str, str] = Field(default_factory=dict)
+    priority: int = 100
     # First API key(s) for this provider, added in the same request.
     # Accepts one key, a newline/comma separated blob, or a list.
     api_keys: Union[str, List[str]] = ""
@@ -74,6 +75,7 @@ class ProviderPatch(BaseModel):
     prefix: Optional[str] = None
     enabled: Optional[bool] = None
     extra_headers: Optional[Dict[str, str]] = None
+    priority: Optional[int] = None
 
 
 class UpstreamKeyIn(BaseModel):
@@ -179,6 +181,10 @@ async def meta(request: Request):
             "402": config.COOLDOWN_402,
             "5xx": config.COOLDOWN_5XX,
         },
+        "scheduler": {"check_interval": config.CHECK_INTERVAL},
+        "hedging": {"delay": config.HEDGE_DELAY},
+        "cache": {"ttl": config.CACHE_TTL, "max_entries": config.CACHE_MAX},
+        "limits": {"file_max_mb": config.FILE_MAX_MB, "batch_max_items": config.BATCH_MAX_ITEMS},
     }
 
 
@@ -186,6 +192,59 @@ async def meta(request: Request):
 async def stats(request: Request):
     require_admin(request)
     return store.stats()
+
+
+@router.get("/analytics")
+async def analytics(
+    request: Request,
+    hours: int = 24,
+    group_by: str = "hour",
+    model: str = "",
+    provider_id: int = 0,
+    client_key_id: int = 0,
+):
+    """Timeseries + top-N aggregations over the request log."""
+    require_admin(request)
+    ts = store.usage_timeseries(
+        hours=hours, group_by=group_by, model=model,
+        provider_id=provider_id or None, client_key_id=client_key_id or None,
+    )
+    return {
+        "hours": hours,
+        "group_by": group_by,
+        "timeseries": ts,
+        "top_models": store.top_models(hours),
+        "top_providers": store.top_providers(hours),
+        "top_clients": store.top_clients(hours),
+    }
+
+
+# ----------------------------------------------------------------- cache
+@router.get("/cache/stats")
+async def cache_stats(request: Request):
+    require_admin(request)
+    return cache.stats()
+
+
+@router.post("/cache/clear")
+async def cache_clear(request: Request):
+    require_admin(request)
+    cache.clear()
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------- files & batches
+@router.get("/files")
+async def admin_files(request: Request, purpose: str = ""):
+    require_admin(request)
+    rows = store.list_files(purpose=purpose)
+    return {"data": rows}
+
+
+@router.get("/batches")
+async def admin_batches(request: Request, limit: int = 50):
+    require_admin(request)
+    return {"data": store.list_batches(limit=limit)}
 
 
 @router.get("/logs")
@@ -206,7 +265,7 @@ async def create_provider(request: Request, body: ProviderIn):
     require_admin(request)
     try:
         pid = store.add_provider(
-            body.name, body.base_url, body.kind, body.prefix, body.extra_headers, body.enabled
+            body.name, body.base_url, body.kind, body.prefix, body.extra_headers, body.enabled, body.priority
         )
     except Exception as e:  # noqa: BLE001 - surface uniqueness/validation errors
         raise HTTPException(status_code=400, detail=str(e))

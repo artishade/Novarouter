@@ -62,6 +62,8 @@ image input" errors. See [Media routing](#media-routing-agents-never-hit-model-c
 /v1/audio/translations      STT translate
 /v1/moderations             text moderation
 /v1/models                  catalogue with capabilities + health
+/v1/files                   file upload / list / retrieve / delete (purpose=batch feeds batches)
+/v1/batches                 async bulk jobs — JSONL in, JSONL out (24h window)
 ```
 
 ## Quick start
@@ -173,6 +175,82 @@ Env var: `NOVA_MEDIA_ROUTING` (default `1`). The route preview
 (`GET /admin/api/routes/preview?model=...`) shows each model's blind spots
 and which stand-ins would take over.
 
+## Provider kinds
+
+Three native protocol adapters — every one works through the same fan-out,
+fallback, media routing and spoofing machinery:
+
+| kind | providers | notes |
+|---|---|---|
+| `openai` | OpenRouter, Groq, DeepSeek, Together, Cerebras, Mistral, xAI, Fireworks, Ollama, ... | any OpenAI-compatible `/v1` endpoint |
+| `anthropic` | Anthropic | native Messages API, bidirectional translation + SSE |
+| `gemini` | Google AI Studio | native `generateContent` / `streamGenerateContent`, thinking budget → `thinkingConfig`, function calling, inline images |
+
+Add any of them from the dashboard's preset picker, or:
+
+```bash
+curl -X POST $BASE/admin/api/providers -H "X-Admin-Token: $ADMIN" -d '{
+  "name": "gemini", "kind": "gemini",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta",
+  "prefix": "gemini/", "priority": 10,
+  "api_keys": "AIza..."
+}'
+```
+
+### Provider priority
+
+Every provider has a `priority` (default 100; lower = tried first). Resolution
+order across providers for the same model: **priority → health → latency**.
+Auto-fallback stand-ins follow the same tiebreak. Free tier first, paid
+backup: set the free provider to 10 and the paid one to 100.
+
+### Request hedging (cut tail latency)
+
+Set `NOVA_HEDGE_DELAY=2` and the first attempt of every buffered chat
+request races a second provider once the primary has been silent for 2s.
+First 200 wins; the loser is cancelled; `_nova.hedged: true` marks a hedge
+win in the response and the log attributes the request to the winner.
+
+### Response caching
+
+`NOVA_CACHE_TTL=600` serves identical chat requests (same model, messages,
+sampling params) from an in-memory LRU — zero upstream tokens, `_nova.cached:
+true` in the response, `via=cache` in the log. Opt out per request with
+`{"nova":{"cache":false}}`; clear from the dashboard or
+`POST /admin/api/cache/clear`.
+
+### Scheduled health checks
+
+`NOVA_CHECK_INTERVAL=3600` re-checks never-checked models every hour in the
+background (conservative: 3 workers, no catalogue sync). Full checks stay
+manual from the dashboard.
+
+### Batch + Files APIs
+
+OpenAI-style async bulk jobs at gateway quality — model fallback, key
+rotation and spoofing all apply inside a batch:
+
+```bash
+# 1. upload a JSONL input file: {"custom_id": ..., "body": {chat request}}
+curl -X POST $BASE/v1/files -H "Authorization: Bearer nova-..." \
+     -F file=@requests.jsonl -F purpose=batch
+# 2. create + start the batch, then poll
+curl -X POST $BASE/v1/batches -H "Authorization: Bearer nova-..." \
+     -d '{"input_file_id": "file-..."}'
+curl $BASE/v1/batches/batch-... -H "Authorization: Bearer nova-..."
+# 3. fetch the JSONL results
+curl $BASE/v1/files/{output_file_id}/content -H "Authorization: Bearer nova-..."
+```
+
+Batches run with bounded concurrency (`NOVA_BATCH_CONCURRENCY=4`), expire
+after 24h, and are cancellable (`POST /v1/batches/{id}/cancel`).
+
+### Analytics
+
+`GET /admin/api/analytics?hours=24&group_by=hour` — request/error/token/
+latency timeseries plus top models, providers and clients — rendered in the
+dashboard's Analytics tab (24h / 7d / 30d, hourly or daily buckets).
+
 ## Deployments
 
 - **Docker**: `docker build -t novarouter .` → run with `DATABASE_URL` (Postgres)
@@ -181,7 +259,10 @@ and which stand-ins would take over.
 
 Env vars: `DATABASE_URL`, `NOVA_ADMIN_TOKEN`, `NOVA_TIMEOUT`,
 `NOVA_MAX_KEY_ATTEMPTS`, `NOVA_COOLDOWN_429/402/5XX`, `NOVA_LOG_RETENTION`,
-`NOVA_AUTO_FALLBACK`, `NOVA_SPOOF_MODEL`, `NOVA_FALLBACK_MAX`, `NOVA_MEDIA_ROUTING`.
+`NOVA_AUTO_FALLBACK`, `NOVA_SPOOF_MODEL`, `NOVA_FALLBACK_MAX`, `NOVA_MEDIA_ROUTING`,
+`NOVA_CHECK_INTERVAL` (scheduled health checks), `NOVA_HEDGE_DELAY` (request hedging),
+`NOVA_CACHE_TTL` + `NOVA_CACHE_MAX` (response caching), `NOVA_FILE_MAX_MB` (files),
+`NOVA_BATCH_MAX_ITEMS` + `NOVA_BATCH_CONCURRENCY` (batches).
 
 ## Tests
 

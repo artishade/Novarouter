@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS providers (
     prefix          TEXT    NOT NULL DEFAULT '',
     enabled         INTEGER NOT NULL DEFAULT 1,
     extra_headers   TEXT    NOT NULL DEFAULT '{}',
+    priority        INTEGER NOT NULL DEFAULT 100,
     created_at      REAL    NOT NULL
 );
 CREATE TABLE IF NOT EXISTS upstream_keys (
@@ -128,6 +129,32 @@ CREATE TABLE IF NOT EXISTS extension_tools (
     UNIQUE(extension_id, tool_name)
 );
 CREATE INDEX IF NOT EXISTS idx_exttools_name ON extension_tools(tool_name);
+CREATE TABLE IF NOT EXISTS files (
+    id              TEXT PRIMARY KEY,
+    client_key_id   INTEGER,
+    filename        TEXT    NOT NULL,
+    purpose         TEXT    NOT NULL DEFAULT '',
+    bytes           INTEGER NOT NULL DEFAULT 0,
+    content         BLOB,
+    status          TEXT    NOT NULL DEFAULT 'processed',
+    created_at      REAL    NOT NULL
+);
+CREATE TABLE IF NOT EXISTS batches (
+    id              TEXT PRIMARY KEY,
+    client_key_id   INTEGER,
+    status          TEXT    NOT NULL DEFAULT 'validating',
+    model           TEXT    NOT NULL DEFAULT '',
+    total           INTEGER NOT NULL DEFAULT 0,
+    done            INTEGER NOT NULL DEFAULT 0,
+    failed          INTEGER NOT NULL DEFAULT 0,
+    input_file_id   TEXT    NOT NULL DEFAULT '',
+    output_file_id  TEXT    NOT NULL DEFAULT '',
+    error           TEXT    NOT NULL DEFAULT '',
+    created_at      REAL    NOT NULL,
+    expires_at      REAL    NOT NULL,
+    completed_at    REAL
+);
+CREATE INDEX IF NOT EXISTS idx_batches_client ON batches(client_key_id, created_at DESC);
 """
 
 SCHEMA_PG = """
@@ -139,6 +166,7 @@ CREATE TABLE IF NOT EXISTS providers (
     prefix          TEXT    NOT NULL DEFAULT '',
     enabled         INTEGER NOT NULL DEFAULT 1,
     extra_headers   TEXT    NOT NULL DEFAULT '{}',
+    priority        INTEGER NOT NULL DEFAULT 100,
     created_at      DOUBLE PRECISION NOT NULL
 );
 CREATE TABLE IF NOT EXISTS upstream_keys (
@@ -236,6 +264,32 @@ CREATE TABLE IF NOT EXISTS extension_tools (
     UNIQUE(extension_id, tool_name)
 );
 CREATE INDEX IF NOT EXISTS idx_exttools_name ON extension_tools(tool_name);
+CREATE TABLE IF NOT EXISTS files (
+    id              TEXT PRIMARY KEY,
+    client_key_id   BIGINT,
+    filename        TEXT    NOT NULL,
+    purpose         TEXT    NOT NULL DEFAULT '',
+    bytes           INTEGER NOT NULL DEFAULT 0,
+    content         BYTEA,
+    status          TEXT    NOT NULL DEFAULT 'processed',
+    created_at      DOUBLE PRECISION NOT NULL
+);
+CREATE TABLE IF NOT EXISTS batches (
+    id              TEXT PRIMARY KEY,
+    client_key_id   BIGINT,
+    status          TEXT    NOT NULL DEFAULT 'validating',
+    model           TEXT    NOT NULL DEFAULT '',
+    total           INTEGER NOT NULL DEFAULT 0,
+    done            INTEGER NOT NULL DEFAULT 0,
+    failed          INTEGER NOT NULL DEFAULT 0,
+    input_file_id   TEXT    NOT NULL DEFAULT '',
+    output_file_id  TEXT    NOT NULL DEFAULT '',
+    error           TEXT    NOT NULL DEFAULT '',
+    created_at      DOUBLE PRECISION NOT NULL,
+    expires_at      REAL    NOT NULL,
+    completed_at    DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_batches_client ON batches(client_key_id, created_at DESC);
 """
 
 USE_POSTGRES = bool(config.DATABASE_URL)
@@ -260,6 +314,8 @@ def _pg_dsn() -> str:
 
 # (table, column, sqlite_ddl, pg_ddl)
 _MIGRATIONS = [
+    ("providers", "priority", "ALTER TABLE providers ADD COLUMN priority INTEGER NOT NULL DEFAULT 100",
+     "ALTER TABLE providers ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 100"),
     ("client_keys", "rpm_limit", "ALTER TABLE client_keys ADD COLUMN rpm_limit INTEGER NOT NULL DEFAULT 0",
      "ALTER TABLE client_keys ADD COLUMN IF NOT EXISTS rpm_limit INTEGER NOT NULL DEFAULT 0"),
     ("client_keys", "tpd_limit", "ALTER TABLE client_keys ADD COLUMN tpd_limit INTEGER NOT NULL DEFAULT 0",

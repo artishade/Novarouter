@@ -78,6 +78,27 @@ FALLBACK_MAX = int(os.environ.get("NOVA_FALLBACK_MAX", "3"))       # max auto-pi
 # stand-in model instead — spoofed id, so the agent never sees an error.
 MEDIA_ROUTING = os.environ.get("NOVA_MEDIA_ROUTING", "1") == "1"
 
+# Scheduled availability checks: NOVA_CHECK_INTERVAL seconds between
+# automatic background model checks (0 = off, the default — manual only).
+CHECK_INTERVAL = int(os.environ.get("NOVA_CHECK_INTERVAL", "0"))
+
+# Request hedging: when the primary provider hasn't answered within
+# NOVA_HEDGE_DELAY seconds, race a second provider and take the first
+# 200 (0 = off). Cuts tail latency when the primary is slow, not dead.
+HEDGE_DELAY = float(os.environ.get("NOVA_HEDGE_DELAY", "0"))
+
+# Response caching: serve identical chat requests from an in-memory cache
+# for NOVA_CACHE_TTL seconds (0 = off). NOVA_CACHE_MAX caps entries (LRU).
+CACHE_TTL = int(os.environ.get("NOVA_CACHE_TTL", "0"))
+CACHE_MAX = int(os.environ.get("NOVA_CACHE_MAX", "500"))
+
+# Files API: max upload size in MB.
+FILE_MAX_MB = int(os.environ.get("NOVA_FILE_MAX_MB", "20"))
+
+# Batch API: max requests per batch + worker concurrency per batch job.
+BATCH_MAX_ITEMS = int(os.environ.get("NOVA_BATCH_MAX_ITEMS", "50000"))
+BATCH_CONCURRENCY = int(os.environ.get("NOVA_BATCH_CONCURRENCY", "4"))
+
 _ADMIN_TOKEN_FILE = DATA_DIR / "admin_token.txt"
 
 

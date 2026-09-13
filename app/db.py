@@ -416,8 +416,18 @@ def _pg_query(sql: str, params: Sequence[Any] = ()) -> List[Dict[str, Any]]:
 
 
 def _pg_one(sql: str, params: Sequence[Any] = ()) -> Optional[Dict[str, Any]]:
-    rows = _pg_query(sql + " LIMIT 1", params)
-    return rows[0] if rows else None
+    # NB: fetch the first row, never rewrite the SQL — call sites may carry
+    # their own LIMIT 1, and appending one here used to produce
+    # "LIMIT 1 LIMIT 1" (a syntax error -> HTTP 500 on Postgres).
+    pool = _pg_pool_get()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_to_pg(sql), params)
+            if cur.description is None:
+                return None
+            cols = [d.name for d in cur.description]
+            row = cur.fetchone()
+            return dict(zip(cols, row)) if row else None
 
 
 def _pg_execute(sql: str, params: Sequence[Any] = ()) -> int:

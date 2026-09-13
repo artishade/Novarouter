@@ -7,11 +7,29 @@ store.model_row_capabilities, extensions.has_enabled_tools) then produced
 request hitting those paths (Render / Neon / Vercel Postgres deployments).
 """
 import sys
+import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import pytest
 
-from app import db  # noqa: E402
+BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE))
+
+ADMIN_TOKEN = "test-admin-token"
+
+
+@pytest.fixture()
+def db_mod(monkeypatch):
+    """Fresh app.db against a throwaway data dir (repo isolation pattern)."""
+    monkeypatch.setenv("NOVA_DATA_DIR", tempfile.mkdtemp(prefix="nova-dbone-"))
+    monkeypatch.setenv("NOVA_ADMIN_TOKEN", ADMIN_TOKEN)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    for mod in list(sys.modules):
+        if mod.startswith("app"):
+            del sys.modules[mod]
+    from app import db  # noqa: PLC0415
+
+    return db
 
 
 class _Col:
@@ -59,23 +77,33 @@ class _Pool:
         return self.conn
 
 
-def test_one_leaves_limit_1_sql_untouched(monkeypatch):
+def test_one_leaves_limit_1_sql_untouched(db_mod, monkeypatch):
     pool = _Pool()
-    monkeypatch.setattr(db, "_pg_pool_get", lambda: pool)
-    monkeypatch.setattr(db, "USE_POSTGRES", True)
+    monkeypatch.setattr(db_mod, "_pg_pool_get", lambda: pool)
+    monkeypatch.setattr(db_mod, "USE_POSTGRES", True)
 
-    sql = "SELECT 1 AS x FROM models WHERE exposed_id=%s LIMIT 1"
-    row = db.one(sql, ("m",))
+    sql = "SELECT 1 AS x FROM models WHERE exposed_id=? LIMIT 1"
+    row = db_mod.one(sql, ("m",))
 
     assert row == {"x": 7}
-    assert pool.conn.cur.executed == sql  # byte-identical: no appended LIMIT
+    # byte-identical after placeholder translation: no appended LIMIT
+    assert pool.conn.cur.executed == db_mod._to_pg(sql)
     assert "LIMIT 1 LIMIT 1" not in pool.conn.cur.executed
 
 
-def test_one_returns_none_when_no_rows(monkeypatch):
+def test_one_returns_none_when_no_rows(db_mod, monkeypatch):
     pool = _Pool()
     pool.conn.cur.fetchone = lambda: None
-    monkeypatch.setattr(db, "_pg_pool_get", lambda: pool)
-    monkeypatch.setattr(db, "USE_POSTGRES", True)
+    monkeypatch.setattr(db_mod, "_pg_pool_get", lambda: pool)
+    monkeypatch.setattr(db_mod, "USE_POSTGRES", True)
 
-    assert db.one("SELECT 1 AS x FROM t") is None
+    assert db_mod.one("SELECT 1 AS x FROM t") is None
+
+
+def test_one_handles_non_select(db_mod, monkeypatch):
+    pool = _Pool()
+    pool.conn.cur.description = None
+    monkeypatch.setattr(db_mod, "_pg_pool_get", lambda: pool)
+    monkeypatch.setattr(db_mod, "USE_POSTGRES", True)
+
+    assert db_mod.one("DELETE FROM t WHERE id=?") is None

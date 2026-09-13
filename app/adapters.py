@@ -1218,6 +1218,12 @@ class ChatToAnthropicSSE:
     """Stateful OpenAI chat.completion.chunk -> native Anthropic SSE converter.
 
     Lets Claude Code stream live from any OpenAI-kind upstream.
+
+    Content blocks follow the native protocol: each thinking / text / tool_use
+    block gets its own index, allocated in arrival order, and is stopped
+    before the next one starts (reasoning models stream reasoning_content
+    first and content after — the old code reused index 0 for both with no
+    stops, producing a malformed stream clients parse as empty).
     """
 
     def __init__(self, model: str):
@@ -1226,11 +1232,12 @@ class ChatToAnthropicSSE:
         self.usage_in = 0
         self.usage_out = 0
         self.started = False
-        self._text_open = False
-        self._tool_idx = -1
+        self._next_idx = 0      # next content-block index to allocate
+        self._cur_kind = ""     # kind of the currently open block ("" = none)
+        self._cur_idx = -1      # index of the currently open block
+        self._cur_tool = -1     # openai tool idx when the open block is a tool
         self._tools: List[Dict[str, str]] = []   # {"id":..., "name":..., "args":...}
         self._final_stop = "end_turn"
-        self._reasoning_open = False
 
     @staticmethod
     def _sse(evt: Dict[str, Any]) -> str:
@@ -1250,8 +1257,35 @@ class ChatToAnthropicSSE:
         }
         return [self._sse(first)]
 
+    # -- block lifecycle: one open block at a time, like native streams ----
+    def _close_cur(self, out: List[str]) -> None:
+        if self._cur_kind:
+            out.append(self._sse({"type": "content_block_stop", "index": self._cur_idx}))
+            self._cur_kind, self._cur_idx, self._cur_tool = "", -1, -1
+
+    def _open_block(self, out: List[str], kind: str, block: Dict[str, Any], tool_i: int = -1) -> None:
+        self._close_cur(out)
+        self._cur_idx = self._next_idx
+        self._next_idx += 1
+        self._cur_kind, self._cur_tool = kind, tool_i
+        out.append(self._sse({
+            "type": "content_block_start", "index": self._cur_idx, "content_block": block,
+        }))
+
     def feed(self, chunk: Dict[str, Any]) -> List[str]:
         out: List[str] = list(self._start_if_needed())
+        if not isinstance(chunk, dict):
+            return out
+        err = chunk.get("error")
+        if err:
+            # upstream failed mid-stream: surface it as an anthropic error
+            # event so agents see the failure instead of an empty response
+            e = err if isinstance(err, dict) else {"message": err}
+            out.append(self._sse({"type": "error", "error": {
+                "type": e.get("type") or "upstream_error",
+                "message": e.get("message") or "upstream error",
+            }}))
+            return out
         u = chunk.get("usage")
         if isinstance(u, dict):
             self.usage_in = int(u.get("prompt_tokens") or self.usage_in)
@@ -1263,20 +1297,16 @@ class ChatToAnthropicSSE:
 
         content = delta.get("content")
         if isinstance(content, str) and content:
-            if not self._text_open:
-                self._text_open = True
-                out.append(self._sse({"type": "content_block_start", "index": 0,
-                                      "content_block": {"type": "text", "text": ""}}))
-            out.append(self._sse({"type": "content_block_delta", "index": 0,
+            if self._cur_kind != "text":
+                self._open_block(out, "text", {"type": "text", "text": ""})
+            out.append(self._sse({"type": "content_block_delta", "index": self._cur_idx,
                                   "delta": {"type": "text_delta", "text": content}}))
 
         reasoning = delta.get("reasoning") or delta.get("reasoning_content")
         if isinstance(reasoning, str) and reasoning:
-            if not self._reasoning_open:
-                self._reasoning_open = True
-                out.append(self._sse({"type": "content_block_start", "index": 0,
-                                      "content_block": {"type": "thinking", "thinking": ""}}))
-            out.append(self._sse({"type": "content_block_delta", "index": 0,
+            if self._cur_kind != "thinking":
+                self._open_block(out, "thinking", {"type": "thinking", "thinking": ""})
+            out.append(self._sse({"type": "content_block_delta", "index": self._cur_idx,
                                   "delta": {"type": "thinking_delta", "thinking": reasoning}}))
 
         for tc in delta.get("tool_calls") or []:
@@ -1289,21 +1319,21 @@ class ChatToAnthropicSSE:
             cur = self._tools[idx]
             if tc.get("id") and not cur["id"]:
                 cur["id"] = tc["id"]
-                cur["name"] = fn.get("name") or cur["name"]
-                block_idx = 1 + idx
-                out.append(self._sse({
-                    "type": "content_block_start", "index": block_idx,
-                    "content_block": {"type": "tool_use", "id": cur["id"],
-                                      "name": cur["name"], "input": {}},
-                }))
             if fn.get("name"):
                 cur["name"] = fn["name"]
-            if fn.get("arguments"):
-                cur["args"] += fn["arguments"]
-                out.append(self._sse({
-                    "type": "content_block_delta", "index": 1 + idx,
-                    "delta": {"type": "input_json_delta", "partial_json": fn["arguments"]},
-                }))
+            args = fn.get("arguments") or ""
+            if args:
+                cur["args"] += args
+            if (tc.get("id") or args) and (self._cur_kind != "tool" or self._cur_tool != idx):
+                self._open_block(out, "tool", {
+                    "type": "tool_use",
+                    "id": cur["id"] or f"toolu_{uuid.uuid4().hex[:16]}",
+                    "name": cur["name"] or "",
+                    "input": {},
+                }, tool_i=idx)
+            if args:
+                out.append(self._sse({"type": "content_block_delta", "index": self._cur_idx,
+                                      "delta": {"type": "input_json_delta", "partial_json": args}}))
 
         if finish:
             self._final_stop = _OPENAI_STOP_MAP.get(finish, "end_turn")
@@ -1311,11 +1341,7 @@ class ChatToAnthropicSSE:
 
     def finish(self) -> List[str]:
         out: List[str] = list(self._start_if_needed())
-        if self._text_open:
-            out.append(self._sse({"type": "content_block_stop", "index": 0}))
-        for i, t_ in enumerate(self._tools):
-            if t_["id"]:
-                out.append(self._sse({"type": "content_block_stop", "index": 1 + i}))
+        self._close_cur(out)
         out.append(self._sse({
             "type": "message_delta",
             "delta": {"stop_reason": self._final_stop, "stop_sequence": None},

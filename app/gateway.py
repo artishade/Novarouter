@@ -766,7 +766,9 @@ def _final_response(body: Dict[str, Any], stream_requested: bool) -> JSONRespons
         }
         if with_usage and usage:
             obj["usage"] = usage
-        return "data: " + json.dumps(obj, ensure_ascii=False)
+        # SSE events MUST be terminated with a blank line (\n\n); without it
+        # clients buffer forever and show no output and no error.
+        return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
 
     text = msg.get("content") or ""
 
@@ -779,7 +781,7 @@ def _final_response(body: Dict[str, Any], stream_requested: bool) -> JSONRespons
         if msg.get("tool_calls"):
             yield sse({"tool_calls": msg["tool_calls"]})
         yield sse({}, finish=finish, with_usage=True)
-        yield "data: [DONE]"
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         gen(), media_type="text/event-stream",

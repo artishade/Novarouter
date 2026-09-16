@@ -460,6 +460,62 @@ def toggle_model(model_row_id: int, enabled: bool) -> None:
     db.execute("UPDATE models SET enabled=? WHERE id=?", (1 if enabled else 0, model_row_id))
 
 
+def register_fallback_model(model_id: str) -> int:
+    """Register an explicit fallback-route target on enabled providers that have keys.
+
+    The dashboard lets operators type arbitrary model ids into a route's chain.
+    Those ids are usually not in the synced `models` catalogue, so `resolve_model`
+    would return [] and the fallback stage would be silently empty — the operator's
+    "custom fallback model" never produces output. This registers a passthrough row
+    (model_id -> upstream same id) on every enabled provider that actually has at
+    least one upstream key, so `resolve_model` can serve the target.
+
+    Idempotent: existing rows are updated in place, never deleted, so a later
+    re-sync / prune-dead keeps the fallback target resolvable.
+
+    Returns the number of provider rows touched.
+    """
+    mid = (model_id or "").strip()
+    if not mid:
+        return 0
+    rows = db.query(
+        """SELECT p.id FROM providers p
+           WHERE p.enabled=1
+             AND EXISTS (SELECT 1 FROM upstream_keys k WHERE k.provider_id=p.id AND k.enabled=1)""",
+    )
+    if not rows:
+        return 0
+    for r in rows:
+        provider = get_provider(r["id"])
+        if not provider:
+            continue
+        exp = exposed_id(provider, mid)
+        db.execute(
+            """INSERT INTO models (provider_id, model_id, exposed_id, status, checked_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(provider_id, model_id) DO UPDATE SET
+                 exposed_id=excluded.exposed_id""",
+            (provider["id"], mid, exp, "UNKNOWN", now()),
+        )
+    return len(rows)
+
+
+def is_route_fallback_target(model_id: str) -> bool:
+    """True when `model_id` is an explicit fallback target in any *enabled*
+    route chain (as an operator added it on the dashboard). These are the only
+    ids that may be auto-registered for resolution — arbitrary unknown model ids
+    must still hard-fail.
+    """
+    mid = (model_id or "").strip()
+    if not mid:
+        return False
+    rows = db.query("SELECT fallbacks FROM model_routes WHERE enabled=1")
+    for r in rows:
+        if mid in _chain_list(r["fallbacks"]):
+            return True
+    return False
+
+
 def resolve_model(requested: str) -> List[Tuple[Dict[str, Any], str]]:
     """Map a client-facing model id to candidate (provider, upstream_model_id).
 
@@ -469,6 +525,10 @@ def resolve_model(requested: str) -> List[Tuple[Dict[str, Any], str]]:
       3. "providername/model" convention
       4. model suffix stripped (':thinking', ':free', ...) with suffix reattached
          so upstream gateways that understand them (OpenRouter) still work.
+
+    If the id is not registered anywhere but it IS an explicit fallback target in
+    a `model_routes` chain, a passthrough row is auto-registered on the enabled
+    providers that have keys so the target can actually serve.
     Multiple hits = failover candidates, healthiest first.
     """
     # 4. suffix handling first: route on the bare id, remember the suffix
@@ -514,6 +574,22 @@ def resolve_model(requested: str) -> List[Tuple[Dict[str, Any], str]]:
             # anthropic natively thinks on every claude-3.7+ model.
             upstream_id = r["model_id"] + (suffix if suffix and provider.get("kind") == "openai" else "")
             out.append((provider, upstream_id))
+    if not out and is_route_fallback_target(lookup):
+        # Dashboard-added custom fallback targets that were never synced/registered
+        # resolve to nothing -> the fallback stage would be silently empty. Register
+        # a passthrough row on the enabled providers that have keys, then retry.
+        if register_fallback_model(lookup) > 0:
+            rows = db.query(
+                """SELECT m.*, p.name AS provider_name FROM models m
+                   JOIN providers p ON p.id=m.provider_id
+                   WHERE m.enabled=1 AND p.enabled=1 AND (m.exposed_id=? OR m.model_id=?)""",
+                (lookup, lookup),
+            )
+            for r in rows:
+                provider = get_provider(r["provider_id"])
+                if provider:
+                    upstream_id = r["model_id"] + (suffix if suffix and provider.get("kind") == "openai" else "")
+                    out.append((provider, upstream_id))
     return out
 
 
@@ -550,11 +626,17 @@ def add_route(public_id: str, fallbacks: str, auto: bool = True, note: str = "")
     chain = _chain_list(fallbacks)
     if not chain:
         raise ValueError("at least one fallback model id is required")
-    return db.execute(
+    rid = db.execute(
         """INSERT INTO model_routes (public_id, fallbacks, auto, enabled, note, created_at)
            VALUES (?,?,?,1,?,?)""",
         (public_id, ",".join(chain), 1 if auto else 0, (note or "").strip()[:250], now()),
     )
+    # Make the dashboard-added targets resolvable immediately: register any
+    # that are not yet in the synced models catalogue so the fallback chain
+    # can actually serve them.
+    for fid in chain:
+        register_fallback_model(fid)
+    return rid
 
 
 def update_route(rid: int, **fields) -> None:
@@ -580,6 +662,10 @@ def update_route(rid: int, **fields) -> None:
         return
     params.append(rid)
     db.execute(f"UPDATE model_routes SET {', '.join(sets)} WHERE id=?", tuple(params))
+    # Keep targets resolvable after an edit to the chain.
+    if "fallbacks" in fields:
+        for fid in _chain_list(fields["fallbacks"]):
+            register_fallback_model(fid)
 
 
 def delete_route(rid: int) -> None:

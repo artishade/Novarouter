@@ -104,7 +104,7 @@ class FakeUpstream:
 
     async def post(self, url, headers=None, json=None):
         self.requests.append((url, json))
-        if json and json.get("model") == "dead-model":
+        if getattr(self, "fail_all", False) or (json and json.get("model") == "dead-model"):
             return FakeResp({"error": {"message": "model is dead"}}, 500)
         return FakeResp(_chat_body(json.get("model", "?")))
 
@@ -114,9 +114,11 @@ class FakeUpstream:
 
 @pytest.fixture()
 def fake_upstream(client, monkeypatch):
+    """Fails dead-model; a test can fail every model by setting fake.fail_all."""
     from app import gateway
 
     fake = FakeUpstream()
+    fake.fail_all = False
     monkeypatch.setattr(gateway, "_client", fake)
     yield fake
 
@@ -267,14 +269,25 @@ def test_route_preview(client):
     assert body["spoof_model"] is True
 
 
-def test_all_dead_returns_error_not_hang(client, fake_upstream):
-    """Everything fails -> clean error, listing what was tried."""
+def test_all_dead_returns_error_not_hang(client, fake_upstream, monkeypatch):
+    """Everything fails -> clean error, listing what was tried.
+
+    With the fix, the dashboard-added custom fallback target `also-dead` is
+    auto-registered as a passthrough row, so the router actually *tries* it
+    before giving up: primary dead-model fails (500) and the fallback target
+    also fails upstream -> a clean 502 that lists every attempt, no hang,
+    never a silent success.
+    """
+    from app import config
     token = _setup(client)
     client.post(
         "/admin/api/routes", headers=auth(),
         json={"public_id": "dead-model", "fallbacks": "also-dead", "auto": False},
     )
-
+    # Disable auto-pick so only the explicit chain target is a stand-in.
+    monkeypatch.setattr(config, "AUTO_FALLBACK", False)
+    # Force the fake to fail on `also-dead` too so nothing can serve.
+    fake_upstream.fail_all = True
     r = client.post(
         "/v1/chat/completions",
         headers={"Authorization": f"Bearer {token}"},
@@ -284,6 +297,32 @@ def test_all_dead_returns_error_not_hang(client, fake_upstream):
     body = r.json()
     assert "dead-model" in body["error"]["message"]
     assert "Tried" in body["error"]["message"]
+    # the fallback target was actually tried upstream as part of the fan-out
+    assert any((b or {}).get("model") == "also-dead" for _u, b in fake_upstream.requests)
+
+
+def test_unlisted_unknown_model_still_hard_fails(client, fake_upstream, monkeypatch):
+    """A model id that is NOT a route fallback target must still 404 —
+    the fix must not make every random unknown id resolve.
+    (Auto-pick disabled so only the explicit route chain can serve.)"""
+    from app import config
+    monkeypatch.setattr(config, "AUTO_FALLBACK", False)
+    token = _setup(client)
+    fake_upstream.fail_all = True
+    r = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"model": "never-heard-of-model", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    # unknown id + auto-pick off + no route -> clean 404 model_not_found
+    assert r.status_code == 404, r.text
+    assert "never-heard-of-model" in r.json()["error"]["message"]
+    # and it was NOT auto-registered as a route fallback target
+    from app import store, db
+    assert not any(
+        (m.get("model_id") == "never-heard-of-model") for m in
+        db.query("SELECT * FROM models WHERE 1=1")
+    ), "unknown id must not be auto-registered"
 
 
 def test_anthropic_messages_endpoint_fallback(client, fake_upstream):
@@ -308,3 +347,48 @@ def test_anthropic_messages_endpoint_fallback(client, fake_upstream):
     assert body["model"] == "dead-model"
     assert body["type"] == "message"
     assert body["content"][0]["text"] == "hi from upstream"
+
+
+def test_dashboard_custom_unregistered_fallback_serves(client, fake_upstream):
+    """Operator adds a custom fallback target that is NOT in the synced models
+    catalogue (the normal dashboard flow). The primary model fails -> the
+    unregistered fallback target must still serve and report the requested id."""
+    token = _setup(client)
+    r = client.post(
+        "/admin/api/routes", headers=auth(),
+        json={"public_id": "dead-model", "fallbacks": "operator-custom-model", "auto": False},
+    )
+    assert r.status_code == 200, r.text
+    r = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"model": "dead-model", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["model"] == "dead-model"
+    assert body["_nova"]["upstream_model"] == "operator-custom-model"
+    assert any(
+        (b or {}).get("model") == "operator-custom-model" for _u, b in fake_upstream.requests
+    ), "fallback target actually got the upstream call"
+
+
+def test_edited_route_chain_custom_target_serves(client, fake_upstream):
+    """PATCH the chain to a new custom target -> that target resolves too."""
+    token = _setup(client)
+    rid = client.post(
+        "/admin/api/routes", headers=auth(),
+        json={"public_id": "dead-model", "fallbacks": "stand-in", "auto": False},
+    ).json()["id"]
+    r = client.patch(
+        f"/admin/api/routes/{rid}", headers=auth(),
+        json={"fallbacks": "another-custom-model"},
+    )
+    assert r.status_code == 200, r.text
+    r = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"model": "dead-model", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["_nova"]["upstream_model"] == "another-custom-model"

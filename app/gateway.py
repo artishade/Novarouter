@@ -45,6 +45,36 @@ _client: Optional[httpx.AsyncClient] = None
 _video_jobs: Dict[str, Dict[str, Any]] = {}
 
 
+def _parse_request_keys(request: Request, payload: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """Collect provider API keys supplied directly with this request.
+
+    Sources (config-gated by config.ALLOW_REQUEST_KEYS):
+      * X-Nova-Provider-Key header: ``provider_name=api_key`` one per line
+      * JSON body field nova.provider_keys: {provider_name: api_key}
+
+    Returns {provider_name_lower: api_key}.
+    """
+    if not config.ALLOW_REQUEST_KEYS:
+        return {}
+    out: Dict[str, str] = {}
+    raw = request.headers.get("x-nova-provider-key", "")
+    if raw:
+        for line in raw.strip().splitlines():
+            if "=" in line:
+                name, _, key = line.partition("=")
+                name, key = name.strip(), key.strip()
+                if name and key:
+                    out[name.lower()] = key
+    if payload:
+        pk = payload.get("nova", {}) if isinstance(payload.get("nova"), dict) else {}
+        pk = pk.get("provider_keys", {})
+        if isinstance(pk, dict):
+            for name, key in pk.items():
+                if str(name) and str(key):
+                    out[str(name).strip().lower()] = str(key).strip()
+    return out
+
+
 def http_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
@@ -226,6 +256,114 @@ async def _attempt(
     return 200, data, ""
 
 
+async def _parallel_attempt(
+    pairs: List[Tuple[Dict[str, Any], str]],
+    payload: Dict[str, Any],
+    request_keys: Dict[str, str],
+    client_row: Dict[str, Any],
+    requested_model: str,
+    endpoint_label: str,
+) -> Optional[JSONResponse]:
+    """Race all (provider, upstream_model) pairs concurrently; take first 200.
+
+    Non-retryable errors (4xx) short-circuit the whole batch when they come
+    from the *first* provider in the list — otherwise we'd waste calls on
+    fallbacks that will hit the same upstream. 5xx / 429 / timeouts let the
+    other racers keep running. Any 200 wins immediately; if none wins, the
+    sequential fallback loop in dispatch() continues as normal.
+    """
+
+    async def _one_shot(pair: Tuple[Dict[str, Any], str]) -> Dict[str, Any]:
+        provider, upstream_model = pair
+        keys = store.pick_keys(provider["id"], request_keys=request_keys)
+        if not keys:
+            return {"ok": False, "provider": provider, "upstream_model": upstream_model,
+                    "status": 502, "body": None, "error": "no keys"}
+        upstream_payload = dict(payload)
+        upstream_payload["model"] = upstream_model
+        for key in keys:
+            started = time.perf_counter()
+            status, body, error = await _attempt(provider, key, "chat", upstream_payload)
+            latency = int((time.perf_counter() - started) * 1000)
+            tokens_in, tokens_out = adapters.extract_usage(body) if status == 200 else (0, 0)
+            db.log_request(
+                client_key_id=client_row["id"],
+                provider_id=provider["id"],
+                upstream_key_id=key["id"],
+                model=requested_model,
+                endpoint=endpoint_label,
+                status=status,
+                latency_ms=latency,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                error=error,
+                via=upstream_model if upstream_model != requested_model else "",
+            )
+            if status == 200:
+                store.reward_key(key["id"])
+                return {"ok": True, "provider": provider, "key": key,
+                        "upstream_model": upstream_model, "body": body,
+                        "latency": latency}
+            # penalize and try next key for the same provider
+            store.penalize_key(key["id"], status, error)
+        # this pair didn't win — return last failure info
+        return {"ok": False, "provider": provider, "upstream_model": upstream_model,
+                "status": status, "body": body, "error": error}
+
+    tasks = [asyncio.create_task(_one_shot(p)) for p in pairs]
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+    # cancel losers so we don't burn upstream tokens
+    for t in pending:
+        t.cancel()
+    for t in done:
+        if not t.done():
+            t.cancel()
+
+    winner = None
+    failures: List[Dict[str, Any]] = []
+    for t in done:
+        if t.cancelled() or t.exception():
+            continue
+        res = t.result()
+        if res["ok"]:
+            if winner is None:
+                winner = res
+        else:
+            failures.append(res)
+
+    # cancel any remaining pending tasks
+    for t in pending:
+        t.cancel()
+
+    if winner is not None:
+        body = winner["body"]
+        provider = winner["provider"]
+        key = winner.get("key", {})
+        upstream_model = winner["upstream_model"]
+        latency = winner["latency"]
+        if isinstance(body, str):
+            return JSONResponse(status_code=200, content={"raw": body})
+        if isinstance(body, dict):
+            if _spoof_enabled(payload):
+                body["model"] = requested_model
+            else:
+                body.setdefault("model", requested_model)
+            body["_nova"] = {
+                "provider": provider["name"],
+                "upstream_model": upstream_model,
+                "latency_ms": latency,
+                "routed_from": requested_model if upstream_model != requested_model else "",
+                "parallel": True,
+            }
+            if config.CACHE_TTL > 0 and endpoint_label == "chat":
+                cache.put(payload, body, provider["name"], upstream_model)
+            return JSONResponse(status_code=200, content=body)
+
+        # no winner — let the sequential loop take over
+    return None
+
+
 async def _hedged_attempt(
     primary: Tuple[Dict[str, Any], Dict[str, Any], str],   # (provider, key, upstream_model)
     hedge: Optional[Tuple[Dict[str, Any], Dict[str, Any], str]],
@@ -337,7 +475,7 @@ async def dispatch(
     endpoint_label: str = "",
     client_override: Optional[Dict[str, Any]] = None,
     allow_suffix_fallback: bool = False,
-) -> Any:
+    ) -> Any:
     """Core fan-out. `endpoint` selects the upstream path + translation.
 
     Requests run in stages: the requested model's own providers first, then
@@ -346,6 +484,7 @@ async def dispatch(
     so clients never see the fallback that actually served them.
     """
     client = client_override or require_client(request)
+    request_keys = _parse_request_keys(request)
     if payload_override is not None:
         payload = payload_override
     else:
@@ -400,24 +539,46 @@ async def dispatch(
             )
             return JSONResponse(status_code=200, content=body)
 
-    # request hedging: pre-pick the race partner — the next provider that
+        # request hedging: pre-pick the race partner — the next provider that
     # serves the requested model (first key of its rotation)
     hedge_target: Optional[Tuple[Dict[str, Any], Dict[str, Any], str]] = None
     if config.HEDGE_DELAY > 0 and not stream and endpoint == "chat":
         for stage in stages:
             if len(stage) >= 2:
                 h_provider, h_model = stage[1]
-                h_keys = store.pick_keys(h_provider["id"], limit=1)
+                h_keys = store.pick_keys(h_provider["id"], limit=1, request_keys=request_keys)
                 if h_keys:
                     hedge_target = (h_provider, h_keys[0], h_model)
                 break
 
     tried: List[str] = []
     last_status, last_error = 502, "no upstream attempt succeeded"
+
+    # --- parallel model racing -----------------------------------------------
+    # When multiple (provider, upstream_model) pairs resolve for the same
+    # requested model, and PARALLEL_MODELS is on, launch them concurrently
+    # and take the first 200. Falls back to sequential failover otherwise.
+    if config.PARALLEL_MODELS and not stream and endpoint == "chat":
+        # gather all (provider, upstream_model) pairs across *all* stages into
+        # a single race — but keep staged fallback so the requested model's own
+        # providers always get priority on the first wave.
+        flat: List[Tuple[Dict[str, Any], str]] = []
+        for stage in stages:
+            for provider, upstream_model in stage:
+                flat.append((provider, upstream_model))
+        if len(flat) > 1:
+            result = await _parallel_attempt(
+                flat, payload, request_keys, client, requested,
+                endpoint_label or endpoint,
+            )
+            if result is not None:
+                return result
+        # if only 1 flat candidate or parallel path didn't return, fall through
+
     first_attempt_done = False
     for stage in stages:
         for provider, upstream_model in stage:
-            keys = store.pick_keys(provider["id"])
+            keys = store.pick_keys(provider["id"], request_keys=request_keys)
             if not keys:
                 tried.append(f"{provider['name']}: no keys")
                 continue
@@ -1251,6 +1412,7 @@ def _img_out(body: Dict[str, Any]) -> List[Dict[str, Any]]:
 async def _image_dispatch(request: Request, path: str, payload: Dict[str, Any]) -> Any:
     """images/generations | images/edits with provider fan-out + model fallback."""
     client = require_client(request)
+    request_keys = _parse_request_keys(request)
     requested = str(payload.get("model") or "")
     candidates, err, _ = _resolve_candidates(client, requested)
     direct = candidates or []
@@ -1277,7 +1439,7 @@ async def _image_dispatch(request: Request, path: str, payload: Dict[str, Any]) 
     n_stages = len(stages)
     for stage_no, stage in enumerate(stages):
         for provider, upstream_model in stage:
-            keys = store.pick_keys(provider["id"])
+            keys = store.pick_keys(provider["id"], request_keys=request_keys)
             if not keys:
                 tried.append(f"{provider['name']}: no keys")
                 continue
@@ -1386,7 +1548,7 @@ async def create_video(request: Request):
 
     tried: List[str] = []
     for provider, upstream_model in candidates:
-        keys = store.pick_keys(provider["id"])
+        keys = store.pick_keys(provider["id"], request_keys=request_keys)
         for key in keys:
             body = dict(chat_body)
             body["model"] = upstream_model
@@ -1488,6 +1650,7 @@ async def get_video(request: Request, job_id: str):
 async def audio_speech(request: Request):
     """TTS. Binary audio passthrough (mp3 default)."""
     client = require_client(request)
+    request_keys = _parse_request_keys(request)
     payload, err = await _parse_json(request)
     if err:
         return err
@@ -1497,7 +1660,7 @@ async def audio_speech(request: Request):
         return err
     tried: List[str] = []
     for provider, upstream_model in candidates:
-        keys = store.pick_keys(provider["id"])
+        keys = store.pick_keys(provider["id"], request_keys=request_keys)
         body = dict(payload)
         body["model"] = upstream_model
         url = f"{(provider.get('base_url') or '').rstrip('/')}/audio/speech"
@@ -1540,6 +1703,7 @@ async def audio_speech(request: Request):
 async def _audio_upload_dispatch(request: Request, path: str) -> Any:
     """STT endpoints: multipart upload -> upstream multipart -> JSON back."""
     client = require_client(request)
+    request_keys = _parse_request_keys(request)
     form = await request.form()
     requested = str(form.get("model") or "")
     candidates, err, _ = _resolve_candidates(client, requested)
@@ -1547,7 +1711,7 @@ async def _audio_upload_dispatch(request: Request, path: str) -> Any:
         return err
     tried: List[str] = []
     for provider, upstream_model in candidates:
-        keys = store.pick_keys(provider["id"])
+        keys = store.pick_keys(provider["id"], request_keys=request_keys)
         url = f"{(provider.get('base_url') or '').rstrip('/')}{path}"
         for key in keys:
             headers = adapters.auth_headers(provider, key["api_key"])

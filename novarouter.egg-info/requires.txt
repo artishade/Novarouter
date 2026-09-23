@@ -1,0 +1,7 @@
+fastapi>=0.115.6
+httpx>=0.28.1
+pydantic>=2.10.4
+psycopg[binary,pool]>=3.2.3
+
+[serve]
+uvicorn[standard]>=0.34.0

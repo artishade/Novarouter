@@ -200,7 +200,11 @@ def clear_cooldowns(provider_id: Optional[int] = None) -> None:
         db.execute("UPDATE upstream_keys SET cooldown_until=0, last_error=''")
 
 
-def pick_keys(provider_id: int, limit: int = config.MAX_KEY_ATTEMPTS) -> List[Dict[str, Any]]:
+def pick_keys(
+    provider_id: int,
+    limit: int = config.MAX_KEY_ATTEMPTS,
+    request_keys: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
     """Round-robin ordered, cooldown-aware key list for a provider.
 
     Non-cooling keys come first (rotated), then cooling ones as last-resort
@@ -210,6 +214,30 @@ def pick_keys(provider_id: int, limit: int = config.MAX_KEY_ATTEMPTS) -> List[Di
         "SELECT * FROM upstream_keys WHERE provider_id=? AND enabled=1 ORDER BY id",
         (provider_id,),
     )
+    # Inject request-level API keys if present — these take priority so clients
+    # can use models without pre-registered keys.
+    extra_keys: List[Dict[str, Any]] = []
+    if request_keys:
+        provider = get_provider(provider_id)
+        if provider:
+            pname = provider.get("name", "").strip().lower()
+            for key_name, key_val in request_keys.items():
+                if key_name.strip().lower() == pname:
+                    extra_keys.append({
+                        "id": -1,  # sentinel: request-injected key
+                        "provider_id": provider_id,
+                        "label": "request-key",
+                        "api_key": key_val,
+                        "weight": 1,
+                        "enabled": 1,
+                        "cooldown_until": 0,
+                        "last_error": "",
+                        "req_count": 0,
+                        "err_count": 0,
+                        "last_used_at": 0,
+                        "created_at": 0,
+                    })
+    rows = extra_keys + rows
     if not rows:
         return []
 

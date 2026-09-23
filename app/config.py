@@ -87,13 +87,24 @@ CHECK_INTERVAL = int(os.environ.get("NOVA_CHECK_INTERVAL", "0"))
 # 200 (0 = off). Cuts tail latency when the primary is slow, not dead.
 HEDGE_DELAY = float(os.environ.get("NOVA_HEDGE_DELAY", "0"))
 
+# Parallel model racing: when multiple providers/models can serve the same
+# requested model, fire them all at once and take the first success (0 = off,
+# sequential failover). When ON, also enables racing fallback stages.
+PARALLEL_MODELS = os.environ.get("NOVA_PARALLEL_MODELS", "1") == "1"
+
+# Per-request API key passthrough: allow clients to supply an upstream API key
+# directly in the request via the X-Nova-Provider-Key header (format:
+# provider_name=api_key, one per line) or in the payload nova.provider_keys
+# dict. Enables ad-hoc use of models that have no pre-registered keys.
+ALLOW_REQUEST_KEYS = os.environ.get("NOVA_ALLOW_REQUEST_KEYS", "1") == "1"
+
 # Response caching: serve identical chat requests from an in-memory cache
 # for NOVA_CACHE_TTL seconds (0 = off). NOVA_CACHE_MAX caps entries (LRU).
 CACHE_TTL = int(os.environ.get("NOVA_CACHE_TTL", "0"))
 CACHE_MAX = int(os.environ.get("NOVA_CACHE_MAX", "500"))
 
 # Files API: max upload size in MB.
-FILE_MAX_MB = int(os.environ.get("NOVA_FILE_MAX_MB", "20"))
+FILE_MAX_MB = int(os.environ.get("NOVA_FILE_MAX_MB", "200"))
 
 # Batch API: max requests per batch + worker concurrency per batch job.
 BATCH_MAX_ITEMS = int(os.environ.get("NOVA_BATCH_MAX_ITEMS", "50000"))

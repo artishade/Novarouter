@@ -32,6 +32,7 @@ import {
   HardDrive,
   Loader2,
   MessagesSquare,
+  Radar,
   Send,
   Sparkles,
   TerminalSquare,
@@ -244,6 +245,7 @@ const ACTION_ICON: Record<string, LucideIcon> = {
   terminal: TerminalSquare,
   gateway_stats: Activity,
   storage_scan: HardDrive,
+  discover_models: Radar,
   think: Brain,
   finish: CheckCircle2,
 };

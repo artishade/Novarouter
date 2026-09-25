@@ -284,3 +284,18 @@ Work Log:
 
 Stage Summary:
 - Runner now ships a fully resolved Prisma CLI; DB init validated against a pruned layout identical to the container. Pushed for redeploy; recommended the user re-add their Neon DATABASE_URL for persistence.
+
+---
+Task ID: model-discovery
+Agent: orchestrator (Z.ai Code main)
+Task: Add a model discovery route (/v1/models) + agent tool so Nova Agent can discover available models live from providers.
+
+Work Log:
+- Created src/lib/server/model-discovery.ts: per-provider live discovery with wire-format handling for OpenAI-compatible (openrouter/groq/cerebras/github-models/nvidia/mistral/together/deepseek/openai/xai/fireworks), Gemini (?key=), Anthropic (x-api-key + version header), Ollama (/api/tags) and builtin novafree (DB catalogue). Robust list extraction ({data}|{models}|{body}|bare), 8s fetch timeout, in-memory 5-min TTL cache, $/token->$1M pricing normalization, is_free heuristic (:free suffix / zero pricing / free providers), openrouter is keyless (public catalog).
+- Extended GET /api/v1/models with ?discover=1 (&provider=<key> &free=1) returning OpenAI-compatible {object:'list', discover:true, data:[...], meta:[per-provider status]} — default catalogue mode unchanged.
+- Added 'discover_models' to the agent: ALLOWED_ACTIONS, system-prompt tool doc + JSON shape + rule 3 ("use discover_models whenever the goal involves finding/comparing/choosing AI models"), toolDiscoverModels (dynamic import; optional provider key or 'free' filter) wired into executeTool.
+- Added the tool to GET /api/agent/tools (id discover_models, icon Radar) and to ConsoleTab ACTION_ICON (Radar import).
+- Live verification (dev server): default mode unchanged; novafree discovery 3/3; openrouter LIVE 459 models in 69ms (22 free); free=1 across all -> 25 free models; all-providers mode 462 models, 2/13 ok with graceful actionable errors (placeholder seed keys -> HTTP 403 / 'no enabled API key — add one in Dashboard → Providers'); agent tools list includes discover_models. Lint clean, dev.log clean.
+
+Stage Summary:
+- /v1/models is now a live multi-provider discovery endpoint AND an agent capability: the agent can answer model-availability questions and factor live discovery into tasks. Pushed to GitHub (commit follows).

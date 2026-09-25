@@ -20,6 +20,7 @@ const ALLOWED_ACTIONS = new Set([
   'terminal',
   'gateway_stats',
   'storage_scan',
+  'discover_models',
   'finish',
 ]);
 
@@ -31,15 +32,16 @@ You work toward the user's goal one step at a time using these tools:
 - terminal: run a safe diagnostic command in the gateway sandbox ("query_or_url_or_command" = command, e.g. "free -m", "df -h", "nova status", "nova gpu")
 - gateway_stats: inspect live gateway stats, models and routes (no input needed)
 - storage_scan: scan configured storage providers and files (no input needed)
+- discover_models: discover which AI models are ACTUALLY available right now from the configured providers via /v1/models ("query_or_url_or_command" = optional filter: a provider key like "groq" or "openrouter", or "free" for free-tier models only; leave empty for all providers)
 - finish: the goal is achieved ("query_or_url_or_command" = final key takeaway, optional)
 
 STRICT OUTPUT RULE — respond with JSON only, no prose, no markdown fences, exactly this shape:
-{"action": "web_search|read_url|terminal|gateway_stats|storage_scan|finish", "title": "short title", "query_or_url_or_command": "...", "reason": "why this step"}
+{"action": "web_search|read_url|terminal|gateway_stats|storage_scan|discover_models|finish", "title": "short title", "query_or_url_or_command": "...", "reason": "why this step"}
 
 Rules:
 1. Exactly one action per response.
 2. Titles are short labels (max 60 chars); "reason" explains why this step helps the goal.
-3. Prefer web_search then read_url to gather evidence; use terminal/gateway_stats/storage_scan for system questions.
+3. Prefer web_search then read_url to gather evidence; use terminal/gateway_stats/storage_scan for system questions; use discover_models whenever the goal involves finding, comparing or choosing AI models or providers.
 4. Never repeat a step that already succeeded with the same input — read the step log first.
 5. As soon as the goal is achieved (or no further step adds value), respond with action "finish".`;
 
@@ -255,6 +257,31 @@ async function toolStorageScan(): Promise<string> {
   ].join('\n');
 }
 
+/** Live model discovery via the /v1/models discovery service (dynamic import keeps this module lean). */
+async function toolDiscoverModels(query: string): Promise<string> {
+  const q = query.trim().toLowerCase();
+  const isFreeFilter = q === 'free' || q === 'free models';
+  const providerFilter = !isFreeFilter && q ? q : undefined;
+  try {
+    const mod = (await import('@/lib/server/model-discovery')) as {
+      discoverProviderModels: (providerKey?: string) => Promise<
+        Array<{ ok: boolean; provider: string; count: number; models: Array<{ id: string; is_free: boolean }>; error?: string }>
+      >;
+      summarizeDiscoveryForAgent: (
+        results: unknown[],
+        filterNote?: string,
+      ) => string;
+    };
+    let results = await mod.discoverProviderModels(providerFilter);
+    if (isFreeFilter) {
+      results = results.map((r) => ({ ...r, models: r.models.filter((m) => m.is_free), count: r.models.filter((m) => m.is_free).length }));
+    }
+    return mod.summarizeDiscoveryForAgent(results, isFreeFilter ? 'free' : providerFilter);
+  } catch (err) {
+    return `Model discovery failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 async function executeTool(zai: ZAI, plan: AgentPlan): Promise<string> {
   switch (plan.action) {
     case 'web_search':
@@ -267,6 +294,8 @@ async function executeTool(zai: ZAI, plan: AgentPlan): Promise<string> {
       return toolGatewayStats();
     case 'storage_scan':
       return toolStorageScan();
+    case 'discover_models':
+      return toolDiscoverModels(plan.query);
     default:
       throw new Error(`Unknown action: ${plan.action}`);
   }

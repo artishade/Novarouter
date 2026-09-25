@@ -103,6 +103,23 @@ curl http://localhost:3000/api/v1/chat/completions \
   -d '{"model":"your-model","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+### Live model discovery (`/v1/models?discover=1`)
+
+Query each provider's **real** `/models` endpoint right now — OpenAI-compatible,
+Gemini, Anthropic and Ollama wire formats are handled and normalized
+(per-provider status, context lengths, pricing, free flags). Cached 5 min.
+
+```bash
+curl 'http://localhost:3000/api/v1/models?discover=1'                # all providers
+curl 'http://localhost:3000/api/v1/models?discover=1&provider=groq'  # one provider
+curl 'http://localhost:3000/api/v1/models?discover=1&free=1'         # free-tier only
+```
+
+The **Nova Agent** uses the same capability as its `discover_models` tool — ask it
+*"which free models are available right now?"* or give it a goal like
+*"find the model with the largest context window under $1/1M tokens"* and it will
+discover, compare and report live results.
+
 Admin APIs live under `/api/admin/*` (providers, models, keys, routes, storage, terminal, compute, analytics, logs). Agent APIs under `/api/agent/*` (tasks, tools).
 
 ---

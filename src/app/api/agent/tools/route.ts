@@ -7,6 +7,7 @@ const TOOLS = [
   { id: 'terminal', name: 'Sandbox Terminal', description: 'Run safe diagnostics in the gateway sandbox', icon: 'TerminalSquare' },
   { id: 'gateway_stats', name: 'Gateway Telemetry', description: 'Inspect live gateway stats, models and routes', icon: 'Activity' },
   { id: 'storage_scan', name: 'Storage Scanner', description: 'Scan configured storage providers and files', icon: 'HardDrive' },
+  { id: 'discover_models', name: 'Model Discovery', description: 'Discover live models available from every configured provider via /v1/models', icon: 'Radar' },
 ];
 
 export async function GET() {

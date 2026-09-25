@@ -19,7 +19,19 @@ RUN bunx prisma generate
 # package.json "build" = next build + copy static/public into .next/standalone
 RUN bun run build
 
-# ---------- Stage 3: runtime ----------
+# ---------- Stage 3: self-contained Prisma CLI ----------
+# The runner can't reuse the app's node_modules (Next standalone only ships the
+# traced runtime deps), and copying bare package dirs breaks the CLI:
+# @prisma/config requires transitive deps like `effect` that only a real
+# `bun install prisma` resolves. This stage produces a complete CLI install.
+FROM oven/bun:1 AS prisma-cli
+WORKDIR /cli
+COPY --from=builder /app/node_modules/prisma/package.json /tmp/prisma-pkg.json
+# Pin the CLI to the exact version resolved in the app's lockfile (zero drift)
+RUN echo "{\"dependencies\":{\"prisma\":\"$(bun -e "process.stdout.write(String(JSON.parse(await Bun.file('/tmp/prisma-pkg.json').text()).version))")\"}}" > package.json \
+  && bun install --production
+
+# ---------- Stage 4: runtime ----------
 FROM oven/bun:1 AS runner
 WORKDIR /app
 # Prisma engines need openssl + CA certs
@@ -35,14 +47,10 @@ ENV NODE_ENV=production \
 
 # Next.js standalone server (server.js + pruned node_modules + .next/static + public)
 COPY --from=builder /app/.next/standalone ./
-# Overlay the Prisma CLI + schemas + seed scripts so the entrypoint can initialize the DB.
-# The entrypoint invokes the CLI via its REAL path (node_modules/prisma/build/index.js).
-# Do NOT copy or symlink node_modules/.bin/prisma here:
-#   - the standalone output has no node_modules/.bin directory (a RUN ln would fail),
-#   - and COPY dereferences symlinks anyway, which breaks the CLI's internal WASM
-#     resolution (ENOENT prisma_schema_build_bg.wasm).
-COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
+# @prisma scope from the app install (client + engines with native binaries)
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+# Prisma CLI + ALL its transitive deps (effect, c12, chokidar, ...) from a real install
+COPY --from=prisma-cli /cli/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

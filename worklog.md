@@ -269,3 +269,18 @@ Work Log:
 
 Stage Summary:
 - Dockerfile no longer contains the failing RUN step; image build should now complete and boot with the postgres auto-detection from render-fix. Remote main pushed for redeploy.
+
+---
+Task ID: render-fix-3
+Agent: orchestrator (Z.ai Code main)
+Task: Third Render failure — container boots but db push crashes: "Cannot find package 'effect' from /app/node_modules/@prisma/config/dist/index.js".
+
+Work Log:
+- Root cause: the runner only copied node_modules/prisma + node_modules/@prisma, but the Prisma CLI's @prisma/config requires hoisted transitive deps (effect + ~34 others: c12, chokidar, citty, confbox, consola, defu, destr, dotenv...) that were never shipped. Sandbox tests had missed it because the sandbox has the full node_modules.
+- Reproduced the exact error locally in a pruned /tmp/rtA layout (prisma + @prisma + .prisma only) -> identical "Cannot find package 'effect'".
+- Fix: added a `prisma-cli` Docker stage that does a REAL `bun install` of prisma (version extracted from the builder's installed package.json = lockfile-resolved 6.19.2, zero drift) and copied its complete node_modules into the runner (merged over the builder @prisma scope, which keeps client + native engine binaries).
+- Validated end-to-end in the pruned layout: db push via real CLI path OK; ensure-seed first run -> "empty database — seeding..." -> 13 providers / 35 models / 160 logs; second run -> "already has 13 provider(s) — skipping seed" (idempotent redeploys).
+- Note: Render log showed provider: sqlite — user appears to have removed the Neon DATABASE_URL; both modes work now, but sqlite on Render free tier is ephemeral (data lost on redeploy).
+
+Stage Summary:
+- Runner now ships a fully resolved Prisma CLI; DB init validated against a pruned layout identical to the container. Pushed for redeploy; recommended the user re-add their Neon DATABASE_URL for persistence.

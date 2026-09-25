@@ -223,3 +223,4 @@ Work Log:
 
 Stage Summary:
 - Repo github.com/artishade/Novarouter main branch now hosts the rebuilt Next.js 16 NovaRouter (dashboard, gateway APIs, agent, unified console, storage & compute managers). Original Vite/Express code remains reachable on branch codespace-animated-xylophone-xr94vj554r9vhgjq and old commit 44f1a9b.
+- NOTE (post-push fix): GitHub Push Protection rejected the first push — old sandbox auto-commit e347f5f contained realistic fake OpenRouter/Groq keys (prisma/seed.ts:148,160 + tool-results txt). Fix: replaced seed keys with obvious placeholders (sk-or-v1-SEED-DEMO-PLACEHOLDER-*, gsk_SEED-DEMO-PLACEHOLDER-0000), rebuilt db/custom.db via db:push + seed (13 providers / 35 models / 160 logs), restarted dev server, squashed entire history into a single clean orphan commit 3aa665b, force-pushed successfully. Remote main = 3aa665b. No real secrets were ever pushed; the unblock-URL bypass was deliberately NOT used.

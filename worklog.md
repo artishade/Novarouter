@@ -255,3 +255,17 @@ Work Log:
 
 Stage Summary:
 - Render deploy should now boot: Postgres URL detected -> postgres schema + client generated in-container -> schema synced -> seeded only if empty -> standalone server binds 0.0.0.0:$PORT. SQLite mode unchanged. User should also rotate the Neon DB password since it was pasted into chat logs.
+
+---
+Task ID: render-fix-2
+Agent: orchestrator (Z.ai Code main)
+Task: Second Render failure — docker build broke at `RUN ln -sf ../prisma/build/index.js /app/node_modules/.bin/prisma` (exit 1).
+
+Work Log:
+- Root cause: the Next.js standalone output has no node_modules/.bin directory, and `ln` does not create missing parent dirs -> exit 1. The symlink was redundant anyway because the entrypoint already calls the CLI via its real path.
+- Fix: removed the RUN ln line from the Dockerfile runner stage; replaced with a comment explaining why .bin/prisma must neither be copied nor symlinked.
+- Confirmed every remaining Dockerfile step was already proven on Render (build #1 completed the full image; build #2 passed apt-get, all COPYs, prisma generate + next build).
+- Re-verified: entrypoint sh -n OK; no functional .bin/prisma references remain.
+
+Stage Summary:
+- Dockerfile no longer contains the failing RUN step; image build should now complete and boot with the postgres auto-detection from render-fix. Remote main pushed for redeploy.

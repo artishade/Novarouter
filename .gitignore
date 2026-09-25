@@ -47,8 +47,8 @@ local-*
 *.log
 dev.log
 dev.out.log
-test
-prompt
+/test
+/prompt
 
 server.log
 # Skills directory
@@ -57,3 +57,6 @@ server.log
 # transient tool outputs
 /tool-results/
 /download/
+# sqlite database (bootstrapped at deploy time — never ship demo data)
+/db/*.db
+/db/*.db-journal

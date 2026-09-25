@@ -59,7 +59,7 @@ export const api = {
   createProvider: (data: {
     name: string; kind?: string; base_url?: string; prefix?: string;
     priority?: number; api_keys?: string; free_tier?: string; docs_url?: string; auth_url?: string;
-  }) => post<{ id: number; keys_added: number }>('/api/admin/providers', data),
+  }) => post<{ id: number; keys_added: number; models_added?: number; sync_error?: string }>('/api/admin/providers', data),
   updateProvider: (id: number, data: Partial<Provider>) => patch<{ ok: boolean }>(`/api/admin/providers/${id}`, data),
   deleteProvider: (id: number) => del<{ ok: boolean }>(`/api/admin/providers/${id}`),
   testProvider: (id: number) =>

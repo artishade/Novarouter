@@ -396,7 +396,13 @@ export async function POST(req: NextRequest) {
         error: `All routing stages failed: ${msg}`,
       });
       return NextResponse.json(
-        { error: `All routing stages failed: ${msg}` },
+        {
+          error:
+            `All routing stages failed: ${msg}. ` +
+            'Fix checklist: (1) Dashboard → Providers → Test your provider (key must authenticate upstream); ' +
+            '(2) Dashboard → Models → Sync models to pull the live catalogue; ' +
+            '(3) request a model id that exists there (e.g. "nova/air" for the built-in engine).',
+        },
         { status: 502 }
       );
     }

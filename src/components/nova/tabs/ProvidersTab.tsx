@@ -155,8 +155,16 @@ function AddProviderDialog({
         api_keys: keysText.trim() || undefined,
         free_tier: freeTier.trim() || undefined,
         auth_url: authUrl.trim() || undefined,
-      })) as { id: number; keys_added: number };
-      toast.success(`${name.trim()} added · ${res.keys_added} key(s) imported`);
+      })) as { id: number; keys_added: number; models_added?: number; sync_error?: string };
+      if (res.sync_error) {
+        toast.warning(`${name.trim()} added · ${res.keys_added} key(s) imported`, {
+          description: `Model discovery failed: ${res.sync_error}. Use "Sync models" to retry.`,
+        });
+      } else if ((res.models_added ?? 0) > 0) {
+        toast.success(`${name.trim()} added · ${res.keys_added} key(s) · ${res.models_added} live models discovered`);
+      } else {
+        toast.success(`${name.trim()} added · ${res.keys_added} key(s) imported`);
+      }
       reset();
       onOpenChange(false);
       onCreated();

@@ -329,6 +329,47 @@ export async function discoverProviderModels(providerKey?: string): Promise<Prov
   return results;
 }
 
+/**
+ * Live discovery for ONE provider, bypassing the cache (used by the models-sync
+ * route so "Sync" always hits the real upstream catalogue).
+ */
+export async function discoverProviderFresh(providerId: number): Promise<ProviderDiscoveryResult> {
+  const provider = await db.provider.findUnique({
+    where: { id: providerId },
+    include: { keys: { where: { enabled: true }, select: { apiKey: true }, take: 1 } },
+  });
+  if (!provider) {
+    return {
+      provider: `#${providerId}`,
+      provider_id: providerId,
+      ok: false,
+      count: 0,
+      models: [],
+      error: 'provider not found',
+      duration_ms: 0,
+      cached: false,
+    };
+  }
+  const needsKey = provider.kind !== 'builtin' && !KEYLESS_PROVIDERS.has(provider.key);
+  const apiKey = provider.keys[0]?.apiKey ?? null;
+  if (needsKey && !apiKey) {
+    return {
+      provider: provider.key,
+      provider_id: provider.id,
+      ok: false,
+      count: 0,
+      models: [],
+      error: 'no enabled API key — add one in Dashboard → Providers',
+      duration_ms: 0,
+      cached: false,
+    };
+  }
+  return discoverOne(
+    { id: provider.id, key: provider.key, name: provider.name, kind: provider.kind, baseUrl: provider.baseUrl },
+    apiKey,
+  );
+}
+
 export interface DiscoverySummary {
   object: 'list';
   discover: true;

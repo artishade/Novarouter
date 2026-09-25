@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
+import { syncProvider } from '@/lib/server/model-sync';
 import type { Provider, ProviderPreset, ProviderSessionInfo } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -253,5 +254,30 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  return NextResponse.json({ id: created.id, keys_added: keys.length });
+  // Auto-sync the new provider's live model catalogue so it is usable immediately.
+  // Best-effort: a discovery failure must not fail the creation — the dashboard
+  // "Sync models" button can retry, and the error is surfaced honestly.
+  let modelsAdded = 0;
+  let syncError: string | null = null;
+  try {
+    const report = await syncProvider({
+      id: created.id,
+      key: created.key,
+      name: created.name,
+      kind: created.kind,
+      baseUrl: created.baseUrl,
+      prefix: created.prefix,
+    });
+    modelsAdded = report.created;
+    if (!report.ok) syncError = report.error ?? 'model discovery failed';
+  } catch (err) {
+    syncError = err instanceof Error ? err.message : 'model discovery failed';
+  }
+
+  return NextResponse.json({
+    id: created.id,
+    keys_added: keys.length,
+    models_added: modelsAdded,
+    ...(syncError ? { sync_error: syncError } : {}),
+  });
 }

@@ -131,8 +131,17 @@ export function ModelsTab({
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const r = (await api.syncModels()) as { ok: boolean; synced: number; new_added: number };
-      toast.success(`Catalogue synced — ${r.synced} examined, ${r.new_added} new added`);
+      const r = (await api.syncModels()) as {
+        ok: boolean; synced: number; new_added: number; updated?: number; errors?: string[];
+      };
+      const updatedTxt = r.updated ? `, ${r.updated} refreshed` : '';
+      if (r.errors && r.errors.length > 0) {
+        toast.warning(`Synced ${r.synced} models (${r.new_added} new${updatedTxt}) · ${r.errors.length} provider(s) failed`, {
+          description: r.errors.slice(0, 3).join(' · '),
+        });
+      } else {
+        toast.success(`Live catalogue synced — ${r.synced} models discovered, ${r.new_added} new${updatedTxt}`);
+      }
       reload();
       onRefresh();
     } catch (e) {

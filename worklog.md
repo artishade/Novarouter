@@ -299,3 +299,22 @@ Work Log:
 
 Stage Summary:
 - /v1/models is now a live multi-provider discovery endpoint AND an agent capability: the agent can answer model-availability questions and factor live discovery into tasks. Pushed to GitHub (commit follows).
+
+---
+Task ID: real-interaction-fix
+Agent: orchestrator (Z.ai Code main)
+Task: Fix provider "Test" button 404 (POST /api/admin/providers/[id]/test), remove ALL mock/demo data, make every dashboard interaction real. Triggered by user console logs on novarouter.onrender.com: add-provider POST 201 but Test -> 404, plus a 502.
+
+Work Log:
+- Created src/app/api/admin/providers/[id]/test/route.ts — REAL connectivity test: builtin -> live test completion through the NovaFree engine (z-ai-web-dev-sdk, 20s cap); external -> live GET {base_url}/models per wire format (OpenAI-compatible Bearer / Gemini ?key= / Anthropic x-api-key+version), up to 3 enabled keys probed sequentially; OpenRouter uses /auth/key because its /models is public (catches fake keys). Returns ok/status(ok|auth_error|http_error|network_error|no_key|misconfigured|engine_error)/latency_ms/models_found/message — every number from the wire.
+- Added discoverProviderFresh() (no-cache single-provider discovery) to model-discovery.ts.
+- Rewrote /api/admin/models/sync: DELETED the hardcoded static CATALOG (~35 fake models). Sync now hits every provider's real /models endpoint and upserts actual ids, context windows, pricing, free flags (cap 500/provider); per-provider reports + honest errors; builtin novafree syncs its 3 real engine models. Shared logic extracted to src/lib/server/model-sync.ts.
+- POST /api/admin/providers now auto-syncs the new provider's live catalogue right after creation (best-effort, returns models_added / sync_error). UI toasts surface discovered count or the discovery failure.
+- Rewrote prisma/seed.ts: minimal REAL bootstrap only (novafree provider + 3 engine models + gateway_started_at). No fake keys, no 160 fake logs, no fake sessions/terminal/storage/client keys/agent tasks.
+- ensure-seed.ts now runs a ONE-TIME legacy purge (guarded by demo_data_purged flag): deletes SEED-DEMO-PLACEHOLDER keys, seeded preset providers that never got a real key (cascade removes their static models), all seeded logs/sessions/terminal/storage/client-keys/agent-tasks/model-routes. User-created providers with real keys are preserved. Verified live: 14 providers -> 2 (novafree + user's 'gem'), logs 0, client keys 0.
+- .gitignore: bare 'test' pattern was silently ignoring src/app/api/admin/providers/[id]/test/ — root-anchored to /test and /prompt. Untracked db/custom.db (repo shipped a demo-seeded DB!) and gitignored /db/*.db; deployments bootstrap clean via entrypoint db push + seed.
+- Chat completions 502 message now includes an actionable fix checklist (test provider, sync models, use existing model id).
+- Verified: lint clean; curl tests all real (novafree engine ping 284ms 'pong'; openrouter placeholder key -> HTTP 401 auth_error; gemini no_key; live sync discovered 458 OpenRouter models on create; /v1/models 461; ?discover=1 461/24 free; real chat completion through pipeline with honest fallback to engine + real log row; stats 1 request / 13 tokens). Browser E2E: Providers tab -> Actions -> Test connection -> 200 + toast with real 65ms/458 models; Test All -> all 3 providers 200; Models tab shows 461 real cards; Nova Console real chat reply received; mobile 390px footer sticky; zero console errors.
+
+Stage Summary:
+- Every provider/model/test/log interaction is now real network I/O; mock seed is gone from code, git history artifact DB untracked, and existing seeded deployments self-purge on next boot. The 404 root causes (missing route + .gitignore 'test' trap) are fixed. Pushed to GitHub for Render redeploy.

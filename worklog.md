@@ -318,3 +318,89 @@ Work Log:
 
 Stage Summary:
 - Every provider/model/test/log interaction is now real network I/O; mock seed is gone from code, git history artifact DB untracked, and existing seeded deployments self-purge on next boot. The 404 root causes (missing route + .gitignore 'test' trap) are fixed. Pushed to GitHub for Render redeploy.
+
+---
+Task ID: py-convert-1
+Agent: orchestrator (Z.ai Code main)
+Task: Convert the project to Python (requirements 0-4): FastAPI core, full Prisma->SQLAlchemy port, engine sidecar, /v1 gateway with SSE streaming, health, CORS, PORT binding, UI proxy.
+
+Work Log:
+- Core written: main.py (binds 0.0.0.0:$PORT — Render dynamic; CORS allow-origins; /health + /api/health with db+engine status; catch-all proxy to the Next dashboard process; gateway mounted at /v1 AND /api/v1), nova/config.py (Prisma-style DATABASE_URL normalization: file:/postgres:// -> SQLAlchemy, pgbouncer param stripping, PUBLIC_BASE_URL + hosted domain novarouter.onrender.com), nova/models.py (all 13 tables, physical naming parity with Prisma: camelCase columns so existing Postgres rows survive), nova/database.py (pool_pre_ping for Neon), nova/kv.py (SystemConfig + GPU providers helpers), nova/bootstrap.py (create_all + minimal real seed + legacy demo purge port), nova/discovery.py (full model-discovery.ts port).
+- Engine sidecar: engine/index.js (bun/node) exposing z-ai SDK to Python on 127.0.0.1:3099 — POST /chat (real SSE normalized from the SDK's raw byte stream), /search (web_search), /read_url (page_reader); nova/engine.py client with auto-spawn + EngineUnavailable degradation.
+- routers/gateway.py: GET /v1/models (+?discover=1), POST /v1/chat/completions (stream SSE + non-stream, full fallback pipeline parity: direct -> route chain -> nova-engine; _nova metadata; RequestLog; identity spoofing), POST /v1/completions (legacy, stream+non-stream), POST /v1/messages (Anthropic adapter: native x-api-key passthrough for anthropic-kind providers + Anthropic SSE event format; OpenAI pipeline otherwise), POST /v1/embeddings (OpenAI + Gemini embedContent upstreams, honest 404/502).
+- Verified live: health ok (db ok, engine up), /v1/models real data, UI proxy 200 (next dev spawned on 3001), non-stream completion "PYTHON GATEWAY WORKS", SSE stream real token deltas after fixing sidecar Uint8Array SSE normalization.
+
+Stage Summary:
+- Python core is production-live on port 3000 (sandbox). Remaining ports delegated: 2-b admin CRUD (+sync), 2-c misc/terminal/compute, 2-d storage/agent. Then TS backend removal, Docker rewrite, docs/base_url, E2E.
+
+---
+Task ID: 2-c
+Agent: general-purpose (misc/terminal/compute porter)
+Task: Port admin misc (meta/stats/analytics/logs), terminal sandbox + routes, and compute (GPU) routes to Python.
+
+Work Log:
+- Read all source TS routes first: meta/stats/analytics/logs route.ts, terminal exec/history/clear/boost-ram route.ts, terminal-exec.ts (699 lines), compute providers/toggle/config route.ts, plus src/lib/types.ts wire types and src/lib/server/config.ts.
+- Wrote nova/terminal.py (port of terminal-exec.ts): same policy (DANGEROUS_WORDS → exit 126, DANGEROUS_CHARS, ALLOWED allowlist, unknown → 127), HELP_TEXT/NOVA_HELP_TEXT verbatim, quote-aware tokenizer, 200-row TerminalCommand cap (delete oldest), and the full `nova` CLI (status/models/boost/gpu[ strategy| id on|off]/agents/storage/keys) reading live DB via nova/kv.py with identical output formats (⚡/✓/▪ lines, padEnd/padStart column parity, …-truncation).
+- OS telemetry is REAL stdlib /proc data (no child processes; the only subprocess is a 2s-timeout `node -v` probe when node exists, else honest "python-x.y (no node runtime)" — per requirement): free -m from /proc/meminfo (Node os.freemem=MemAvailable parity), df -h from shutil.disk_usage + /proc/self/mounts, ps aux from /proc/*/stat|cmdline|status (USER/PID/%CPU/%MEM/VSZ/RSS/TTY/STAT/START/TIME/COMMAND), uname/uptime/date/env/which per TS formats; ls -la lists the real project dir; cat nova.config.json dumps SystemConfig, cat .env prints masked live config.
+- routers/admin_misc.py: /meta ports the full PRESETS catalogue + MetaConfig and builds base_url from nova.config.public_base_url(str(request.base_url)) + "/v1" (env PUBLIC_BASE_URL → request origin → https://novarouter.onrender.com fallback); /stats ports every aggregation (SQL func.count/func.sum totals, 24h window, cache_hit_rate via=='cache', avg latency, error rate, provider counts, connected providers via ProviderSession distinct providerKey, memory from /proc/self/status VmRSS+VmPeak with ru_maxrss fallback, v8 heap/swap from config with 2048 defaults, r1() rounding parity); /analytics ports the exact Asia/Dhaka (UTC+6) hour/day bucketing with zero-filled buckets, top models/providers/clients, nearest-rank p50/p90/p99; /logs returns RequestLog rows desc by ts (limit clamp 1..1000, default 100) in the exact snake_case wire shape with epoch-ms ts.
+- routers/admin_terminal.py: POST /exec (manual JSON parse → exact {"error":"Invalid JSON body"}/{"error":"command is required"} 400s, cwd persisted to terminal_cwd), GET /history (TerminalHistoryResponse incl. system info from /proc + platform, memory_config, gpu block with enabled + enabled_count), POST /clear ({ok:true}), POST /boost-ram (validation 128–65536/0–65536, BoostRamResult shape, heap_before/after from real VmRSS).
+- routers/admin_compute.py: GET /providers, POST /providers/{id}/toggle ({enabled?} flip, 404 unknown, {ok,message}), GET /config (GpuConfig), POST /config ({enabled?, strategy?} → gpu_enabled/gpu_strategy config, {ok,config}).
+- Data fix: this dev DB predated the gpu_providers seed (bootstrap only seeds on empty DB) → one-time idempotent backfill of nova.bootstrap.GPU_CATALOGUE via set_gpu_providers (5 providers, novafree_gpu enabled). No code outside my files touched.
+- Note: during verification `import main` was transiently broken by agent 2-b's in-progress router files (missing get_db imports in admin_keys.py then admin_client_keys.py) — waited until they self-fixed; my 4 files compile/import cleanly throughout.
+
+Stage Summary:
+- All 11 endpoints live and curl-verified on :3000 — meta (base_url=http://localhost:3000/v1, 15 presets), stats (real totals/latency/memory/v8), analytics (25 zero-filled Dhaka-hour buckets, top groupings, percentiles), logs (epoch-ms wire shape), terminal exec (free -m ok, nova status shows 1 providers/3 models/1-5 gpu, rm -rf / → exit 126, htop → 127, bad input → exact 400 errors), history (cwd/history/system/memory_config/gpu), boost-ram 4096/2048 (real VmRSS before/after), compute providers (5), toggle (404 + flip + message), config GET/POST. State restored after tests (strategy=quota_aware, kaggle off, history repopulated with verification commands). Wire shapes match src/lib/types.ts field-for-field.
+
+---
+Task ID: 2-b
+Agent: general-purpose (admin CRUD porter)
+Task: Port all admin CRUD routers (providers/models/keys/routes/client-keys) + model-sync.ts from TypeScript to Python FastAPI.
+
+Work Log:
+- Read worklog + Python core (models/database/kv/config/discovery/engine/gateway) and ALL 15 target TS route files before porting.
+- Created nova/syncengine.py (port of src/lib/server/model-sync.ts): NOVA_ENGINE_MODELS builtin upsert (find by (providerId, modelId), explicit exposedId), external path via discover_provider_fresh with MAX_MODELS_PER_PROVIDER=500 cap, exposedId = prefix+modelId, per-provider ProviderSyncReport dicts {provider, provider_id, ok, discovered, created, updated, error?, duration_ms}; sync_provider(db, provider_dict) + sync_providers(db, provider_id=None) (enabled providers, priority asc).
+- Created routers/_common.py: epoch_ms (naive-UTC → epoch ms), parse_int (TS Number.isInteger parity), mask_key (8…4), tolerant json_body, as_str/as_num, parse_caps, parse_fallbacks.
+- routers/admin_providers.py: GET list (priority/id order, key_count, model/ok/cooling counts, latest ProviderSession per providerKey, full toProvider/toSession shapes); GET /presets (all 15 presets verbatim); POST create (preset reuse by name/slug, unique key slug with suffix→base36-timestamp fallback, requiresAuth derived from auth_url, multiline/comma api_keys, auto-sync after commit → {id, keys_added, models_added[, sync_error]}); PATCH {id} (enabled/priority/base_url/prefix/name); DELETE {id} (novafree guard, cascade + session purge); POST {id}/test (builtin → REAL nova engine chat ping "Reply with the single word: pong" 20s; external → real GET {base}/models per wire format — gemini ?key=, anthropic x-api-key+version, openrouter /auth/key, Bearer otherwise; ≤3 enabled keys sequential, break on first ok; statuses ok|auth_error|http_error|network_error|no_key|misconfigured|engine_error, httpx 8s); POST {id}/signin (maskKey of newest key or pat-••••, plan free, status connected, session replace); POST {id}/signout. /presets defined before /{id}.
+- routers/admin_models.py: GET "" (provider_id/status/free SQL filters + in-memory search/capability filters, provider-priority→exposedId sort, {total, rows} shape, detail = statusDetail(status, httpStatus); optional limit/offset extension with total = full filtered count); POST /sync before /{id} (sync_providers aggregation → {ok, synced, new_added, updated, providers, errors?}); PATCH /{id} toggle (enabled boolean required); POST /{id}/ping (builtin → REAL engine health_check with measured latency, healthy/dead; external → real GET {base}/models Bearer 6s; no keys/base → unknown; persists status/latencyMs/httpStatus/checkedAt).
+- routers/admin_keys.py: GET ?provider_id (createdAt desc, provider_name included, masked previews); POST single (provider_id/api_key required, weight clamp); DELETE /{id}; POST /bulk (newline/comma split, label prefixing, {added, ids}); POST /clear-cooldowns (updateMany parity: count = all rows).
+- routers/admin_routes.py: GET list (createdAt asc, fallbacks parsed); POST (public_id required, duplicate 400 with exact TS message); GET /preview (exact 3-stage logic: direct exposed/modelId matches dedup → matched route else '*' chain → auto stand-ins healthy+enabled+free not listed, provider.key/exposedId sort, max 3; spoof_model from SystemConfig); PATCH /{id} (clash check on rename); DELETE /{id}.
+- routers/admin_client_keys.py: GET list; POST mint (nova-sk- 32-hex token, num() semantics for rpm/tpd, full ClientKey shape returned); PATCH /{id}; DELETE /{id}.
+- Verified: python3 -c "import main" clean; server restarted; curl-verified every endpoint incl. live flows — provider create (groq preset, no key → honest sync_error; duplicate name → groq-cloud-2 slug; openrouter with fake keys → 459 REAL models auto-discovered), openrouter test → auth_error HTTP 401 via /auth/key (2 keys probed), builtin test → real engine pong 258-305ms, sync?provider_id=1 → updated 3, full sync → 462 models across 2 providers, keys single/bulk/clear-cooldowns(cleared=6)/delete, models filters (provider_id/free/search/capability) + limit/offset, external model ping persisted healthy HTTP 200 50ms, routes CRUD + duplicate/clash guards + preview stages 1-3 verified with a healthy free model as auto stand-in, client-keys CRUD, invalid-id 400s, 404s, novafree delete guard. Test artifacts cleaned up (DB back to novafree-only baseline); dev.log clean of tracebacks.
+
+Stage Summary:
+- All five admin CRUD routers + nova/syncengine.py are fully ported with field-for-field JSON parity (snake_case, epoch-ms timestamps). Network endpoints are async (httpx, real probes — no fabricated latency anywhere); pure-DB endpoints are sync threadpool handlers with Depends(get_db). POST /api/admin/providers auto-syncs live catalogues (proved with 459 real OpenRouter models). Deviations: model ping for builtin uses a REAL engine health check (measured latency) instead of the TS random 300-700ms; models list supports optional limit/offset (total unchanged); malformed JSON bodies on pydantic-parsed endpoints return FastAPI 422 instead of TS's tolerant {}.
+
+---
+Task ID: 2-d
+Agent: general-purpose (storage/agent porter)
+Task: Port the storage manager (src/app/api/admin/storage/**) and Nova Agent (src/app/api/agent/** + src/lib/server/agent.ts) to Python.
+
+Work Log:
+- Read all 10 TS storage routes + agent.ts (479 lines) + engine sidecar/discovery/core libs before porting.
+- nova/storage_lib.py: mappers (mapStorageProvider/mapStorageFile — snake_case wire, epoch-ms dates), parse/merge config, slugify, maskSecret, lenient Node-parity base64 decode, Math.round-parity rounding, JSON→StorageFile save, toISOString-parity helper.
+- routers/admin_storage.py (mounted /api/admin/storage): GET /info, POST /config, /connect, /disconnect, /providers, /test-connection, GET+POST /files, GET+DELETE /files/{id}, POST /backup — all field-for-field TS parity (413 5MB cap, 400/404 error shapes, masked keys, /backups snapshot with providers/models/routes/client_keys/config/exported_at).
+- nova/agent.py: verbatim AGENT_SYSTEM_PROMPT + FINAL_SYSTEM_PROMPT, strict parsePlan (fence strip → first {...} → ALLOWED_ACTIONS), planner user prompt, all 6 tools (web_search/read_url via nova.engine, terminal via LAZY nova.terminal import with OS-stats fallback, gateway_stats/storage_scan computed from DB, discover_models via nova.discovery + summarize_for_agent, finish), serializeAgentTask, run_agent_task loop: cancellation checks per iteration, maxSteps clamp 1..24, think-step retry on unparseable plan, tool failures → error steps (never raise), own SessionLocal() per DB touch, final LLM summary with step-evidence fallback.
+- routers/agent_api.py (prefix /api/agent): GET /tools (exact 6-tool catalogue), GET/POST /tasks (uuid4-hex-25 id, BackgroundTasks fire-and-forget, {id,status:"queued"}), GET /tasks/{id}, POST /tasks/{id}/cancel.
+- main.py declares agent_router but never mounts agent_api.router (py-convert-1 gap) and main.py is off-limits → agent_api attaches its router to the running app idempotently at import time (sys.modules main/__main__ guard); verified registered.
+- Found local_disk StorageProvider row missing on this DB (legacy TS ensure-seed purge deleted ALL storage rows; TS routes + uploads + backups all assume the built-in) → idempotent ensure_local_disk() in storage_lib called by storage routes (same seed values as nova.bootstrap).
+- Verified live after restarts: import main OK; all 16 routes 200; upload/download/delete round-trip; backup written to local_disk; invalid-JSON→400 "Invalid JSON body", unknown provider→404, bad file id→400, missing file→404; agent task (discover_models goal) ran plan→tool→finish→summary→completed with steps persisted; cancel flow stops the loop and sets finishedAt; 404s for unknown task ids.
+
+Stage Summary:
+- Storage manager + Nova Agent are fully Python-live with exact TS JSON shapes; TS routes for these areas can be deleted. Deviations (all documented in code): GET /files list added (TS only had POST; spec asked for it — shape = info.files), ensure_local_disk restores the built-in row the old purge deleted, cloud providers behave exactly like TS (credentials metadata + StorageFile rows; no invented REST uploads since upstream never implemented them).
+
+---
+Task ID: py-convert-2
+Agent: orchestrator (Z.ai Code main)
+Task: Integration + requirement completion — agent router mount fix, TS backend removal, Python Dockerfile, hosted-domain base_url, .env/.env.example/compose/README rewrite, full E2E.
+
+Work Log:
+- Subagent results integrated: 2-b (admin CRUD + nova/syncengine.py + routers/_common.py), 2-c (admin_misc/terminal/compute + nova/terminal.py ~970-line sandbox port with honest /proc telemetry), 2-d (storage suite + agent runtime + agent_api).
+- Fixed main.py: agent_router now attaches agent_api.router properly; removed agent_api's idempotent self-mount hack.
+- Removed the entire TypeScript backend: src/app/api/** (all route handlers), src/lib/server/** (agent/terminal/discovery/sync/config), src/lib/db.ts, prisma/**, docker-entrypoint.sh. package.json: prisma/@prisma.client deps + db:* scripts removed; start -> python3 main.py; bun.lock regenerated.
+- Dockerfile rewritten: python:3.12-slim + bun (UI child + engine sidecar) + pip layer; stages: ui-builder (next standalone), engine-deps (engine/node_modules), runner. CMD python3 main.py (0.0.0.0:$PORT). docker-compose healthcheck now hits /health. .dockerignore updated for Python artifacts.
+- Requirement #2: PUBLIC_BASE_URL + request-origin + novarouter.onrender.com fallback in nova/config.py; meta base_url verified; README fully rewritten (hosted-domain base URL https://novarouter.onrender.com/v1, Python architecture, new endpoints incl. streaming + Anthropic + embeddings, Render health check path /health).
+- Fixed a real proxy bug found during E2E: catch-all UI proxy buffered responses (await aread()) which hung forever on Next dev's infinite webpack-hmr SSE stream — rewritten to StreamingResponse + aiter_raw with read=None timeout. Browser then loaded instantly.
+- E2E verified through the Python server: /health ok (db+engine), /v1/models, chat non-stream + real SSE deltas, /v1/completions legacy, /v1/messages non-stream + Anthropic SSE events, /v1/embeddings honest 502, CORS preflight (access-control-allow-origin: *) + actual, dashboard tabs all render (Overview/Console/Providers/Models/Routes/ClientKeys/Storage/Analytics/Logs), Nova Console AI chat real reply, $ nova status exec, provider Test -> 200, models 3 shown, mobile 390px footer sticky, zero console errors; bun lint + python compileall clean.
+
+Stage Summary:
+- Project is now Python-first: FastAPI gateway + admin + agent + storage + terminal with SQLAlchemy (Prisma-layout compatible for zero-data-loss Postgres upgrades), Next.js UI proxied by the Python server, bun engine sidecar for the built-in free engine. All four Render requirements implemented and verified. Ready to commit + push.

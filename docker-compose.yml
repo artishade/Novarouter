@@ -1,25 +1,25 @@
 services:
   novarouter:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: novarouter:latest
-    container_name: novarouter
+    build: .
     ports:
-      - "3000:3000"
+      - "${PORT:-10000}:${PORT:-10000}"
     environment:
-      NODE_ENV: production
-      DATABASE_URL: file:/app/db/custom.db
-      # NOVA_SEED: "0" # uncomment to start with an empty database
+      # Render injects PORT dynamically; compose default kept for local runs.
+      - PORT=${PORT:-10000}
+      - DATABASE_URL=file:/app/db/custom.db
+      # Or a free Postgres (Neon/Supabase/Aiven):
+      # - DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
+      - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
     volumes:
       - nova-db:/app/db
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "bun", "-e", "await fetch('http://127.0.0.1:3000/api/admin/meta').then(r => { if (!r.ok) process.exit(1) })"]
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+__import__('os').environ.get('PORT','10000')+'/health', timeout=3).status==200 else 1)"]
       interval: 30s
       timeout: 5s
+      retries: 5
       start_period: 20s
-      retries: 3
 
 volumes:
   nova-db:

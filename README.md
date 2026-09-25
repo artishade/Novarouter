@@ -1,10 +1,22 @@
 # NovaRouter
 
-**A self-hosted AI API gateway with a built-in autonomous agent — rebuilt on Next.js 16.**
+**A self-hosted AI API gateway with a built-in autonomous agent — now on Python (FastAPI).**
 
 NovaRouter fans out requests across many AI providers (including fully free ones), applies fallback + cooldown strategies, manages keys/models/routes, and ships with a unified **Nova Console** where one chatbox can answer questions, run shell commands, and execute agent tasks.
 
-![stack](https://img.shields.io/badge/Next.js-16-black) ![stack](https://img.shields.io/badge/Prisma-SQLite-16a34a) ![stack](https://img.shields.io/badge/UI-shadcn%2Fui-slate)
+![stack](https://img.shields.io/badge/Python-FastAPI-009688) ![stack](https://img.shields.io/badge/SQLAlchemy-2-orange) ![stack](https://img.shields.io/badge/UI-Next.js-black)
+
+---
+
+## 🌐 Hosted gateway (base URL for external use)
+
+| What | Value |
+| --- | --- |
+| **Gateway base URL** | `https://novarouter.onrender.com/v1` |
+| **Health check** | `https://novarouter.onrender.com/health` |
+| **Dashboard** | `https://novarouter.onrender.com` |
+
+The base URL is also advertised live by `GET /api/admin/meta` (`base_url` field). Set `PUBLIC_BASE_URL` to override, otherwise the server always uses the incoming request origin — which on Render is your hosted domain automatically.
 
 ---
 
@@ -12,12 +24,14 @@ NovaRouter fans out requests across many AI providers (including fully free ones
 
 | Area | What you get |
 | --- | --- |
-| 🤖 Autonomous Agent | Task queue, live step streaming, tool use (web search, page reader), task history & cancellation |
+| 🐍 Python server | FastAPI + SQLAlchemy — binds `0.0.0.0:$PORT` (Render assigns PORT dynamically, never hardcoded), CORS enabled for browser clients, `/health` for uptime pings |
+| 🤖 Autonomous Agent | Task queue, background execution, tool use (web search, page reader, terminal, live model discovery), task history & cancellation |
 | 💬 Nova Console | **One chatbox for everything** — questions → AI chat with fallback telemetry, `$ cmd` → sandbox shell, `! task` → agent execution |
 | 🧠 Free AI providers | Built-in presets (OpenRouter, Groq, GitHub Models, Google AI Studio, Mistral, Ollama, …) with health checks, weights, cooldowns |
 | 🔀 Smart routing | Fallback chains, identity spoofing, request logs, analytics dashboards |
+| 📡 OpenAI-spec API | `/v1/models`, `/v1/chat/completions` (**streaming SSE + non-streaming**), `/v1/completions` (legacy), `/v1/messages` (Anthropic format), `/v1/embeddings`, live discovery |
 | 🗄️ Storage manager | Firebase + free storage providers (Supabase, Backblaze B2, Cloudflare R2, GitHub…), dashboard sign-in/connect flows, file browser, backups |
-| ⚙️ Compute config | Node.js V8 heap expansion, in-terminal RAM booster, free compute providers (Colab, Kaggle…), **GPU pool config** (attach/detach, VRAM) |
+| ⚙️ Compute config | Gateway memory booster, in-terminal RAM booster, free compute providers (Colab, Kaggle…), **GPU pool config** (attach/detach, VRAM) |
 | 🔑 Key management | Multi-key pools per provider, bulk import, cooldown tracking, client keys for the gateway |
 | 🎨 UI/UX | Dark terminal aesthetic (emerald/slate), responsive mobile-first layout, sticky footer, shadcn/ui |
 
@@ -33,10 +47,10 @@ cd Novarouter
 docker compose up -d
 ```
 
-Open **http://localhost:3000**. Done.
+Open **http://localhost:3000** (or `http://localhost:$PORT` if you overrode it). Done.
 
-- On first start the entrypoint creates the SQLite schema and seeds realistic demo data automatically (13 providers / 35 models / 160 request logs).
-- Set `NOVA_SEED=0` to start with an empty database.
+- The server binds `0.0.0.0:$PORT` — `PORT` is read from the environment (Render injects it dynamically; default 3000).
+- On first start the app creates the schema and bootstraps the real minimum: the built-in NovaFree engine (3 models) + gateway config. **No mock data is ever seeded.**
 - Data persists in the `nova-db` Docker volume.
 
 Prefer plain Docker?
@@ -48,29 +62,74 @@ docker run -d -p 3000:3000 -v nova-db:/app/db novarouter
 
 ### Deploy to Render.com (or any Docker host)
 
-1. **New → Web Service** → connect this repo → **Runtime: Docker** (build command / start command not needed — the image self-initializes on boot).
+1. **New → Web Service** → connect this repo → **Runtime: Docker** (no build/start commands needed — the image self-initializes).
 2. Add an environment variable:
-   - `DATABASE_URL` — **recommended: a free Postgres URL** (Neon, Supabase, Aiven, …).
-     Postgres URLs are **auto-detected**: on boot the container switches the Prisma schema provider to `postgresql`, regenerates the client and syncs the schema — zero manual migration steps.
-   - Or SQLite: `file:/app/db/custom.db` (note: the container filesystem is ephemeral on free plans — prefer Postgres, or mount a disk at `/app/db` where supported).
-   - Optional: `NOVA_SEED=0` to start with an empty database.
-3. Deploy. Render injects `PORT` automatically and the server binds `0.0.0.0`.
+   - `DATABASE_URL` — **recommended: a free Postgres URL** (Neon, Supabase, Aiven, …). Existing Prisma-style values (`postgres://…`, `pgbouncer` params) are accepted and normalized automatically.
+   - Or SQLite: `file:/app/db/custom.db` (the container filesystem is ephemeral on free plans — prefer Postgres, or mount a disk at `/app/db`).
+   - Optional: `PUBLIC_BASE_URL=https://novarouter.onrender.com` (the request origin is used when unset).
+   - Optional: `CORS_ALLOW_ORIGINS=*` (default) or a comma-separated origin list.
+3. Set the **Health Check Path** to `/health`.
+4. Deploy. Render injects `PORT` automatically; the server binds `0.0.0.0:$PORT`.
 
-Notes:
-- Pooled endpoints (`...pooler...` hosts, e.g. Neon/Supabase poolers) get `pgbouncer=true` appended automatically for transaction-mode pooling compatibility.
-- On first boot the entrypoint syncs the schema and seeds demo data only if the database is empty (so restarts/redeploys never duplicate data).
-
-### Run with Bun (dev)
+### Run locally (Python)
 
 ```bash
 git clone https://github.com/artishade/Novarouter.git
 cd Novarouter
-bun install
-cp .env.example .env        # SQLite path (resolved relative to prisma/schema.prisma)
-bun run db:push             # create schema
-bun prisma/seed.ts          # seed realistic demo data
-bun run dev                 # http://localhost:3000
+pip install -r requirements.txt
+bun install                 # dashboard UI tooling (Next.js frontend)
+cp .env.example .env
+python3 main.py             # http://localhost:3000 — UI + API in one process
 ```
+
+`python3 main.py` starts the FastAPI server on `0.0.0.0:$PORT` and spawns the dashboard UI (`next dev`) as a managed child process; everything is proxied through one port.
+
+---
+
+## 🔌 Gateway API
+
+Point any OpenAI/Anthropic SDK at the hosted base URL:
+
+```bash
+BASE=https://novarouter.onrender.com/v1
+
+# Models (DB catalogue) — live discovery available too
+curl $BASE/models
+curl "$BASE/models?discover=1"            # query every provider's real /models endpoint
+curl "$BASE/models?discover=1&free=1"     # free-tier models only
+
+# Chat completions — non-streaming
+curl $BASE/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"nova/air","messages":[{"role":"user","content":"hi"}]}'
+
+# Chat completions — STREAMING (SSE)
+curl -N $BASE/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"nova/air","stream":true,"messages":[{"role":"user","content":"Count to 5"}]}'
+
+# Legacy completions
+curl $BASE/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"nova/air","prompt":"Say hello"}'
+
+# Anthropic-format messages (native passthrough for Anthropic providers)
+curl $BASE/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"your-model","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'
+
+# Embeddings (via OpenAI-compatible / Gemini providers)
+curl $BASE/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"text-embedding-3-small","input":"hello world"}'
+
+# Health check (Render uptime pings)
+curl https://novarouter.onrender.com/health
+```
+
+All endpoints exist under both `/v1/*` and `/api/v1/*`. Responses carry `_nova` metadata showing the upstream provider, stage, and fallback state. CORS is enabled — browser apps can call the API directly.
+
+Admin APIs live under `/api/admin/*` (providers, models, keys, routes, storage, terminal, compute, analytics, logs, meta). Agent APIs under `/api/agent/*` (tasks, tools).
 
 ---
 
@@ -83,7 +142,7 @@ Everything lives in one chatbox — input is routed automatically:
 | `Why is my fallback chain failing?` | Gateway AI answers in chat, with live provider/model telemetry chips |
 | `$ free -m` | Runs a real command in the sandbox executor, shows output + exit code |
 | `$ nova gpu kaggle on` | Attaches a GPU from the Kaggle pool to your compute config |
-| `$ nova boost 512` | Expands the Node.js V8 heap / RAM booster by 512 MB |
+| `$ nova boost 512` | Raises the gateway memory booster by 512 MB |
 | `$ nova agents` | Lists autonomous agent task history |
 | `/boost 256`, `/models`, `/gpu`, `/storage`, `/help` | Slash shortcuts for terminal-side config |
 | `! Audit the storage providers and report failures` | Delegates to the autonomous agent — watch steps stream live until the task completes |
@@ -91,56 +150,24 @@ Everything lives in one chatbox — input is routed automatically:
 
 ---
 
-## 🔌 Gateway API
-
-Drop-in OpenAI-compatible endpoints:
-
-```bash
-curl http://localhost:3000/api/v1/models
-
-curl http://localhost:3000/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"your-model","messages":[{"role":"user","content":"hi"}]}'
-```
-
-### Live model discovery (`/v1/models?discover=1`)
-
-Query each provider's **real** `/models` endpoint right now — OpenAI-compatible,
-Gemini, Anthropic and Ollama wire formats are handled and normalized
-(per-provider status, context lengths, pricing, free flags). Cached 5 min.
-
-```bash
-curl 'http://localhost:3000/api/v1/models?discover=1'                # all providers
-curl 'http://localhost:3000/api/v1/models?discover=1&provider=groq'  # one provider
-curl 'http://localhost:3000/api/v1/models?discover=1&free=1'         # free-tier only
-```
-
-The **Nova Agent** uses the same capability as its `discover_models` tool — ask it
-*"which free models are available right now?"* or give it a goal like
-*"find the model with the largest context window under $1/1M tokens"* and it will
-discover, compare and report live results.
-
-Admin APIs live under `/api/admin/*` (providers, models, keys, routes, storage, terminal, compute, analytics, logs). Agent APIs under `/api/agent/*` (tasks, tools).
-
----
-
 ## 🗂️ Project Structure
 
 ```
-prisma/            schema.prisma + realistic seed (demo placeholder keys only)
-src/app/api/       gateway (v1), admin, agent route handlers
-src/components/    Dashboard tabs (Overview, Console, Providers, Models, Routes, Keys, Storage, Analytics, Logs)
-src/lib/server/    agent runtime, terminal executor, config
-db/                SQLite database file
-Dockerfile         multi-stage build (bun + Next standalone + auto DB init)
+main.py            FastAPI entrypoint — 0.0.0.0:$PORT, CORS, /health, routers, dashboard proxy
+nova/              config, SQLAlchemy models (Prisma-layout compatible), bootstrap,
+                   engine sidecar client, live discovery, model sync, terminal sandbox,
+                   agent runtime, storage lib
+routers/           gateway (/v1), admin CRUD, admin misc, terminal, compute, storage, agent APIs
+engine/            NovaFree engine sidecar (bun/node) — z-ai SDK bridge: chat stream, web search, page reader
+src/               Next.js dashboard UI (client components; served by the Python server)
+db/                SQLite database file (bootstrap at first boot)
+Dockerfile         python:3.12-slim runtime + bun sidecar + Next standalone dashboard
 docker-compose.yml one-command deploy with persistent volume
 ```
 
----
+## 🔒 A note on data
 
-## 🔒 A note on seed data
-
-Seed provider keys are **obvious placeholders** (`sk-or-v1-SEED-DEMO-PLACEHOLDER-…`) — never real secrets. Add your own keys in **Dashboard → Providers** or paste them via the Keys tab.
+No mock/demo data ships with the project: the dashboard starts empty (plus the built-in engine) and fills with **real** data as you add providers, sync live model catalogues, and use the gateway. Legacy deployments seeded with demo data are cleaned automatically on first boot.
 
 ## 📄 License
 

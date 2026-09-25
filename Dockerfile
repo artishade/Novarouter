@@ -1,63 +1,72 @@
 # syntax=docker/dockerfile:1
+# ============================================================================ #
+# NovaRouter — Python server (FastAPI) with the Next.js dashboard served by a
+# managed child process, plus a bun sidecar for the built-in NovaFree engine.
+# The server binds 0.0.0.0:$PORT (Render assigns PORT dynamically).
+# ============================================================================ #
 
-# ---------- Stage 1: dependencies ----------
-FROM oven/bun:1 AS deps
+# --------------------------------------------------------------------------- #
+# Stage 1 — build the Next.js dashboard (standalone output)
+# --------------------------------------------------------------------------- #
+FROM oven/bun:1 AS ui-builder
 WORKDIR /app
-COPY package.json bun.lock ./
-# Install dependencies (Prisma client is generated explicitly in the builder stage)
-RUN bun install --frozen-lockfile
 
-# ---------- Stage 2: build ----------
-FROM oven/bun:1 AS builder
-WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1
-# Placeholder so PrismaClient can be constructed during build-time module evaluation
-ENV DATABASE_URL=file:/tmp/build-placeholder.db
-COPY --from=deps /app/node_modules ./node_modules
+COPY package.json bun.lock* ./
+RUN bun install --frozen-lockfile || bun install
+
 COPY . .
-RUN bunx prisma generate
-# package.json "build" = next build + copy static/public into .next/standalone
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN bun run build
 
-# ---------- Stage 3: self-contained Prisma CLI ----------
-# The runner can't reuse the app's node_modules (Next standalone only ships the
-# traced runtime deps), and copying bare package dirs breaks the CLI:
-# @prisma/config requires transitive deps like `effect` that only a real
-# `bun install prisma` resolves. This stage produces a complete CLI install.
-FROM oven/bun:1 AS prisma-cli
-WORKDIR /cli
-COPY --from=builder /app/node_modules/prisma/package.json /tmp/prisma-pkg.json
-# Pin the CLI to the exact version resolved in the app's lockfile (zero drift)
-RUN echo "{\"dependencies\":{\"prisma\":\"$(bun -e "process.stdout.write(String(JSON.parse(await Bun.file('/tmp/prisma-pkg.json').text()).version))")\"}}" > package.json \
-  && bun install --production
+# --------------------------------------------------------------------------- #
+# Stage 2 — engine sidecar dependencies (z-ai-web-dev-sdk for the NovaFree engine)
+# --------------------------------------------------------------------------- #
+FROM oven/bun:1 AS engine-deps
+WORKDIR /engine
+COPY engine/package.json ./
+RUN bun install --production
 
-# ---------- Stage 4: runtime ----------
-FROM oven/bun:1 AS runner
+# --------------------------------------------------------------------------- #
+# Stage 3 — Python runtime + bun (for the UI child process and engine sidecar)
+# --------------------------------------------------------------------------- #
+FROM python:3.12-slim AS runner
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
-# Prisma engines need openssl + CA certs
-RUN apt-get update -qq \
-  && apt-get install -y -qq --no-install-recommends openssl ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
 
-ENV NODE_ENV=production \
-    NEXT_TELEMETRY_DISABLED=1 \
-    PORT=3000 \
-    HOSTNAME=0.0.0.0 \
-    DATABASE_URL=file:/app/db/custom.db
+# Python dependencies first (best layer caching)
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Next.js standalone server (server.js + pruned node_modules + .next/static + public)
-COPY --from=builder /app/.next/standalone ./
-# @prisma scope from the app install (client + engines with native binaries)
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
-# Prisma CLI + ALL its transitive deps (effect, c12, chokidar, ...) from a real install
-COPY --from=prisma-cli /cli/node_modules ./node_modules
-COPY --from=builder /app/prisma ./prisma
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+# Dashboard UI (Next standalone) + static assets
+COPY --from=ui-builder /app/.next/standalone /app/ui
+COPY --from=ui-builder /app/.next/static /app/ui/.next/static
+COPY --from=ui-builder /app/public /app/ui/public
 
-# SQLite lives on a volume so data survives container restarts
+# Engine sidecar (z-ai SDK)
+COPY engine/index.js /app/engine/index.js
+COPY --from=engine-deps /engine/node_modules /app/engine/node_modules
+
+# Python application sources
+COPY main.py ./
+COPY nova ./nova
+COPY routers ./routers
+
+# Database + engine runtime configuration
 RUN mkdir -p /app/db
 VOLUME /app/db
+ENV PYTHONUNBUFFERED=1 \
+    DATABASE_URL=file:/app/db/custom.db \
+    NOVA_UI_COMMAND="bun /app/ui/server.js" \
+    NOVA_UI_PORT=3001 \
+    NOVA_UI_TARGET=http://127.0.0.1:3001 \
+    ENGINE_PORT=3099
 
 EXPOSE 3000
-ENTRYPOINT ["docker-entrypoint.sh"]
+
+# requirement #1: main.py binds 0.0.0.0:$PORT — PORT comes from the
+# environment (Render injects it dynamically; default 3000 locally).
+CMD ["python3", "main.py"]

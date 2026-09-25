@@ -1,0 +1,171 @@
+"""Live model catalogue sync — Python port of src/lib/server/model-sync.ts.
+
+Shared by:
+  • POST /api/admin/models/sync            (manual "Sync models" button)
+  • POST /api/admin/providers              (auto-sync right after a provider is added)
+
+Queries each provider's REAL upstream /models endpoint (no static catalogue)
+and upserts what is actually available: real ids, context windows, pricing,
+free flags. Failures are reported per-provider and never fabricated.
+"""
+from __future__ import annotations
+
+import json
+import time
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .discovery import discover_provider_fresh
+from .models import Model, Provider
+
+# Hard cap per provider — protects the DB from pathological upstream catalogues.
+MAX_MODELS_PER_PROVIDER = 500
+
+# Built-in NovaFree engine models. This is the REAL engine surface (served by
+# the z-ai SDK sidecar) — not a placeholder catalogue.
+NOVA_ENGINE_MODELS = [
+    {"modelId": "nova-air", "exposedId": "nova/air", "displayName": "Nova Air",
+     "ctx": 32768, "maxOut": 8192,
+     "caps": {"tools": True, "vision": True, "reasoning": True},
+     "description": "Built-in free engine. Balanced speed and quality, always available."},
+    {"modelId": "nova-mini", "exposedId": "nova/mini", "displayName": "Nova Mini",
+     "ctx": 16384, "maxOut": 4096,
+     "caps": {"tools": False, "vision": False, "reasoning": False},
+     "description": "Built-in free engine. Ultra-low latency for quick tasks."},
+    {"modelId": "nova-pro", "exposedId": "nova/pro", "displayName": "Nova Pro",
+     "ctx": 65536, "maxOut": 16384,
+     "caps": {"tools": True, "vision": True, "reasoning": True},
+     "description": "Built-in free engine. Deep reasoning with the largest context."},
+]
+
+
+def _default_capabilities(caps: dict | None = None) -> str:
+    return json.dumps({"tools": False, "vision": False, "reasoning": False, **(caps or {})})
+
+
+def _ms(started: float) -> int:
+    return int((time.monotonic() - started) * 1000)
+
+
+def _num_or_zero(value) -> float:
+    return value if value is not None else 0
+
+
+async def sync_provider(db: Session, provider: dict) -> dict:
+    """Sync ONE provider from its live upstream catalogue (real network calls).
+
+    `provider` carries the Prisma-shaped fields: id, key, name, kind, baseUrl, prefix.
+    Returns a ProviderSyncReport dict: {provider, provider_id, ok, discovered,
+    created, updated, error?, duration_ms}.
+    """
+    started = time.monotonic()
+    base = {"provider": provider["key"], "provider_id": provider["id"]}
+
+    # ── Built-in engine: catalogue is the engine's real surface, no network ──
+    if provider["kind"] == "builtin":
+        created = 0
+        updated = 0
+        for entry in NOVA_ENGINE_MODELS:
+            existing = db.scalars(
+                select(Model).where(
+                    Model.providerId == provider["id"], Model.modelId == entry["modelId"]
+                )
+            ).first()
+            if existing is not None:
+                existing.displayName = entry["displayName"]
+                existing.contextLength = entry["ctx"]
+                existing.maxOutput = entry["maxOut"]
+                existing.capabilities = _default_capabilities(entry["caps"])
+                existing.description = entry["description"]
+                updated += 1
+            else:
+                db.add(Model(
+                    providerId=provider["id"], modelId=entry["modelId"],
+                    exposedId=entry["exposedId"], displayName=entry["displayName"],
+                    isFree=True, contextLength=entry["ctx"], maxOutput=entry["maxOut"],
+                    capabilities=_default_capabilities(entry["caps"]),
+                    description=entry["description"],
+                ))
+                created += 1
+        db.commit()
+        return {**base, "ok": True, "discovered": len(NOVA_ENGINE_MODELS),
+                "created": created, "updated": updated, "duration_ms": _ms(started)}
+
+    # ── Everything else: live discovery against the real upstream /models endpoint ──
+    try:
+        result = await discover_provider_fresh(db, provider["id"])
+        if not result.get("ok"):
+            db.rollback()
+            return {**base, "ok": False, "discovered": 0, "created": 0, "updated": 0,
+                    "error": result.get("error") or "discovery failed",
+                    "duration_ms": _ms(started)}
+
+        discovered = result["models"][:MAX_MODELS_PER_PROVIDER]
+        existing_rows = {
+            row.modelId: row
+            for row in db.scalars(select(Model).where(Model.providerId == provider["id"])).all()
+        }
+
+        created = 0
+        updated = 0
+        prefix = provider.get("prefix") or ""
+
+        for m in discovered:
+            mid = m["id"]
+            data = {
+                "displayName": m.get("display_name") or mid,
+                "isFree": bool(m.get("is_free")),
+                "contextLength": int(m.get("context_length") or 0),
+                "maxOutput": int(m.get("max_output") or 0),
+                "priceIn": _num_or_zero(m.get("pricing_prompt")),
+                "priceOut": _num_or_zero(m.get("pricing_completion")),
+            }
+            row = existing_rows.get(mid)
+            if row is not None:
+                row.displayName = data["displayName"]
+                row.isFree = data["isFree"]
+                row.contextLength = data["contextLength"]
+                row.maxOutput = data["maxOutput"]
+                row.priceIn = data["priceIn"]
+                row.priceOut = data["priceOut"]
+                updated += 1
+            else:
+                obj = Model(
+                    providerId=provider["id"], modelId=mid,
+                    exposedId=f"{prefix}{mid}", status="unknown",
+                    capabilities=_default_capabilities(), description=None,
+                    **data,
+                )
+                db.add(obj)
+                db.flush()  # assign the id now so a duplicate id in this batch updates
+                existing_rows[mid] = obj
+                created += 1
+        db.commit()
+    except Exception as err:  # a failing provider must never break the whole sync
+        db.rollback()
+        return {**base, "ok": False, "discovered": 0, "created": 0, "updated": 0,
+                "error": str(err)[:200], "duration_ms": _ms(started)}
+
+    return {**base, "ok": True, "discovered": result["count"],
+            "created": created, "updated": updated, "duration_ms": _ms(started)}
+
+
+async def sync_providers(db: Session, provider_id: int | None = None) -> list[dict]:
+    """Sync enabled providers sequentially (optionally just one); returns reports."""
+    stmt = (
+        select(Provider)
+        .where(Provider.enabled.is_(True))
+        .order_by(Provider.priority.asc(), Provider.id.asc())
+    )
+    if provider_id is not None:
+        stmt = stmt.where(Provider.id == provider_id)
+    providers = db.scalars(stmt).all()
+
+    reports: list[dict] = []
+    for p in providers:
+        reports.append(await sync_provider(db, {
+            "id": p.id, "key": p.key, "name": p.name,
+            "kind": p.kind, "baseUrl": p.baseUrl, "prefix": p.prefix,
+        }))
+    return reports

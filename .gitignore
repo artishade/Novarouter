@@ -60,3 +60,8 @@ server.log
 # sqlite database (bootstrapped at deploy time — never ship demo data)
 /db/*.db
 /db/*.db-journal
+
+# python
+__pycache__/
+*.pyc
+.venv/

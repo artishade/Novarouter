@@ -1,0 +1,38 @@
+# dependencies / build output
+node_modules
+.next
+out
+build
+
+# git & sandbox internals
+.git
+.gitignore
+.zscripts
+.z-ai-config
+.claude
+
+# local data & logs (DB is initialized inside the container on first run)
+db
+*.log
+dev.log
+server.log
+
+# dev tooling not needed inside the image
+tool-results
+download
+tests
+examples
+mini-services
+agent-ctx
+worklog.md
+prompt
+skills
+
+# env (container gets DATABASE_URL from Dockerfile / compose environment)
+.env
+.env*.local
+
+# misc
+.DS_Store
+*.pem
+.vercel

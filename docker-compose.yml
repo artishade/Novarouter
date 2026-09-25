@@ -1,0 +1,25 @@
+services:
+  novarouter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: novarouter:latest
+    container_name: novarouter
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: file:/app/db/custom.db
+      # NOVA_SEED: "0" # uncomment to start with an empty database
+    volumes:
+      - nova-db:/app/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bun", "-e", "await fetch('http://127.0.0.1:3000/api/admin/meta').then(r => { if (!r.ok) process.exit(1) })"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  nova-db:

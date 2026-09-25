@@ -46,6 +46,20 @@ docker build -t novarouter .
 docker run -d -p 3000:3000 -v nova-db:/app/db novarouter
 ```
 
+### Deploy to Render.com (or any Docker host)
+
+1. **New → Web Service** → connect this repo → **Runtime: Docker** (build command / start command not needed — the image self-initializes on boot).
+2. Add an environment variable:
+   - `DATABASE_URL` — **recommended: a free Postgres URL** (Neon, Supabase, Aiven, …).
+     Postgres URLs are **auto-detected**: on boot the container switches the Prisma schema provider to `postgresql`, regenerates the client and syncs the schema — zero manual migration steps.
+   - Or SQLite: `file:/app/db/custom.db` (note: the container filesystem is ephemeral on free plans — prefer Postgres, or mount a disk at `/app/db` where supported).
+   - Optional: `NOVA_SEED=0` to start with an empty database.
+3. Deploy. Render injects `PORT` automatically and the server binds `0.0.0.0`.
+
+Notes:
+- Pooled endpoints (`...pooler...` hosts, e.g. Neon/Supabase poolers) get `pgbouncer=true` appended automatically for transaction-mode pooling compatibility.
+- On first boot the entrypoint syncs the schema and seeds demo data only if the database is empty (so restarts/redeploys never duplicate data).
+
 ### Run with Bun (dev)
 
 ```bash

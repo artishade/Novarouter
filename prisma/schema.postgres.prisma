@@ -1,0 +1,199 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Provider {
+  id           Int           @id @default(autoincrement())
+  key          String        @unique
+  name         String
+  kind         String        @default("openai") // openai | anthropic | gemini | builtin
+  baseUrl      String        @default("")
+  prefix       String        @default("")
+  enabled      Boolean       @default(true)
+  priority     Int           @default(100)
+  color        String        @default("#10b981")
+  docsUrl      String?
+  authUrl      String?
+  requiresAuth Boolean       @default(false)
+  freeTier     String?
+  createdAt    DateTime      @default(now())
+  keys         ProviderKey[]
+  models       Model[]
+}
+
+model ProviderKey {
+  id            Int        @id @default(autoincrement())
+  providerId    Int
+  provider      Provider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  label         String     @default("key")
+  apiKey        String
+  weight        Int        @default(1)
+  enabled       Boolean    @default(true)
+  cooldownUntil DateTime?
+  lastError     String?
+  reqCount      Int        @default(0)
+  errCount      Int        @default(0)
+  lastUsedAt    DateTime?
+  createdAt     DateTime   @default(now())
+}
+
+model Model {
+  id            Int       @id @default(autoincrement())
+  providerId    Int
+  provider      Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  modelId       String
+  exposedId     String
+  displayName   String    @default("")
+  isFree        Boolean   @default(false)
+  status        String    @default("unknown") // healthy | cooling | dead | unknown
+  httpStatus    Int       @default(0)
+  latencyMs     Int       @default(0)
+  checkedAt     DateTime?
+  enabled       Boolean   @default(true)
+  contextLength Int       @default(0)
+  maxOutput     Int       @default(0)
+  capabilities  String    @default("{}")
+  priceIn       Float     @default(0)
+  priceOut      Float     @default(0)
+  description   String?
+
+  @@unique([providerId, modelId])
+}
+
+model ModelRoute {
+  id        Int      @id @default(autoincrement())
+  publicId  String   @unique
+  fallbacks String   @default("[]")
+  auto      Boolean  @default(true)
+  enabled   Boolean  @default(true)
+  note      String   @default("")
+  createdAt DateTime @default(now())
+}
+
+model ClientKey {
+  id            Int       @id @default(autoincrement())
+  name          String
+  token         String    @unique
+  enabled       Boolean   @default(true)
+  allowedModels String    @default("*")
+  rpmLimit      Int       @default(60)
+  tpdLimit      Int       @default(0)
+  tokensIn      Int       @default(0)
+  tokensOut     Int       @default(0)
+  reqCount      Int       @default(0)
+  lastUsedAt    DateTime?
+  createdAt     DateTime  @default(now())
+}
+
+model RequestLog {
+  id            Int      @id @default(autoincrement())
+  ts            DateTime @default(now())
+  clientKeyId   Int?
+  clientName    String   @default("")
+  providerId    Int?
+  providerName  String   @default("")
+  model         String
+  upstreamModel String   @default("")
+  endpoint      String   @default("/v1/chat/completions")
+  status        Int
+  latencyMs     Int      @default(0)
+  tokensIn      Int      @default(0)
+  tokensOut     Int      @default(0)
+  error         String   @default("")
+  via           String   @default("")
+  spoofed       Boolean  @default(false)
+
+  @@index([ts])
+}
+
+model TerminalCommand {
+  id         Int      @id @default(autoincrement())
+  command    String
+  output     String
+  exitCode   Int      @default(0)
+  durationMs Int      @default(0)
+  cwd        String   @default("/workspace")
+  createdAt  DateTime @default(now())
+}
+
+model SystemConfig {
+  key   String @id
+  value String
+}
+
+model StorageProvider {
+  id         String    @id
+  name       String
+  type       String // local | builtin_cloud | firebase | supabase | s3 | github | webdav
+  config     String    @default("{}")
+  status     String    @default("disconnected") // connected | disconnected | pending | error
+  isBuiltin  Boolean   @default(false)
+  active     Boolean   @default(false)
+  freeTier   String?
+  usageMb    Float     @default(0)
+  quotaMb    Float     @default(0)
+  region     String?
+  docsUrl    String?
+  authUrl    String?
+  lastTestAt DateTime?
+  lastError  String?
+  createdAt  DateTime  @default(now())
+}
+
+model StorageFile {
+  id          Int      @id @default(autoincrement())
+  name        String
+  path        String   @default("/")
+  size        Int      @default(0)
+  mime        String   @default("application/octet-stream")
+  providerKey String   @default("local_disk")
+  data        String? // base64 payload (local sandbox storage)
+  createdAt   DateTime @default(now())
+}
+
+model AgentTask {
+  id         String      @id @default(cuid())
+  goal       String
+  status     String      @default("queued") // queued | running | completed | failed | cancelled
+  model      String      @default("auto")
+  maxSteps   Int         @default(8)
+  summary    String      @default("")
+  error      String?
+  createdAt  DateTime    @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+  steps      AgentStep[]
+}
+
+model AgentStep {
+  id          Int       @id @default(autoincrement())
+  taskId      String
+  task        AgentTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  stepNumber  Int
+  action      String // plan | think | web_search | read_url | terminal | gateway_stats | storage_scan | finish | error
+  title       String
+  description String    @default("")
+  detail      String    @default("")
+  status      String    @default("ok") // ok | error | info
+  latencyMs   Int       @default(0)
+  createdAt   DateTime  @default(now())
+
+  @@index([taskId])
+}
+
+model ProviderSession {
+  id          Int       @id @default(autoincrement())
+  providerKey String
+  username    String
+  displayName String?
+  plan        String    @default("free")
+  status      String    @default("connected")
+  tokenMask   String?
+  connectedAt DateTime  @default(now())
+  expiresAt   DateTime?
+}

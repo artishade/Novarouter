@@ -239,3 +239,19 @@ Work Log:
 
 Stage Summary:
 - `docker compose up -d` or `docker build -t novarouter .` now works out of the box on the cloned repo: image builds, DB auto-initializes + seeds on first run, data persists in a named volume. Local dev path in .env no longer depends on the sandbox's absolute path. Lint clean; dev server verified healthy after env change.
+
+---
+Task ID: render-fix
+Agent: orchestrator (Z.ai Code main)
+Task: User's Render.com deploy crashed: (1) Prisma CLI ENOENT prisma_schema_build_bg.wasm, (2) DATABASE_URL was a Neon Postgres URL while the image shipped a SQLite schema. Fix and push.
+
+Work Log:
+- Root cause 1: Docker COPY dereferences symlinks — node_modules/.bin/prisma (symlink -> ../prisma/build/index.js) became a plain file, so the CLI resolved its embedded WASM against node_modules/.bin/ and crashed. Verified the symlink + wasm locations in sandbox.
+- Root cause 2: schema.prisma provider is "sqlite"; user configured Neon Postgres. Entry log "[nova] no database at postgresql://..." showed the entrypoint misparsed the URL as a file path.
+- Fixes: entrypoint now runs the CLI via the REAL path (bun node_modules/prisma/build/index.js); Dockerfile recreates the .bin symlink (ln -sf) instead of copying it; entrypoint auto-detects postgres:// / postgresql:// URLs, generates the postgres client + db push with --schema prisma/schema.postgres.prisma; created prisma/schema.postgres.prisma (sed-derived from the sqlite schema, prisma validate passed); appended pgbouncer=true automatically for *pooler.* hosts (Neon/Supabase transaction pooling).
+- Added prisma/ensure-seed.ts: seeds only when provider count == 0 (works for both providers; seed failure is non-fatal). Local verification: db push via real path under bun OK (WASM loaded), ensure-seed printed "already has 13 provider(s)", sh -n on entrypoint OK.
+- Fixed .gitignore: added !.env.example (the .env* rule had silently prevented .env.example from ever being committed while README references it). Recreated the file.
+- README: added "Deploy to Render.com (or any Docker host)" section (Docker runtime, DATABASE_URL postgres recommended + auto-detection, NOVA_SEED, PORT injection, pooler note).
+
+Stage Summary:
+- Render deploy should now boot: Postgres URL detected -> postgres schema + client generated in-container -> schema synced -> seeded only if empty -> standalone server binds 0.0.0.0:$PORT. SQLite mode unchanged. User should also rotate the Neon DB password since it was pasted into chat logs.

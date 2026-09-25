@@ -35,10 +35,12 @@ ENV NODE_ENV=production \
 
 # Next.js standalone server (server.js + pruned node_modules + .next/static + public)
 COPY --from=builder /app/.next/standalone ./
-# Overlay the Prisma CLI + schema + seed so the entrypoint can initialize the DB
+# Overlay the Prisma CLI + schema + seed scripts so the entrypoint can initialize the DB.
+# NOTE: do NOT copy node_modules/.bin/prisma — COPY dereferences the symlink and the
+# copied CLI then fails to find its WASM files (ENOENT prisma_schema_build_bg.wasm).
 COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
+RUN ln -sf ../prisma/build/index.js /app/node_modules/.bin/prisma
 COPY --from=builder /app/prisma ./prisma
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

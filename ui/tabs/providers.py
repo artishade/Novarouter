@@ -138,7 +138,6 @@ async def _providers_ctx(request: Request) -> dict:
         "q": q,
         "expand": expand,
         "error": error,
-        "root_url": _root_url(q, expand),
         "stats": stats,
         "meta": meta,
         "now_ms": time.time() * 1000,
@@ -234,6 +233,10 @@ async def providers_tab(request: Request) -> HTMLResponse:
 @router.get("/partials/providers/list")
 async def providers_list(request: Request) -> HTMLResponse:
     ctx = await _providers_ctx(request)
+    # region=results renders ONLY the results region (#providers-results) so a
+    # search never re-renders the focused input (mobile keyboard safety).
+    if request.query_params.get("region") == "results":
+        return html(render("partials/providers_results.html", **ctx))
     return html(render("partials/providers_list.html", **ctx))
 
 

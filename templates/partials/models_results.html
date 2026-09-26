@@ -1,0 +1,112 @@
+{# Models results region — the ONLY part of the models tab that filter actions
+   (search debounce / selects / free toggle) ever swap. The filter form lives
+   outside this fragment, so a swap can never destroy the focused input while
+   typing on mobile. Also rendered standalone via
+   GET /partials/models/list?region=results. #}
+<div id="models-results" class="space-y-4">
+  <p class="font-mono text-[11px] text-slate-500">{{ total }} shown</p>
+
+  {% if error %}
+  <div class="rounded-xl border border-rose-900/60 bg-rose-950/20 p-10 text-center">
+    <p class="font-mono text-sm text-rose-300">{{ error }}</p>
+    <button type="button" hx-get="/partials/models/list?region=results" hx-include="#models-filter"
+      hx-target="#models-results" hx-swap="innerHTML"
+      class="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-700 px-3 text-xs text-slate-300 hover:bg-slate-800">
+      <i data-lucide="refresh-cw" class="size-3.5"></i> Retry
+    </button>
+  </div>
+  {% elif rows | length == 0 %}
+  <div class="rounded-xl border border-dashed border-slate-800 bg-[#0d1322]/60 p-10 text-center text-sm text-slate-500">
+    {{ 'No models match the current filters — try clearing them.' if has_filters else 'No models in the catalogue yet — run Sync Catalogue.' }}
+  </div>
+  {% else %}
+  <div class="nova-scroll max-h-[calc(100vh-330px)] overflow-y-auto pr-1">
+    <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      {% for m in rows %}
+      <div data-detail-id="{{ m.id }}" role="button" tabindex="0" aria-label="Open details for {{ m.display_name }}"
+        class="cursor-pointer rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4 transition hover:border-slate-600 hover:bg-[#0d1322] focus:outline-none focus-visible:border-emerald-500/60">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <p class="truncate text-sm font-medium text-slate-100">{{ m.display_name }}</p>
+            <p class="truncate font-mono text-[11px] text-slate-500">{{ m.exposed_id }}</p>
+          </div>
+          <label class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center">
+            <input type="checkbox" name="enabled" {{ 'checked' if m.enabled }} hx-post="/ui/models/toggle"
+              hx-vals='{"id": {{ m.id }}, "exposed": "{{ m.exposed_id }}"}' hx-trigger="change" hx-swap="none"
+              class="peer sr-only" aria-label="Toggle model {{ m.exposed_id }}" />
+            <span class="pointer-events-none absolute inset-0 rounded-full bg-slate-700 transition-colors after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-slate-300 after:transition-transform peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-4"></span>
+          </label>
+        </div>
+
+        <div class="mt-2 flex flex-wrap items-center gap-1.5">
+          <span class="flex items-center gap-1.5 rounded-md border border-slate-800 bg-black/30 px-1.5 py-0.5 text-[10px] text-slate-400">
+            <span class="size-1.5 rounded-full" style="background-color: {{ m.provider_color or '#64748b' }}" aria-hidden="true"></span>
+            {{ m.provider_name or 'unknown' }}
+          </span>
+          <span id="mchip-{{ m.id }}" class="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] {{ m.chip }}">
+            <span class="size-1.5 rounded-full {{ m.dot }}" aria-hidden="true"></span>
+            {{ m.status }}
+          </span>
+          {% if m.is_free %}
+          <span class="inline-flex items-center rounded border border-emerald-800/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] text-emerald-300">FREE</span>
+          {% endif %}
+        </div>
+
+        <div class="mt-2.5 flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-slate-500">
+          <span class="rounded border border-slate-800 bg-black/30 px-1.5 py-0.5">{{ m.context_length | fmt_num }} ctx</span>
+          <span class="rounded border border-slate-800 bg-black/30 px-1.5 py-0.5">{{ m.max_output | fmt_num }} out</span>
+          {% if (m.latency_ms or 0) > 0 %}
+          <span id="mlat-{{ m.id }}" class="flex items-center gap-0.5 rounded border border-slate-800 bg-black/30 px-1.5 py-0.5 text-emerald-300/90">
+            <i data-lucide="zap" class="size-2.5"></i>
+            <span>{{ m.latency_ms }}ms</span>
+          </span>
+          {% else %}
+          <span id="mlat-{{ m.id }}" class="hidden"></span>
+          {% endif %}
+        </div>
+
+        {% if (m.price_in or 0) > 0 %}
+        <p class="mt-1.5 text-[11px] text-slate-500">${{ m.price_in }}/M in · ${{ m.price_out }}/M out</p>
+        {% endif %}
+
+        <div class="mt-2.5 flex items-center gap-2.5">
+          <span class="{{ 'text-emerald-300/90' if m.capabilities.tools else 'text-slate-700' }}"
+            title="{{ 'Tool calling supported' if m.capabilities.tools else 'No tool calling' }}">
+            <i data-lucide="wrench" class="size-3.5"></i><span class="sr-only">tools</span>
+          </span>
+          <span class="{{ 'text-emerald-300/90' if m.capabilities.vision else 'text-slate-700' }}"
+            title="{{ 'Vision supported' if m.capabilities.vision else 'No vision' }}">
+            <i data-lucide="eye" class="size-3.5"></i><span class="sr-only">vision</span>
+          </span>
+          <span class="{{ 'text-emerald-300/90' if m.capabilities.reasoning else 'text-slate-700' }}"
+            title="{{ 'Reasoning supported' if m.capabilities.reasoning else 'No reasoning' }}">
+            <i data-lucide="brain" class="size-3.5"></i><span class="sr-only">reasoning</span>
+          </span>
+          <div class="ml-auto">
+            <button type="button" data-ping="{{ m.id }}" data-exposed="{{ m.exposed_id }}" aria-label="Ping {{ m.exposed_id }}"
+              class="inline-flex h-7 items-center gap-1 rounded border border-slate-700 px-2 text-[11px] text-slate-300 transition-colors hover:bg-slate-800">
+              <i data-lucide="gauge" class="size-3"></i>
+              Ping
+            </button>
+          </div>
+        </div>
+
+        {% if m.description %}
+        <p class="mt-2 line-clamp-2 text-[11px] leading-snug text-slate-500">{{ m.description }}</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if has_filters %}
+  {# Clear filters must also reset the form fields → re-render the whole root
+     (plain URL, no hx-include → defaults). #}
+  <button type="button" hx-get="/partials/models/list" hx-target="#models-root" hx-swap="outerHTML"
+    class="inline-flex items-center gap-1 text-[11px] text-slate-500 transition hover:text-slate-200">
+    <i data-lucide="x" class="size-3"></i>
+    Clear filters
+  </button>
+  {% endif %}
+</div>

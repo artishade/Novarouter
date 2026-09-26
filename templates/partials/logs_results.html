@@ -1,0 +1,98 @@
+{# Logs results region — the ONLY part of the logs tab that filter actions
+   (search debounce / status / via) ever swap. The toolbar with the search
+   input lives outside this fragment, so the mobile keyboard can never be
+   clobbered while typing. Also rendered standalone via
+   GET /partials/tab/logs?region=results. #}
+{% macro badge(cls, extra='') -%}
+<span class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold {{ cls }} {{ extra }}">{{ caller() }}</span>
+{%- endmacro %}
+<div id="logs-lower" class="flex flex-col gap-3">
+  <p class="font-mono text-[11px] text-slate-500">{{ rows | length }} of {{ total }} requests</p>
+
+  <div class="nova-log-scroll max-h-[70vh] overflow-y-auto rounded-xl border border-slate-800 bg-[#0d1322]/80">
+    <table class="w-full caption-bottom text-sm">
+      <thead class="sticky top-0 z-10 border-b border-slate-800 bg-[#0d1322]/95 backdrop-blur">
+        <tr class="hover:bg-transparent">
+          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Time</th>
+          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Endpoint</th>
+          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Model</th>
+          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Provider</th>
+          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Via</th>
+          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Status</th>
+          <th class="h-10 px-3 text-right text-[10px] font-medium uppercase tracking-widest text-slate-500">Latency</th>
+          <th class="h-10 px-3 text-right text-[10px] font-medium uppercase tracking-widest text-slate-500">Tokens</th>
+          <th class="w-8"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if rows | length == 0 %}
+        <tr class="border-b border-slate-800/60 hover:bg-transparent">
+          <td colspan="9" class="py-10 text-center text-xs text-slate-500">No requests match the current filters.</td>
+        </tr>
+        {% else %}
+        {% for r in rows %}
+        <tr class="group border-b border-slate-800/60 transition-colors hover:bg-slate-800/20">
+          <td class="px-3 py-2.5 font-mono text-[11px] text-slate-400">
+            <span title="{{ r.ago }}">{{ r.clock }}</span>
+          </td>
+          <td class="max-w-[220px] px-3 py-2.5 font-mono text-[11px] text-slate-300">
+            <div class="flex items-center gap-1.5">
+              {% if r.method %}
+              <span class="rounded bg-slate-800/80 px-1 py-0.5 text-[9px] font-semibold text-slate-400">{{ r.method }}</span>
+              {% endif %}
+              <span class="truncate">{{ r.path }}</span>
+            </div>
+          </td>
+          <td class="max-w-[200px] px-3 py-2.5 font-mono text-[11px] text-slate-200">
+            <span class="block truncate" title="{{ r.model }}">{{ r.model }}</span>
+          </td>
+          <td class="max-w-[130px] truncate px-3 py-2.5 text-[11px] text-slate-400">{{ r.provider_name }}</td>
+          <td class="px-3 py-2.5">
+            <div class="flex flex-wrap items-center gap-1">
+              {% call badge(r.via_class, 'font-mono text-[10px]') %}{{ r.via }}{% endcall %}
+              {% if r.spoofed %}
+              {% call badge('border-amber-500/30 bg-amber-500/10 text-amber-300', 'font-mono text-[10px]') %}identity spoofed{% endcall %}
+              {% endif %}
+            </div>
+          </td>
+          <td class="px-3 py-2.5">
+            {% call badge(r.status_class, 'font-mono') %}{{ r.status }}{% endcall %}
+          </td>
+          <td class="px-3 py-2.5 text-right font-mono text-[11px] tabular-nums {{ r.latency_class }}">{{ r.latency_ms }}ms</td>
+          <td class="px-3 py-2.5 text-right font-mono text-[11px] tabular-nums text-slate-400">{{ r.tokens }}</td>
+          <td class="px-2 py-2.5">
+            <button type="button" data-toggle-row="{{ r.id }}" aria-expanded="false" title="Show request details"
+              aria-label="Show request details"
+              class="log-toggle inline-flex size-6 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-800 hover:text-emerald-400"
+              onclick="window.novaLogs && window.novaLogs.toggle({{ r.id }})">
+              <i data-lucide="chevron-right" class="icon-closed size-3.5"></i>
+              <i data-lucide="chevron-down" class="icon-open size-3.5"></i>
+            </button>
+          </td>
+        </tr>
+        <tr id="log-detail-{{ r.id }}" class="hidden border-b border-slate-800/60 hover:bg-transparent">
+          <td colspan="9" class="bg-[#080c14]/50 px-4 py-3">
+            <div class="flex flex-col gap-1.5">
+              {% if r.error %}
+              <div class="break-all rounded-md border border-rose-500/20 bg-rose-500/5 px-2.5 py-1.5 font-mono text-[11px] text-rose-300">{{ r.error }}</div>
+              {% else %}
+              <div class="text-[11px] text-slate-500">No error recorded for this request.</div>
+              {% endif %}
+              <div class="flex flex-wrap gap-x-5 gap-y-1 font-mono text-[10px] text-slate-500">
+                <span>upstream: {{ r.upstream_model or '—' }}</span>
+                <span>client: {{ r.client_name or '—' }}</span>
+                <span>ts: {{ r.date }}</span>
+                <span>log id: #{{ r.id }}</span>
+                <span>stage via: {{ r.via }}</span>
+              </div>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <script>window.novaLogs && window.novaLogs.restore();</script>
+</div>

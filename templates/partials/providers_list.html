@@ -1,8 +1,16 @@
 {# Providers list — IS the live root (self-reproducing: the root's hx-get re-renders
    this file, so data-live + nova:refresh wiring survives every swap).
+
+   Typing-safe structure: the search input is OUTSIDE the swapped results
+   region — search swaps only #providers-results (see
+   partials/providers_results.html), so a swap can never destroy the focused
+   input. The root reads the CURRENT search + expand state via hx-include at
+   trigger time (manual refresh + auto-refresh poll).
    Expects ctx from ui/tabs/providers.py #}
-<div id="providers-root" data-live="1" hx-get="{{ root_url }}"
+<div id="providers-root" data-live="1" hx-disinherit="*" hx-get="/partials/providers/list"
+  hx-include="#np-q, #np-expand"
   hx-trigger="nova:refresh from:body" hx-swap="outerHTML" class="space-y-4">
+  <input type="hidden" id="np-expand" name="expand" value="{{ expand or '' }}" />
 <div class="flex flex-wrap items-center gap-2">
   <h2 class="text-lg font-semibold text-slate-100">Providers</h2>
   <span class="inline-flex items-center rounded-md border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">{{ rows | length }} configured</span>
@@ -11,7 +19,9 @@
   {% endif %}
   <div class="ml-auto flex flex-wrap items-center gap-2">
     <input id="np-q" name="q" value="{{ q }}" placeholder="Search providers..." aria-label="Search providers"
-      hx-get="/partials/providers/list" hx-target="#providers-root" hx-swap="outerHTML" hx-trigger="input delay:350ms"
+      hx-get="/partials/providers/list?region=results" hx-include="this, #np-expand"
+      hx-sync="this:replace" hx-trigger="input delay:350ms"
+      hx-target="#providers-results" hx-swap="innerHTML"
       class="h-9 w-48 rounded-md border border-slate-800 bg-black/30 px-2.5 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
     <button type="button" data-test-all data-ids="{{ test_ids | join(',') }}"
       class="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-700 px-2.5 text-xs text-slate-300 transition-colors hover:bg-slate-800">
@@ -26,145 +36,8 @@
   </div>
 </div>
 
-{% if error %}
-<div class="rounded-xl border border-rose-900/60 bg-rose-950/20 p-10 text-center">
-  <p class="font-mono text-sm text-rose-300">{{ error }}</p>
-  <button type="button" hx-get="/partials/providers/list" hx-target="#providers-root" hx-swap="outerHTML"
-    class="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-700 px-3 text-xs text-slate-300 hover:bg-slate-800">
-    <i data-lucide="refresh-cw" class="size-3.5"></i> Retry
-  </button>
-</div>
-{% elif visible | length == 0 %}
-<div class="rounded-xl border border-dashed border-slate-800 bg-[#0d1322]/60 p-10 text-center text-sm text-slate-500">
-  {{ 'No providers yet — add your first upstream.' if rows | length == 0 else 'No providers match your search.' }}
-</div>
-{% else %}
-<div class="nova-scroll max-h-[calc(100vh-330px)] space-y-4 overflow-y-auto pr-1">
-  {% for p in visible %}
-  <div class="overflow-hidden rounded-xl border border-slate-800 bg-[#0d1322]/80" style="border-left: 3px solid {{ p.color or '#10b981' }}">
-    <div class="p-4">
-      {# ------------------------------ card header ------------------------------ #}
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="text-sm font-semibold text-slate-100">{{ p.name }}</span>
-        <span class="inline-flex items-center rounded-md border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400">{{ p.kind }}</span>
-        <details class="np-menu relative inline-block">
-          <summary title="Routing priority (lower = tried earlier)"
-            class="inline-flex cursor-pointer list-none items-center rounded-md border border-slate-700 px-1.5 py-0.5 font-mono text-[10px] text-slate-500 hover:text-slate-300">P{{ p.priority }}</summary>
-          <form hx-post="/ui/providers/priority" hx-swap="none"
-            class="absolute right-0 z-30 mt-1 w-32 rounded-lg border border-slate-800 bg-[#0d1322] p-2 shadow-xl">
-            <input type="hidden" name="id" value="{{ p.id }}" />
-            <input type="number" name="priority" value="{{ p.priority }}" min="0" max="100" aria-label="Routing priority for {{ p.name }}"
-              class="h-7 w-full rounded border border-slate-800 bg-black/30 px-1.5 font-mono text-xs text-slate-200 outline-none focus:border-emerald-500/50" />
-            <button type="submit" class="mt-1.5 h-7 w-full rounded bg-emerald-500 text-[11px] font-medium text-emerald-950 hover:bg-emerald-400">Save</button>
-          </form>
-        </details>
-        <div class="ml-auto flex items-center gap-2">
-          <label class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center" title="{{ 'Enabled' if p.enabled else 'Disabled' }}">
-            <input type="checkbox" name="enabled" {{ 'checked' if p.enabled }} hx-post="/ui/providers/toggle"
-              hx-vals='{"id": {{ p.id }}}' hx-trigger="change" hx-swap="none"
-              class="peer sr-only" aria-label="Toggle provider {{ p.name }}" />
-            <span class="pointer-events-none absolute inset-0 rounded-full bg-slate-700 transition-colors after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-slate-300 after:transition-transform peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-4"></span>
-          </label>
-          <details class="np-menu relative">
-            <summary aria-label="Actions for {{ p.name }}"
-              class="inline-flex size-7 cursor-pointer list-none items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-200">
-              <i data-lucide="more-vertical" class="size-4"></i>
-            </summary>
-            <div class="absolute right-0 z-30 mt-1 w-44 rounded-lg border border-slate-800 bg-[#0d1322] py-1 shadow-xl">
-              <div class="truncate px-3 py-1 text-[11px] text-slate-500">{{ p.name }}</div>
-              <button type="button" data-menu-item data-test-for="{{ p.id }}" data-name="{{ p.name }}"
-                class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800/70">
-                <i data-lucide="zap" class="size-3.5 text-amber-300"></i> Test connection
-              </button>
-              <button type="button" data-menu-item hx-get="{{ p._toggle_url }}" hx-target="#providers-root" hx-swap="outerHTML"
-                class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800/70">
-                <i data-lucide="key-round" class="size-3.5 text-emerald-300"></i> Keys
-              </button>
-              {% if p.auth_url and not p.session %}
-              <button type="button" data-menu-item data-signin-for="{{ p.id }}" data-name="{{ p.name }}" data-auth-url="{{ p.auth_url }}"
-                class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800/70">
-                <i data-lucide="log-in" class="size-3.5 text-emerald-300"></i> Sign in
-              </button>
-              {% endif %}
-              {% if p.session %}
-              <button type="button" data-menu-item hx-post="/ui/providers/signout" hx-vals='{"id": {{ p.id }}}' hx-swap="none"
-                class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800/70">
-                <i data-lucide="log-out" class="size-3.5 text-rose-300"></i> Sign out
-              </button>
-              {% endif %}
-              {% if p.key != 'novafree' %}
-              <div class="mx-3 my-1 border-t border-slate-800"></div>
-              <button type="button" data-menu-item hx-post="/ui/providers/delete" hx-vals='{"id": {{ p.id }}}' hx-swap="none"
-                hx-confirm="Delete {{ p.name }}? This removes the provider along with its {{ p.model_count }} models and {{ p.key_count }} keys. Gateway routing for its models falls back to the default chain."
-                class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-rose-300 hover:bg-rose-950/40">
-                <i data-lucide="trash-2" class="size-3.5"></i> Delete provider
-              </button>
-              {% endif %}
-            </div>
-          </details>
-        </div>
-      </div>
-
-      {# ------------------------------ endpoint lines ------------------------------ #}
-      <div class="mt-2 space-y-1">
-        <p class="truncate font-mono text-[11px] text-slate-500" title="{{ p.prefix }}"><span class="text-slate-600">prefix </span>{{ p.prefix or '—' }}</p>
-        <p class="truncate font-mono text-[11px] text-slate-500" title="{{ p.base_url }}"><span class="text-slate-600">url&nbsp;&nbsp;&nbsp;&nbsp; </span>{{ p.base_url }}</p>
-      </div>
-
-      {# ------------------------------ stats row ------------------------------ #}
-      <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400">
-        <span class="flex items-center gap-1" title="Upstream keys"><i data-lucide="key-round" class="size-3.5 text-slate-500"></i> {{ p.key_count }}</span>
-        <span class="flex items-center gap-1" title="Models in catalogue"><i data-lucide="cpu" class="size-3.5 text-slate-500"></i> {{ p.model_count }}</span>
-        <span class="flex items-center gap-1 text-emerald-300/90" title="Healthy models"><i data-lucide="heart-pulse" class="size-3.5"></i> {{ p.ok_count }}</span>
-        <span class="flex items-center gap-1 text-amber-300/90" title="Cooling models"><i data-lucide="snowflake" class="size-3.5"></i> {{ p.cooling_count }}</span>
-        {% if p._test %}
-        <span id="pt-badge-{{ p.id }}" data-ok="{{ 1 if p._test.ok else 0 }}" title="{{ p._test.message }}"
-          class="flex items-center gap-1 font-mono {{ 'text-emerald-300' if p._test.ok else 'text-rose-300' }}">
-          <i data-lucide="activity" class="size-3.5"></i> {{ p._test.status }}{{ ' · ' ~ p._test.latency_ms ~ 'ms' if p._test.ok else '' }}
-        </span>
-        {% else %}
-        <span id="pt-badge-{{ p.id }}" class="hidden"></span>
-        {% endif %}
-      </div>
-
-      {# ------------------------------ free tier note ------------------------------ #}
-      {% if p.free_tier %}
-      <p class="mt-2 flex items-center gap-1.5 text-[11px] text-slate-500">
-        <i data-lucide="sparkles" class="size-3 shrink-0 text-slate-600"></i>
-        <span class="truncate">{{ p.free_tier }}</span>
-      </p>
-      {% endif %}
-
-      {# ------------------------------ session chip ------------------------------ #}
-      {% if p.session %}
-      <div class="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-emerald-900/60 bg-emerald-950/30 px-2.5 py-1.5">
-        <span class="flex size-6 items-center justify-center rounded-full bg-emerald-500/20 text-[10px] font-semibold uppercase text-emerald-300">{{ (p.session.display_name or p.session.username) | truncate(1, True, '', 0) }}</span>
-        <span class="text-[11px] text-slate-300">
-          Signed in as <span class="font-medium text-emerald-300">{{ p.session.username }}</span> ({{ p.session.plan }})
-        </span>
-        <span class="ml-auto flex items-center gap-1 text-[10px] uppercase tracking-wide text-emerald-400">
-          <span class="size-1.5 animate-pulse rounded-full bg-emerald-400"></span>
-          connected · {{ p.session.token_mask }} · {{ p.session.connected_at | time_ago }}
-        </span>
-      </div>
-      {% endif %}
-
-      {# ------------------------------ keys toggle ------------------------------ #}
-      <button type="button" hx-get="{{ p._toggle_url }}" hx-target="#providers-root" hx-swap="outerHTML"
-        aria-expanded="{{ 'true' if expand == p.id else 'false' }}" aria-label="{{ 'Hide' if expand == p.id else 'Show' }} keys for {{ p.name }}"
-        class="mt-3 flex w-full items-center gap-1.5 text-[11px] text-slate-500 transition hover:text-emerald-300">
-        <i data-lucide="{{ 'chevron-up' if expand == p.id else 'chevron-down' }}" class="size-3.5"></i>
-        Keys ({{ p.key_count }})
-      </button>
-    </div>
-
-    {% if expand == p.id %}
-    {% include "partials/providers_keys.html" %}
-    {% endif %}
-  </div>
-  {% endfor %}
-</div>
-{% endif %}
+{# Results region — the only part search actions swap #}
+{% include "partials/providers_results.html" %}
 
 {% if meta %}
 <p class="text-[11px] text-slate-600">

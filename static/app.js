@@ -7,12 +7,14 @@
   const store = {
     tab: 'overview',
     expanded: true,
-    autoRefresh: true,
+    autoRefresh: false,
     base_url: null,
   };
 
   try { store.expanded = localStorage.getItem('nova.sidebar.expanded') !== '0'; } catch {}
-  try { store.autoRefresh = localStorage.getItem('nova.autorefresh') !== '0'; } catch {}
+  /* Auto-refresh is OFF by default (opt-in via the header toggle): periodic
+   * live swaps used to close the on-screen keyboard while typing on mobile. */
+  try { store.autoRefresh = localStorage.getItem('nova.autorefresh') === '1'; } catch {}
 
   /* ----------------------------- Sidebar ----------------------------- */
 
@@ -185,9 +187,28 @@
     refresh();
   });
 
-  /* Live polling — 5s, only when auto-refresh is on and the tab has live widgets. */
+  /* Live polling — 5s, only when auto-refresh is explicitly on, the tab has
+   * live widgets, and the user is not typing/interacting. Every guard exists
+   * to guarantee a background refresh can never steal focus or close the
+   * mobile keyboard mid-sentence. */
+  let lastActivity = 0;
+  const bumpActivity = () => { lastActivity = Date.now(); };
+  ['keydown', 'input', 'pointerdown', 'touchstart'].forEach((evt) =>
+    document.addEventListener(evt, bumpActivity, { capture: true, passive: true }));
+
+  const isEditing = () => {
+    const a = document.activeElement;
+    if (!a) return false;
+    const tag = (a.tagName || '').toUpperCase();
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || a.isContentEditable === true;
+  };
+
   setInterval(() => {
     if (!store.autoRefresh) return;
+    if (document.hidden) return;
+    if (inflight > 0) return;
+    if (isEditing()) return;
+    if (Date.now() - lastActivity < 8000) return;
     if (!document.querySelector('#tab-content [data-live]')) return;
     if (window.htmx) window.htmx.trigger(document.body, 'nova:refresh');
   }, 5000);

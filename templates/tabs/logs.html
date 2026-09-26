@@ -1,7 +1,11 @@
-{# Logs tab — port of LogsTab.tsx (search + status/via filters, log table, expandable detail rows, live refresh) #}
-{% macro badge(cls, extra='') -%}
-<span class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold {{ cls }} {{ extra }}">{{ caller() }}</span>
-{%- endmacro %}
+{# Logs tab — port of LogsTab.tsx (search + status/via filters, log table, expandable detail rows, live refresh)
+
+   Typing-safe structure: the toolbar (search input + selects + refresh) is
+   STATIC — filter actions swap only #logs-lower (results region, see
+   partials/logs_results.html), so a swap can never destroy the focused input
+   and close the mobile keyboard. #tab-logs (data-live) is swapped only by
+   manual refresh / the auto-refresh poll, which read the CURRENT filter
+   values via hx-include at trigger time. #}
 <style>
   .nova-log-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
   .nova-log-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -13,43 +17,44 @@
   .log-toggle.open .icon-closed { display: none; }
   tr.row-open > td { background-color: rgb(8 12 20 / 0.6); }
 </style>
-<div id="tab-logs" class="flex flex-col gap-3" data-live="1"
-  hx-get="/partials/tab/logs?q={{ q | urlencode }}&amp;status={{ status }}&amp;via={{ via }}"
+<div id="tab-logs" class="flex flex-col gap-3" data-live="1" hx-disinherit="*"
+  hx-get="/partials/tab/logs" hx-include="#logs-search, #logs-status, #logs-via"
   hx-trigger="nova:refresh from:body" hx-swap="outerHTML">
 
-  {# Toolbar #}
+  {# Toolbar — never swapped by filter actions (typing safety) #}
   <div class="flex flex-wrap items-center gap-2">
     <div class="relative min-w-[200px] flex-1 sm:max-w-xs">
       <i data-lucide="search" class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-500"></i>
       <input id="logs-search" name="q" type="text" value="{{ q }}" placeholder="Filter by model, provider, error"
         aria-label="Search request logs" autocomplete="off"
         class="h-8 w-full rounded-md border border-slate-800 bg-[#080c14] pl-8 pr-3 font-mono text-xs text-slate-200 placeholder:text-slate-600 focus:border-emerald-500/40 focus:outline-none"
-        hx-get="/partials/tab/logs?status={{ status }}&amp;via={{ via }}" hx-trigger="input changed delay:300ms"
-        hx-include="this" hx-target="#tab-logs" hx-swap="outerHTML" />
+        hx-get="/partials/tab/logs?region=results" hx-include="this, #logs-status, #logs-via"
+        hx-sync="this:replace" hx-trigger="input changed delay:300ms"
+        hx-target="#logs-lower" hx-swap="innerHTML" />
     </div>
 
-    <select name="status" aria-label="Filter by HTTP status class"
+    <select id="logs-status" name="status" aria-label="Filter by HTTP status class"
       class="h-8 rounded-md border border-slate-800 bg-[#080c14] px-2 font-mono text-xs text-slate-200 focus:border-emerald-500/40 focus:outline-none"
-      hx-get="/partials/tab/logs?q={{ q | urlencode }}&amp;via={{ via }}" hx-trigger="change" hx-include="this"
-      hx-target="#tab-logs" hx-swap="outerHTML">
+      hx-get="/partials/tab/logs?region=results" hx-include="#logs-search, this, #logs-via"
+      hx-sync="this:replace" hx-trigger="change"
+      hx-target="#logs-lower" hx-swap="innerHTML">
       <option value="all" {% if status == 'all' %}selected{% endif %}>all status</option>
       <option value="2xx" {% if status == '2xx' %}selected{% endif %}>2xx success</option>
       <option value="4xx" {% if status == '4xx' %}selected{% endif %}>4xx client</option>
       <option value="5xx" {% if status == '5xx' %}selected{% endif %}>5xx server</option>
     </select>
 
-    <select name="via" aria-label="Filter by routing path"
+    <select id="logs-via" name="via" aria-label="Filter by routing path"
       class="h-8 rounded-md border border-slate-800 bg-[#080c14] px-2 font-mono text-xs text-slate-200 focus:border-emerald-500/40 focus:outline-none"
-      hx-get="/partials/tab/logs?q={{ q | urlencode }}&amp;status={{ status }}" hx-trigger="change" hx-include="this"
-      hx-target="#tab-logs" hx-swap="outerHTML">
+      hx-get="/partials/tab/logs?region=results" hx-include="#logs-search, #logs-status, this"
+      hx-sync="this:replace" hx-trigger="change"
+      hx-target="#logs-lower" hx-swap="innerHTML">
       <option value="all" {% if via == 'all' %}selected{% endif %}>all routes</option>
       <option value="upstream" {% if via == 'upstream' %}selected{% endif %}>upstream</option>
       <option value="nova-engine" {% if via == 'nova-engine' %}selected{% endif %}>nova-engine</option>
       <option value="fallback" {% if via == 'fallback' %}selected{% endif %}>fallback</option>
       <option value="cache" {% if via == 'cache' %}selected{% endif %}>cache</option>
     </select>
-
-    <span class="font-mono text-[11px] text-slate-500">{{ rows | length }} of {{ total }} requests</span>
 
     <button type="button" title="Reload the request log" aria-label="Reload the request log"
       class="ml-auto inline-flex items-center justify-center gap-2 rounded-md border border-slate-800 bg-[#0d1322]/80 px-3 py-1.5 font-mono text-xs text-slate-300 transition-colors hover:border-emerald-500/40 hover:text-emerald-300"
@@ -59,95 +64,12 @@
     </button>
   </div>
 
-  {# Log table #}
-  <div class="nova-log-scroll max-h-[70vh] overflow-y-auto rounded-xl border border-slate-800 bg-[#0d1322]/80">
-    <table class="w-full caption-bottom text-sm">
-      <thead class="sticky top-0 z-10 border-b border-slate-800 bg-[#0d1322]/95 backdrop-blur">
-        <tr class="hover:bg-transparent">
-          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Time</th>
-          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Endpoint</th>
-          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Model</th>
-          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Provider</th>
-          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Via</th>
-          <th class="h-10 px-3 text-left text-[10px] font-medium uppercase tracking-widest text-slate-500">Status</th>
-          <th class="h-10 px-3 text-right text-[10px] font-medium uppercase tracking-widest text-slate-500">Latency</th>
-          <th class="h-10 px-3 text-right text-[10px] font-medium uppercase tracking-widest text-slate-500">Tokens</th>
-          <th class="w-8"></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% if rows | length == 0 %}
-        <tr class="border-b border-slate-800/60 hover:bg-transparent">
-          <td colspan="9" class="py-10 text-center text-xs text-slate-500">No requests match the current filters.</td>
-        </tr>
-        {% else %}
-        {% for r in rows %}
-        <tr class="group border-b border-slate-800/60 transition-colors hover:bg-slate-800/20">
-          <td class="px-3 py-2.5 font-mono text-[11px] text-slate-400">
-            <span title="{{ r.ago }}">{{ r.clock }}</span>
-          </td>
-          <td class="max-w-[220px] px-3 py-2.5 font-mono text-[11px] text-slate-300">
-            <div class="flex items-center gap-1.5">
-              {% if r.method %}
-              <span class="rounded bg-slate-800/80 px-1 py-0.5 text-[9px] font-semibold text-slate-400">{{ r.method }}</span>
-              {% endif %}
-              <span class="truncate">{{ r.path }}</span>
-            </div>
-          </td>
-          <td class="max-w-[200px] px-3 py-2.5 font-mono text-[11px] text-slate-200">
-            <span class="block truncate" title="{{ r.model }}">{{ r.model }}</span>
-          </td>
-          <td class="max-w-[130px] truncate px-3 py-2.5 text-[11px] text-slate-400">{{ r.provider_name }}</td>
-          <td class="px-3 py-2.5">
-            <div class="flex flex-wrap items-center gap-1">
-              {% call badge(r.via_class, 'font-mono text-[10px]') %}{{ r.via }}{% endcall %}
-              {% if r.spoofed %}
-              {% call badge('border-amber-500/30 bg-amber-500/10 text-amber-300', 'font-mono text-[10px]') %}identity spoofed{% endcall %}
-              {% endif %}
-            </div>
-          </td>
-          <td class="px-3 py-2.5">
-            {% call badge(r.status_class, 'font-mono') %}{{ r.status }}{% endcall %}
-          </td>
-          <td class="px-3 py-2.5 text-right font-mono text-[11px] tabular-nums {{ r.latency_class }}">{{ r.latency_ms }}ms</td>
-          <td class="px-3 py-2.5 text-right font-mono text-[11px] tabular-nums text-slate-400">{{ r.tokens }}</td>
-          <td class="px-2 py-2.5">
-            <button type="button" data-toggle-row="{{ r.id }}" aria-expanded="false" title="Show request details"
-              aria-label="Show request details"
-              class="log-toggle inline-flex size-6 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-800 hover:text-emerald-400"
-              onclick="window.novaLogs && window.novaLogs.toggle({{ r.id }})">
-              <i data-lucide="chevron-right" class="icon-closed size-3.5"></i>
-              <i data-lucide="chevron-down" class="icon-open size-3.5"></i>
-            </button>
-          </td>
-        </tr>
-        <tr id="log-detail-{{ r.id }}" class="hidden border-b border-slate-800/60 hover:bg-transparent">
-          <td colspan="9" class="bg-[#080c14]/50 px-4 py-3">
-            <div class="flex flex-col gap-1.5">
-              {% if r.error %}
-              <div class="break-all rounded-md border border-rose-500/20 bg-rose-500/5 px-2.5 py-1.5 font-mono text-[11px] text-rose-300">{{ r.error }}</div>
-              {% else %}
-              <div class="text-[11px] text-slate-500">No error recorded for this request.</div>
-              {% endif %}
-              <div class="flex flex-wrap gap-x-5 gap-y-1 font-mono text-[10px] text-slate-500">
-                <span>upstream: {{ r.upstream_model or '—' }}</span>
-                <span>client: {{ r.client_name or '—' }}</span>
-                <span>ts: {{ r.date }}</span>
-                <span>log id: #{{ r.id }}</span>
-                <span>stage via: {{ r.via }}</span>
-              </div>
-            </div>
-          </td>
-        </tr>
-        {% endfor %}
-        {% endif %}
-      </tbody>
-    </table>
-  </div>
+  {# Results region — the only swapped part #}
+  {% include "partials/logs_results.html" %}
 </div>
 
 <script>
-  /* Row expansion with live-swap persistence + typing guard for the 5s poll. */
+  /* Row expansion with live-swap persistence. */
   window.novaLogs = window.novaLogs || (function () {
     var expanded = null;
     function find(id) {
@@ -192,18 +114,4 @@
     };
   })();
   window.novaLogs.restore();
-
-  (function () {
-    var root = document.getElementById('tab-logs');
-    if (!root || root.dataset.novaGuard) return;
-    root.dataset.novaGuard = '1';
-    root.addEventListener('htmx:beforeRequest', function (e) {
-      var elt = e.detail && e.detail.elt;
-      var active = document.activeElement;
-      /* Skip live-poll refreshes while the user is typing in the search box. */
-      if (elt && elt.id === 'tab-logs' && active && active.id === 'logs-search') {
-        e.preventDefault();
-      }
-    });
-  })();
 </script>

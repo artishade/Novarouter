@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from urllib.parse import urlencode
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -77,22 +76,6 @@ def _parse_filters(sp: Any) -> dict:
         capability = "all"
     free = truthy(sp.get("free"))
     return {"q": q, "provider_id": provider_id, "status": status, "capability": capability, "free": free}
-
-
-def _root_url(f: dict) -> str:
-    params: dict[str, str] = {}
-    if f["q"]:
-        params["q"] = f["q"]
-    if f["provider_id"] != "all":
-        params["provider_id"] = f["provider_id"]
-    if f["status"] != "all":
-        params["status"] = f["status"]
-    if f["capability"] != "all":
-        params["capability"] = f["capability"]
-    if f["free"]:
-        params["free"] = "1"
-    qs = urlencode(params)
-    return f"/partials/models/list?{qs}" if qs else "/partials/models/list"
 
 
 def _api_params(f: dict) -> dict:
@@ -175,7 +158,6 @@ async def _models_ctx(request: Request) -> dict:
         "status": f["status"],
         "capability": f["capability"],
         "free": f["free"],
-        "root_url": _root_url(f),
         "active_filters": active_filters,
         "has_filters": has_filters,
         "health_ids": health_ids,
@@ -204,6 +186,11 @@ async def models_tab(request: Request) -> HTMLResponse:
 @router.get("/partials/models/list")
 async def models_list(request: Request) -> HTMLResponse:
     ctx = await _models_ctx(request)
+    # region=results renders ONLY the results region (#models-results) so
+    # filter actions never re-render the focused search input (mobile
+    # keyboard safety).
+    if request.query_params.get("region") == "results":
+        return html(render("partials/models_results.html", **ctx))
     return html(render("partials/models_list.html", **ctx))
 
 

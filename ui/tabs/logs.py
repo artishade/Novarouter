@@ -137,6 +137,12 @@ async def logs_tab(request: Request) -> HTMLResponse:
     filtered = [l for l in logs if _matches(l, status, via, q)]
     rows = [_row_view(l) for l in filtered]
 
+    # region=results renders ONLY the results region (#logs-lower) so filter
+    # actions never re-render the toolbar / focused search input (mobile
+    # keyboard safety).
+    if qp.get("region") == "results":
+        return html(render("partials/logs_results.html", rows=rows, total=len(logs)))
+
     return html(
         render(
             "tabs/logs.html",

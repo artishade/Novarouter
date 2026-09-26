@@ -528,3 +528,23 @@ Work Log:
 
 Stage Summary:
 - NovaRouter is now 100% Python end-to-end: FastAPI owns the OpenAI-spec gateway (/v1 + /api/v1, SSE streaming), admin/agent JSON APIs, AND the dashboard frontend (ui/ package, Jinja2 + HTMX BFF — no Node/React anywhere in the serving path). All prior features preserved and browser-verified. Render image is smaller and simpler (Python + bun sidecar only). Reminders: rotate the GitHub token and Neon password (both were pasted in chat history), and re-add DATABASE_URL (Neon) on Render for persistence.
+
+---
+Task ID: 1
+Agent: Z.ai Code (main)
+Task: Turn off the 2-3s dashboard auto-refresh that closed the mobile keyboard while typing (user report: "2,3 sec por por auto dashboard refresh kory mobile theke kichu type korty gely refresh er karony keyboard minimize hoy")
+
+Work Log:
+- Root-caused: static/app.js ran a 5s nova:refresh poller that outerHTML-swapped whole data-live tab roots (#tab-overview/#tab-logs/#models-root/#providers-root), destroying the focused input → on-screen keyboard closed on mobile every cycle; additionally the logs/models/providers search inputs re-swapped themselves 300-350ms after typing (debounce) because they lived INSIDE the swapped root
+- static/app.js: auto-refresh default OFF (localStorage opt-in, header toggle still works); poller now skips when document.hidden, when any input/textarea/select/contenteditable has focus, when a request is in flight, and for 8s after any keydown/input/pointerdown/touchstart
+- templates/tabs/logs.html + new templates/partials/logs_results.html: toolbar (search+selects+refresh) is static; filter actions swap only #logs-lower (counter+table+restore script); root reads current filters via hx-include at trigger time; removed the old local typing-guard IIFE
+- templates/partials/models_list.html + new models_results.html: filter form #models-filter static; form swaps only #models-results (innerHTML, region=results); clear-filters still re-renders the root (plain URL → resets form); moved filter-dependent "{{ total }} shown" chip into the results region
+- templates/partials/providers_list.html + new providers_results.html: search swaps only #providers-results; hidden #np-expand input keeps keys-panel expand state across root refreshes
+- ui/tabs/logs.py, models.py, providers.py: region=results fragment routes; removed unused _root_url (models) and root_url ctx (both lists); providers keeps _root_url for per-provider keys-toggle URLs
+- All three live roots got hx-disinherit="*" so hx-include can't leak into child buttons; hx-sync="this:replace" on searches prevents out-of-order responses
+- Environment repair: sandbox reset had wiped pip deps (reinstalled requirements.txt into /home/z/.venv), engine/node_modules (bun install, committed engine/bun.lock), and the git remote (re-added); discovered background processes spawned by the Bash tool are reaped — the dev server must be started as a double-fork daemon (os.fork x2 + setsid) to survive; also restored 69 mode-only file diffs and .zscripts/dev.pid
+- E2E (agent-browser, 390px + desktop): auto-refresh default OFF; logs/models/providers typing keeps focus and input node (marker persisted), region fragments update; auto-refresh ON + focused for 13s → zero swaps; ON + idle → root refreshes and search value survives re-render; manual refresh works; sticky footer OK; no console errors
+- Commit 1797e58 pushed to origin/main (Render auto-deploys)
+
+Stage Summary:
+- Mobile keyboard can no longer be closed by any background or filter-triggered swap; auto-refresh is opt-in and typing-aware; all prior features (live poll, manual refresh, filters, expand state) preserved. Server currently running on :3000 as a detached daemon (pid in dev.log).

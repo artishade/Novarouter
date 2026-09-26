@@ -10,6 +10,7 @@ Mounted at /api/admin/models by main.py.
 """
 from __future__ import annotations
 
+import random
 import time
 
 import httpx
@@ -27,7 +28,18 @@ from ._common import epoch_ms, invalid_id, not_found, parse_caps, parse_int
 
 router = APIRouter()
 
-PING_TIMEOUT_S = 6.0
+PING_TIMEOUT_S = 15.0
+
+# A ping only proves the endpoint is reachable. The probe below sends a REAL
+# one-shot question so "healthy" means the model actually responds.
+PROBE_QUESTIONS = [
+    "Reply with exactly one word: OK",
+    "What is 2+2? Reply with just the number.",
+    "Say hello.",
+    "Reply with a single word: pong",
+    "Name any color. One word only.",
+    "Reply with the word: alive",
+]
 
 MODEL_STATUSES = ("healthy", "cooling", "dead", "unknown")
 CAPABILITIES = ("tools", "vision", "reasoning")
@@ -174,6 +186,29 @@ async def sync_models(req: Request):
 
 
 # --------------------------------------------------------------------------- #
+# POST /api/admin/models/disable-unreachable — bulk-disable every model whose
+# last health check marked it dead. Disabled models are excluded from the
+# gateway catalogue and the Nova Agent, so unreachable models never get
+# picked for real traffic.
+# --------------------------------------------------------------------------- #
+
+@router.post("/disable-unreachable")
+def disable_unreachable(db: Session = Depends(get_db)):
+    dead = db.scalars(
+        select(ModelRow).where(ModelRow.status == "dead", ModelRow.enabled.is_(True))
+    ).all()
+    for m in dead:
+        m.enabled = False
+    db.commit()
+    return JSONResponse({
+        "ok": True,
+        "disabled": len(dead),
+        "ids": [m.id for m in dead],
+        "exposed_ids": [m.exposedId for m in dead],
+    })
+
+
+# --------------------------------------------------------------------------- #
 # PATCH /api/admin/models/{id} — toggle a model on/off
 # --------------------------------------------------------------------------- #
 
@@ -197,9 +232,52 @@ def toggle_model(id: str, body: dict = Body(default={}), db: Session = Depends(g
 
 
 # --------------------------------------------------------------------------- #
-# POST /api/admin/models/{id}/ping — health-check a single model
-# builtin → REAL engine check (measured latency); provider with keys → real
-# GET {base_url}/models (6s timeout); no keys → status stays 'unknown'.
+# Probe helpers — extract the assistant's reply text from each wire format
+# --------------------------------------------------------------------------- #
+
+def _openai_reply(data: dict) -> str:
+    try:
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        text = msg.get("content")
+        if isinstance(text, list):  # some gateways return content parts
+            text = " ".join(p.get("text", "") for p in text if isinstance(p, dict))
+        return str(text or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _gemini_reply(data: dict) -> str:
+    try:
+        cand = (data.get("candidates") or [{}])[0]
+        parts = ((cand.get("content") or {}).get("parts")) or []
+        return " ".join(str(p.get("text", "")) for p in parts if isinstance(p, dict)).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _anthropic_reply(data: dict) -> str:
+    try:
+        blocks = data.get("content") or []
+        return " ".join(str(b.get("text", "")) for b in blocks if isinstance(b, dict)).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _snippet(text: str) -> str:
+    text = " ".join(text.split())
+    return text[:60] + ("…" if len(text) > 60 else "")
+
+
+# --------------------------------------------------------------------------- #
+# POST /api/admin/models/{id}/ping — health-check a single model by asking it
+# a REAL one-shot question. A plain GET /models ping only proves the endpoint
+# is reachable; this proves the model is RESPONSIVE:
+#   builtin     → real NovaFree engine completion (measured latency)
+#   gemini      → POST {base}/models/{model}:generateContent?key=…
+#   anthropic   → POST {base}/v1/messages (x-api-key + version)
+#   others      → POST {base}/chat/completions (OpenAI-compatible, Bearer)
+# Healthy requires a 2xx AND non-empty reply text. HTTP 429 → cooling.
 # Persists status / latencyMs / checkedAt / httpStatus on this model row only.
 # --------------------------------------------------------------------------- #
 
@@ -220,50 +298,97 @@ async def ping_model(id: str):
         keys = db.scalars(
             select(ProviderKey).where(ProviderKey.providerId == provider.id).order_by(ProviderKey.id)
         ).all()
+        question = random.choice(PROBE_QUESTIONS)
 
         if provider.kind == "builtin":
-            # Real engine health check — measured latency, no fabricated numbers.
+            # Real engine completion — the model must actually answer.
             started = time.monotonic()
-            up = await nova_engine.health_check(timeout=3.0)
-            latency_ms = int((time.monotonic() - started) * 1000)
-            if up:
-                ok = True
-                status = "healthy"
-                http_status = 200
-                detail = f"Built-in engine responded in {latency_ms}ms"
-            else:
-                ok = False
-                status = "dead"
-                http_status = 0
-                detail = "Built-in engine unavailable — the engine sidecar is not responding"
+            try:
+                res = await nova_engine.chat(
+                    [{"role": "user", "content": question}], timeout=PING_TIMEOUT_S
+                )
+                latency_ms = int((time.monotonic() - started) * 1000)
+                reply = _openai_reply(res)
+                if reply:
+                    ok, status, http_status = True, "healthy", 200
+                    detail = f'engine replied "{_snippet(reply)}" in {latency_ms}ms'
+                else:
+                    ok, status, http_status = False, "dead", 200
+                    detail = "engine reachable but the model gave no reply content — unresponsive"
+            except Exception as err:  # noqa: BLE001
+                latency_ms = int((time.monotonic() - started) * 1000)
+                ok, status, http_status = False, "dead", 0
+                detail = (str(err) or "engine unavailable")[:120]
+
         elif not keys or not provider.baseUrl:
             ok = False
             status = "unknown"
             latency_ms = 0
             http_status = 0
             detail = "No upstream key configured" if not keys else "Provider has no base URL configured"
+
         else:
             key = next((k.apiKey for k in keys if k.enabled), keys[0].apiKey)
-            url = f"{provider.baseUrl.rstrip('/')}/models"
+            base = provider.baseUrl.rstrip("/")
+            headers: dict = {"Content-Type": "application/json"}
+            url = f"{base}/chat/completions"
+            payload: dict = {
+                "model": model.modelId,
+                "messages": [{"role": "user", "content": question}],
+                "max_tokens": 16,
+                "temperature": 0,
+                "stream": False,
+            }
+            extract = _openai_reply
+            if provider.key == "gemini" or provider.kind == "gemini":
+                url = f"{base}/models/{model.modelId}:generateContent?key={key}"
+                payload = {
+                    "contents": [{"parts": [{"text": question}]}],
+                    "generationConfig": {"maxOutputTokens": 16, "temperature": 0},
+                }
+                extract = _gemini_reply
+            elif provider.kind == "anthropic":
+                url = (f"{base}/messages" if base.endswith("/v1") else f"{base}/v1/messages")
+                headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
+                payload = {
+                    "model": model.modelId,
+                    "max_tokens": 16,
+                    "messages": [{"role": "user", "content": question}],
+                }
+                extract = _anthropic_reply
+            else:
+                if provider.key not in ("openrouter",) or key:
+                    headers["Authorization"] = f"Bearer {key}"
+
             started = time.monotonic()
             try:
                 async with httpx.AsyncClient(timeout=PING_TIMEOUT_S) as client:
-                    res = await client.get(url, headers={"Authorization": f"Bearer {key}"})
+                    res = await client.post(url, json=payload, headers=headers)
                 latency_ms = int((time.monotonic() - started) * 1000)
                 http_status = res.status_code
                 if 200 <= res.status_code < 300:
-                    ok = True
-                    status = "healthy"
-                    detail = f"HTTP {res.status_code} — upstream OK in {latency_ms}ms"
+                    reply = extract(_safe_json(res))
+                    if reply:
+                        ok, status = True, "healthy"
+                        detail = f'replied "{_snippet(reply)}" (HTTP {res.status_code}, {latency_ms}ms)'
+                    else:
+                        ok, status = False, "dead"
+                        detail = f"reachable (HTTP {res.status_code}) but no reply content — unresponsive"
+                elif res.status_code == 429:
+                    ok, status = False, "cooling"
+                    detail = "rate limited (HTTP 429) — cooling down"
+                elif res.status_code in (401, 403):
+                    ok, status = False, "dead"
+                    detail = f"auth rejected (HTTP {res.status_code}) — key invalid or expired"
+                elif res.status_code == 404:
+                    ok, status = False, "dead"
+                    detail = "model not found upstream (HTTP 404) — catalogue may be stale"
                 else:
-                    ok = False
-                    status = "dead"
-                    detail = f"Upstream returned HTTP {res.status_code}"
+                    ok, status = False, "dead"
+                    detail = f"upstream returned HTTP {res.status_code}"
             except Exception as err:  # noqa: BLE001 — network errors mark the model dead
                 latency_ms = int((time.monotonic() - started) * 1000)
-                ok = False
-                status = "dead"
-                http_status = 0
+                ok, status, http_status = False, "dead", 0
                 detail = (str(err) or "Network error")[:120]
 
         model.status = status
@@ -279,3 +404,11 @@ async def ping_model(id: str):
             "http_status": http_status,
             "detail": detail,
         })
+
+
+def _safe_json(res: httpx.Response) -> dict:
+    try:
+        data = res.json()
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}

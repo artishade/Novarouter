@@ -6,7 +6,7 @@
 
 <dialog id="np-add-dialog" aria-labelledby="np-add-title"
   class="w-[min(92vw,42rem)] rounded-xl border border-slate-800 bg-[#0d1322] p-0 text-slate-200">
-  <form id="np-add-form" hx-post="/ui/providers/create" hx-target="#np-add-feedback" hx-swap="innerHTML" autocomplete="off" class="p-5">
+  <form id="np-add-form" autocomplete="off" class="p-5">
     <input type="hidden" name="kind" id="np-kind" value="openai" />
     <h3 id="np-add-title" class="text-base font-semibold text-slate-100">Add provider</h3>
     <p id="np-add-desc" class="mt-0.5 text-xs text-slate-500">Pick a preset to prefill the endpoint, or start from a blank custom provider.</p>
@@ -109,6 +109,18 @@
       </div>
     </div>
 
+    {# ----------------------------- step 3: live discovery log ----------------------------- #}
+    <div id="np-step-3" class="mt-3 hidden">
+      <div class="mb-2 flex items-center gap-2 text-xs text-slate-400">
+        <i data-lucide="terminal" class="size-3.5 text-emerald-400"></i>
+        <span>Checking models — live</span>
+        <span id="np-sync-status" class="ml-auto font-mono text-[11px] text-emerald-300">running…</span>
+      </div>
+      <pre id="np-sync-log" aria-live="polite"
+        class="nova-scroll max-h-[300px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-slate-800 bg-black/50 p-3 font-mono text-[11px] leading-relaxed text-emerald-200/90"></pre>
+      <p class="mt-1.5 text-[11px] text-slate-500">Each line is a real request against the provider's upstream catalogue. You can close this dialog — the discovery keeps running server-side.</p>
+    </div>
+
     <div id="np-add-feedback" class="mt-2" aria-live="polite"></div>
 
     <div class="mt-4 flex items-center justify-end gap-2">
@@ -178,16 +190,19 @@
   function $(id) { return document.getElementById(id); }
 
   function npStep(n) {
-    var s1 = $('np-step-1'), s2 = $('np-step-2'), back = $('np-back'), submit = $('np-submit'), desc = $('np-add-desc');
+    var s1 = $('np-step-1'), s2 = $('np-step-2'), s3 = $('np-step-3'), back = $('np-back'), submit = $('np-submit'), desc = $('np-add-desc');
     if (!s1 || !s2) return;
-    var two = n === 2;
-    s1.classList.toggle('hidden', two);
-    s2.classList.toggle('hidden', !two);
+    var two = n === 2, three = n === 3;
+    s1.classList.toggle('hidden', two || three);
+    s2.classList.toggle('hidden', !two || three);
+    if (s3) s3.classList.toggle('hidden', !three);
     if (back) back.classList.toggle('hidden', !two);
     if (submit) submit.classList.toggle('hidden', !two);
-    if (desc) desc.textContent = two
-      ? 'Confirm the endpoint details, set routing priority and optionally paste API keys.'
-      : 'Pick a preset to prefill the endpoint, or start from a blank custom provider.';
+    if (desc) desc.textContent = three
+      ? 'Discovering the live model catalogue from the upstream endpoint — progress below.'
+      : two
+        ? 'Confirm the endpoint details, set routing priority and optionally paste API keys.'
+        : 'Pick a preset to prefill the endpoint, or start from a blank custom provider.';
     var fb = $('np-add-feedback'); if (fb) fb.innerHTML = '';
   }
 
@@ -206,6 +221,96 @@
     var pv = $('np-priority-val'); if (pv) pv.textContent = pr;
     var keys = $('np-keys'); if (keys) keys.placeholder = 'One key per line\n' + (btn.dataset.keyHint || 'sk-...');
     npStep(2);
+  }
+
+  function npResetLog() {
+    var logEl = $('np-sync-log');
+    if (logEl) logEl.textContent = '';
+    var st = $('np-sync-status');
+    if (st) { st.textContent = 'running…'; st.className = 'ml-auto font-mono text-[11px] text-emerald-300'; }
+  }
+
+  function npStreamSync(data) {
+    var logEl = $('np-sync-log');
+    var st = $('np-sync-status');
+    npResetLog();
+    npStep(3);
+    var es;
+    try { es = new EventSource(data.stream); } catch (e) { npStep(2); return; }
+    es.onmessage = function (ev) {
+      var line;
+      try { line = JSON.parse(ev.data); } catch (e) { return; }
+      if (logEl && line && line.text) {
+        logEl.textContent += line.text + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+    };
+    es.addEventListener('done', function (ev) {
+      es.close();
+      var d = {};
+      try { d = JSON.parse(ev.data); } catch (e) { /* noop */ }
+      if (st) {
+        st.textContent = d.ok ? 'done' : 'failed';
+        st.className = 'ml-auto font-mono text-[11px] ' + (d.ok ? 'text-emerald-300' : 'text-rose-300');
+      }
+      if (logEl && d.summary) {
+        logEl.textContent += '→ ' + d.summary + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      if (d.ok) {
+        NovaUI.toast('Provider added — ' + (d.summary || 'models discovered'), 'success');
+      } else {
+        NovaUI.toast('Model discovery failed — ' + (d.summary || 'see the log for details') + '. You can retry with Sync Catalogue.', 'error');
+      }
+      NovaUI.refresh();
+      window.__npCreating = false;
+    });
+    es.onerror = function () {
+      es.close();
+      if (st) st.textContent = 'stream ended';
+      NovaUI.refresh();
+      window.__npCreating = false;
+    };
+  }
+
+  async function npSubmitCreate(e) {
+    var form = $('np-add-form');
+    if (!form) return;
+    e.preventDefault();
+    if (window.__npCreating) return;
+    var submit = $('np-submit');
+    var fb = $('np-add-feedback');
+    if (fb) fb.innerHTML = '';
+    if (submit) { submit.disabled = true; submit.classList.add('opacity-60'); submit.textContent = 'Checking…'; }
+    window.__npCreating = true;
+    try {
+      var res = await fetch('/ui/providers/create?logs=1', { method: 'POST', body: new FormData(form) });
+      var ct = res.headers.get('content-type') || '';
+      if (ct.indexOf('application/json') === -1) {
+        var txt = await res.text();
+        if (fb) { fb.innerHTML = txt; if (window.htmx) window.htmx.process(fb); }
+        window.__npCreating = false;
+        return;
+      }
+      var data = await res.json();
+      if (!data.ok) {
+        if (fb) {
+          var p = document.createElement('p');
+          p.className = 'rounded-md border border-rose-900/60 bg-rose-950/40 px-2.5 py-1.5 text-[11px] text-rose-300';
+          p.textContent = data.error || 'Provider could not be created';
+          fb.appendChild(p);
+        }
+        NovaUI.toast(data.error || 'Provider could not be created', 'error');
+        window.__npCreating = false;
+        return;
+      }
+      npStreamSync(data);
+    } catch (err) {
+      NovaUI.toast('Create failed — network error', 'error');
+      window.__npCreating = false;
+    } finally {
+      if (submit) { submit.disabled = false; submit.classList.remove('opacity-60'); submit.textContent = 'Create provider'; }
+    }
   }
 
   function npSetBadge(id, data) {
@@ -288,6 +393,7 @@
       if (form) form.reset();
       var pv = $('np-priority-val'); if (pv) pv.textContent = '50';
       var fb = $('np-add-feedback'); if (fb) fb.innerHTML = '';
+      npResetLog();
       npStep(1);
       if (dlg) dlg.showModal();
       return;
@@ -319,5 +425,9 @@
     var allBtn = t.closest('[data-test-all]');
     if (allBtn) { e.preventDefault(); npTestAll(allBtn); return; }
   });
+
+  /* Add-Provider submit → JSON create + live SSE discovery log (step 3) */
+  var addForm = $('np-add-form');
+  if (addForm) addForm.addEventListener('submit', npSubmitCreate);
 })();
 </script>

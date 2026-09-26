@@ -276,6 +276,26 @@ async def ping_model(request: Request) -> JSONResponse:
     return JSONResponse(res)
 
 
+@router.post("/ui/models/disable-unreachable")
+async def disable_unreachable_models(request: Request) -> HTMLResponse:
+    """Bulk-disable every model whose last health check marked it dead."""
+    try:
+        res = await api.post("/api/admin/models/disable-unreachable")
+    except ApiError as e:
+        return _toast(e.message, "error")
+    except Exception as e:  # noqa: BLE001
+        return _toast(f"Failed to disable unreachable models ({e.__class__.__name__})", "error")
+
+    disabled = int(res.get("disabled") or 0)
+    if disabled == 0:
+        return _toast("No unreachable models — nothing to disable", "info")
+    names = ", ".join(str(x) for x in (res.get("exposed_ids") or [])[:6])
+    more = f" …+{disabled - 6}" if disabled > 6 else ""
+    return _toast(
+        f"Disabled {disabled} unreachable model(s): {names}{more} — the gateway and agent will skip them"
+    )
+
+
 @router.post("/ui/models/sync")
 async def sync_models(request: Request) -> HTMLResponse:
     form = await form_dict(request)

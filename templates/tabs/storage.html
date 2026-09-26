@@ -1,5 +1,5 @@
 {# Storage tab — port of src/components/nova/tabs/StorageTab.tsx #}
-<div id="st-root" class="space-y-5" hx-get="/partials/tab/storage" hx-trigger="nova:refresh from:body" hx-swap="outerHTML">
+<div id="st-root" class="space-y-5" hx-get="/partials/tab/storage" hx-trigger="nova:refresh from:body, nova:auto-refresh from:body" hx-swap="outerHTML">
   {% if error %}
     <div class="flex flex-col items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/5 p-6">
       <p class="text-sm text-rose-300">{{ error }}</p>

@@ -25,7 +25,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from ui.api_client import ApiError, api
 from ui.render import form_dict, html, render, truthy
@@ -258,11 +258,22 @@ async def providers_keys(request: Request) -> HTMLResponse:
 # --------------------------------------------------------------------------- #
 
 @router.post("/ui/providers/create")
-async def create_provider(request: Request) -> HTMLResponse:
+async def create_provider(request: Request) -> Response:
+    """Create a provider.
+
+    ?logs=1 (used by the Add dialog's live-log JS) → JSON mode: the admin API
+    runs the catalogue discovery as a background job and this returns the SSE
+    stream URL so the dialog can follow the progress line by line.
+    Without logs=1 → legacy HTMX behaviour (inline sync + reset script).
+    """
     form = await form_dict(request)
+    logs_mode = truthy(request.query_params.get("logs"))
     name = _form_str(form, "name")
     if not name:
-        return _form_error("Give the provider a name")
+        msg = "Give the provider a name"
+        if logs_mode:
+            return JSONResponse({"ok": False, "error": msg})
+        return _form_error(msg)
 
     payload: dict[str, Any] = {"name": name, "kind": _form_str(form, "kind") or "openai"}
     for field in ("base_url", "prefix", "auth_url", "free_tier", "docs_url"):
@@ -277,11 +288,30 @@ async def create_provider(request: Request) -> HTMLResponse:
         payload["api_keys"] = api_keys
 
     try:
-        res = await api.post("/api/admin/providers", json=payload)
+        res = await api.post(
+            "/api/admin/providers",
+            json=payload,
+            params={"logs": "1"} if logs_mode else None,
+        )
     except ApiError as e:
+        if logs_mode:
+            return JSONResponse({"ok": False, "error": e.message})
         return _form_error(e.message)
     except Exception as e:  # noqa: BLE001
-        return _form_error(f"Failed to create provider ({e.__class__.__name__})")
+        msg = f"Failed to create provider ({e.__class__.__name__})"
+        if logs_mode:
+            return JSONResponse({"ok": False, "error": msg})
+        return _form_error(msg)
+
+    if logs_mode:
+        return JSONResponse({
+            "ok": True,
+            "id": res.get("id"),
+            "name": name,
+            "keys_added": res.get("keys_added", 0),
+            "job": res.get("job"),
+            "stream": res.get("stream"),
+        })
 
     keys_added = res.get("keys_added", 0)
     models_added = res.get("models_added") or 0

@@ -79,20 +79,33 @@
     if (!ids.length) { NovaUI.toast('No enabled models to check right now', 'info'); return; }
     btn.disabled = true; btn.classList.add('opacity-60');
     var spin = btn.querySelector('svg'); if (spin) spin.classList.add('nova-spin');
+    var label = btn.querySelector('[data-hc-label]');
     var ok = 0;
-    for (var i = 0; i < ids.length; i++) {
-      try {
-        var res = await fetch('/ui/models/ping?id=' + ids[i], { method: 'POST' });
-        var data = await res.json();
+    var done = 0;
+    /* Each probe now sends a real one-shot question (up to 15s), so run in
+     * small parallel batches to keep the sweep snappy but gentle. */
+    var BATCH = 3;
+    for (var start = 0; start < ids.length; start += BATCH) {
+      var batch = ids.slice(start, start + BATCH);
+      if (label) label.textContent = 'Checking ' + (done + 1) + '-' + Math.min(done + batch.length, ids.length) + '/' + ids.length + '…';
+      var results = await Promise.allSettled(batch.map(function (id) {
+        return fetch('/ui/models/ping?id=' + id, { method: 'POST' })
+          .then(function (res) { return res.json(); })
+          .catch(function () { return null; });
+      }));
+      for (var i = 0; i < batch.length; i++) {
+        done += 1;
+        var data = results[i] && results[i].status === 'fulfilled' ? results[i].value : null;
         if (data && data.ok) ok += 1;
-        nmApplyPing(ids[i], data);
-      } catch (e) { /* continue sweep */ }
+        nmApplyPing(batch[i], data);
+      }
     }
     var total = Number(btn.dataset.total || 0);
     var suffix = total > ids.length ? ' (checked first ' + ids.length + ' of ' + total + ')' : '';
-    NovaUI.toast('Health check done — ' + ok + '/' + ids.length + ' reachable' + suffix, 'success');
+    NovaUI.toast('Health check done — ' + ok + '/' + ids.length + ' responded' + suffix, ok === ids.length ? 'success' : 'info');
     btn.disabled = false; btn.classList.remove('opacity-60');
     if (spin) spin.classList.remove('nova-spin');
+    if (label) label.textContent = 'Health check';
     NovaUI.refresh();
   }
 

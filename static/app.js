@@ -187,10 +187,6 @@
     refresh();
   });
 
-  /* Live polling — 5s, only when auto-refresh is explicitly on, the tab has
-   * live widgets, and the user is not typing/interacting. Every guard exists
-   * to guarantee a background refresh can never steal focus or close the
-   * mobile keyboard mid-sentence. */
   let lastActivity = 0;
   const bumpActivity = () => { lastActivity = Date.now(); };
   ['keydown', 'input', 'pointerdown', 'touchstart'].forEach((evt) =>
@@ -203,14 +199,26 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || a.isContentEditable === true;
   };
 
+  /* Live polling — 5s, only when auto-refresh is explicitly on, the tab has
+   * live widgets, and the user is not typing/interacting. Every guard exists
+   * to guarantee a background refresh can never steal focus or close the
+   * mobile keyboard mid-sentence.
+   *
+   * Dispatches `nova:auto-refresh`, NOT `nova:refresh`: the Models and
+   * Providers tabs never listen to the polling event — a background swap
+   * used to abort a running Sync Catalogue / Health check sweep mid-flight.
+   * Those two tabs refresh on user actions only (manual refresh button,
+   * post-mutation HX-Trigger from the server). */
+  const AUTO_REFRESH_EXEMPT_TABS = new Set(['models', 'providers']);
   setInterval(() => {
     if (!store.autoRefresh) return;
     if (document.hidden) return;
+    if (AUTO_REFRESH_EXEMPT_TABS.has(store.tab)) return;
     if (inflight > 0) return;
     if (isEditing()) return;
     if (Date.now() - lastActivity < 8000) return;
     if (!document.querySelector('#tab-content [data-live]')) return;
-    if (window.htmx) window.htmx.trigger(document.body, 'nova:refresh');
+    if (window.htmx) window.htmx.trigger(document.body, 'nova:auto-refresh');
   }, 5000);
 
   /* Base URL chip (meta descriptor) */

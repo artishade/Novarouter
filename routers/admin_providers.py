@@ -12,17 +12,20 @@ Mounted at /api/admin/providers by main.py.
 """
 from __future__ import annotations
 
+import asyncio
 import re
+import threading
 import time
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Body, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from nova import engine as nova_engine
+from nova import synclog
 from nova.config import slugify
 from nova.database import SessionLocal, get_db
 from nova.models import Model as ModelRow, Provider, ProviderKey, ProviderSession, utcnow
@@ -237,8 +240,90 @@ def list_presets():
 
 
 # --------------------------------------------------------------------------- #
+# Live sync jobs — background catalogue discovery with SSE-streamed progress
+# lines for the Add-Provider dialog.
+# --------------------------------------------------------------------------- #
+
+def _start_sync_job(provider: Provider) -> str:
+    """Run sync_provider in a background thread, streaming every step into a
+    synclog job the browser can follow over Server-Sent Events."""
+    jid = synclog.create_job(f"discover live catalogue for “{provider.name}”")
+
+    def runner() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+
+            def log(msg: str) -> None:
+                synclog.log_line(jid, msg)
+
+            with SessionLocal() as bdb:
+                report = loop.run_until_complete(sync_provider(bdb, {
+                    "id": provider.id, "key": provider.key, "name": provider.name,
+                    "kind": provider.kind, "baseUrl": provider.baseUrl,
+                    "prefix": provider.prefix,
+                }, log=log))
+            ok = bool(report.get("ok"))
+            if ok:
+                summary = (
+                    f"{report.get('created', 0)} new · {report.get('updated', 0)} refreshed · "
+                    f"{report.get('discovered', 0)} discovered ({report.get('duration_ms', 0)}ms)"
+                )
+            else:
+                summary = f"failed — {report.get('error') or 'discovery failed'}"
+            synclog.finish_job(jid, ok, summary)
+        except Exception as err:  # noqa: BLE001 — the job must always finish
+            synclog.finish_job(jid, False, f"failed — {str(err)[:160]}")
+        finally:
+            loop.close()
+
+    threading.Thread(target=runner, daemon=True, name=f"nova-sync-{provider.key}").start()
+    return jid
+
+
+@router.get("/sync-logs/stream")
+async def sync_logs_stream(req: Request):
+    """SSE stream of a sync job's live lines; ends with an `done` event."""
+    jid = req.query_params.get("job") or ""
+    job = synclog.get_job(jid)
+    if job is None:
+        return JSONResponse({"error": "unknown or expired sync job"}, status_code=404)
+
+    async def gen():
+        sent = 0
+        yield ": nova-sync-stream\n\n"
+        while True:
+            lines = synclog.job_lines(jid)
+            while sent < len(lines):
+                yield f"data: {json_dumps(lines[sent])}\n\n"
+                sent += 1
+            job = synclog.get_job(jid)
+            if job is None:
+                return
+            if job["done"] and sent >= len(lines):
+                yield "event: done\n"
+                yield f"data: {json_dumps({'ok': job['ok'], 'summary': job['summary']})}\n\n"
+                return
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def json_dumps(obj: Any) -> str:
+    import json
+
+    return json.dumps(obj, separators=(",", ":"))
+
+
+# --------------------------------------------------------------------------- #
 # POST /api/admin/providers — create a provider (reuses preset data when the
 # name matches) + auto-sync its live model catalogue.
+#   ?logs=1 → the sync runs as a background job and the response returns
+#   immediately with a `stream` SSE URL the dashboard follows for live logs.
 # --------------------------------------------------------------------------- #
 
 @router.post("")
@@ -321,6 +406,17 @@ async def create_provider(req: Request):
         # Auto-sync the new provider's live model catalogue so it is usable immediately.
         # Best-effort: a discovery failure must not fail the creation — the dashboard
         # "Sync models" button can retry, and the error is surfaced honestly.
+        if req.query_params.get("logs") not in (None, "", "0"):
+            # Live-logs mode: create the row, discover in the background, and let
+            # the dialog follow the SSE stream for real-time progress.
+            jid = _start_sync_job(created)
+            return JSONResponse({
+                "id": created.id,
+                "keys_added": len(keys),
+                "job": jid,
+                "stream": f"/api/admin/providers/sync-logs/stream?job={jid}",
+            }, status_code=200)
+
         models_added = 0
         sync_error: str | None = None
         try:

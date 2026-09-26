@@ -89,29 +89,45 @@ def _from_openai_compatible(raw: dict, provider_key: str, provider_id: int, prov
     }
 
 
-async def _fetch_json(url: str, headers: dict | None = None) -> Any:
+async def _fetch_json(url: str, headers: dict | None = None, log=None, log_url: str | None = None) -> Any:
+    if log:
+        log(f"GET {log_url or url}")
     async with httpx.AsyncClient(timeout=FETCH_TIMEOUT_S) as client:
         res = await client.get(url, headers={"Accept": "application/json", **(headers or {})})
+        if log:
+            log(f"  → HTTP {res.status_code} ({res.elapsed.total_seconds() * 1000:.0f}ms)")
         res.raise_for_status()
         return res.json()
 
 
-async def _discover_openai_compatible(base, key, provider_key, provider_id, provider_name) -> list[dict]:
+async def _discover_openai_compatible(base, key, provider_key, provider_id, provider_name, log=None) -> list[dict]:
     headers: dict = {}
     if key and provider_key not in KEYLESS_PROVIDERS:
         headers["Authorization"] = f"Bearer {key}"
-    data = await _fetch_json(_join_url(base, "models"), headers)
-    return [
+        if log:
+            log("auth: Bearer key (masked)")
+    elif provider_key in KEYLESS_PROVIDERS:
+        if log:
+            log("auth: none (keyless provider — public directory)")
+    data = await _fetch_json(_join_url(base, "models"), headers, log=log)
+    models = [
         m
         for m in (_from_openai_compatible(r, provider_key, provider_id, provider_name) for r in _extract_list(data))
         if m["id"]
     ]
+    if log:
+        log(f"  → parsed {len(models)} model(s) from OpenAI-compatible listing")
+    return models
 
 
-async def _discover_gemini(base, key, provider_id, provider_name) -> list[dict]:
+async def _discover_gemini(base, key, provider_id, provider_name, log=None) -> list[dict]:
     if not key:
         raise ValueError("no API key configured")
-    data = await _fetch_json(_join_url(base, f"models?key={key}&pageSize=200"))
+    data = await _fetch_json(
+        _join_url(base, f"models?key={key}&pageSize=200"),
+        log=log,
+        log_url=_join_url(base, "models?key=***&pageSize=200"),  # never log the key
+    )
     out = []
     for raw in _extract_list(data):
         full_name = str(raw.get("name", ""))
@@ -133,13 +149,16 @@ async def _discover_gemini(base, key, provider_id, provider_name) -> list[dict]:
     return [m for m in out if m["id"]]
 
 
-async def _discover_anthropic(base, key, provider_id, provider_name) -> list[dict]:
+async def _discover_anthropic(base, key, provider_id, provider_name, log=None) -> list[dict]:
     if not key:
         raise ValueError("no API key configured")
     data = await _fetch_json(
         _join_url(base, "v1/models?limit=100"),
         {"x-api-key": key, "anthropic-version": "2023-06-01"},
+        log=log,
     )
+    if log:
+        log("auth: x-api-key (masked)")
     out = []
     for raw in _extract_list(data):
         mid = str(raw.get("id", "")).strip()
@@ -159,11 +178,11 @@ async def _discover_anthropic(base, key, provider_id, provider_name) -> list[dic
     return [m for m in out if m["id"]]
 
 
-async def _discover_ollama(base, provider_id, provider_name) -> list[dict]:
+async def _discover_ollama(base, provider_id, provider_name, log=None) -> list[dict]:
     import re
 
     root = re.sub(r"/v1/?$", "", base)
-    data = await _fetch_json(_join_url(root, "api/tags"))
+    data = await _fetch_json(_join_url(root, "api/tags"), log=log)
     out = []
     for raw in _extract_list(data):
         mid = str(raw.get("name") or raw.get("model") or "").strip()
@@ -205,19 +224,19 @@ def _discover_novafree_sync(db: Session, provider_id: int, provider_name: str) -
     ]
 
 
-async def _discover_one(db: Session, p: Provider, api_key: str | None) -> dict:
+async def _discover_one(db: Session, p: Provider, api_key: str | None, log=None) -> dict:
     start = time.monotonic()
     try:
         if p.kind == "builtin":
             models = _discover_novafree_sync(db, p.id, p.name)
         elif p.key == "gemini":
-            models = await _discover_gemini(p.baseUrl, api_key, p.id, p.name)
+            models = await _discover_gemini(p.baseUrl, api_key, p.id, p.name, log=log)
         elif p.kind == "anthropic":
-            models = await _discover_anthropic(p.baseUrl, api_key, p.id, p.name)
+            models = await _discover_anthropic(p.baseUrl, api_key, p.id, p.name, log=log)
         elif p.key == "ollama":
-            models = await _discover_ollama(p.baseUrl, p.id, p.name)
+            models = await _discover_ollama(p.baseUrl, p.id, p.name, log=log)
         else:
-            models = await _discover_openai_compatible(p.baseUrl, api_key, p.key, p.id, p.name)
+            models = await _discover_openai_compatible(p.baseUrl, api_key, p.key, p.id, p.name, log=log)
         return {
             "provider": p.key, "provider_id": p.id, "ok": True, "count": len(models),
             "models": models, "duration_ms": int((time.monotonic() - start) * 1000), "cached": False,
@@ -269,7 +288,7 @@ async def discover_provider_models(db: Session, provider_key: str | None = None)
     return results
 
 
-async def discover_provider_fresh(db: Session, provider_id: int) -> dict:
+async def discover_provider_fresh(db: Session, provider_id: int, log=None) -> dict:
     """Live discovery for ONE provider, bypassing the cache (models-sync)."""
     p = db.get(Provider, provider_id)
     if p is None:
@@ -281,8 +300,10 @@ async def discover_provider_fresh(db: Session, provider_id: int) -> dict:
     needs_key = p.kind != "builtin" and p.key not in KEYLESS_PROVIDERS
     api_key = next((k.apiKey for k in p.keys if k.enabled), None)
     if needs_key and not api_key:
+        if log:
+            log("no enabled API key — add one in Dashboard → Providers")
         return _no_key_result(p)
-    return await _discover_one(db, p, api_key)
+    return await _discover_one(db, p, api_key, log=log)
 
 
 def aggregate_discovery(results: list[dict]) -> dict:

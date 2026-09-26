@@ -35,7 +35,7 @@
   <script src="https://unpkg.com/lucide@0.525.0/dist/umd/lucide.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
   <link rel="stylesheet" href="/static/nova.css" />
-  <script src="/static/app.js?v=2" defer></script>
+  <script src="/static/app.js?v=3" defer></script>
 </head>
 <body class="sb-expanded bg-[#080c14] font-sans text-slate-200 antialiased">
   <div id="shell" class="flex min-h-screen">
@@ -133,7 +133,7 @@
               <i data-lucide="copy" class="size-3.5"></i>
             </button>
           </div>
-          <label title="Live data polling. Off by default — and it always pauses while you type, so the mobile keyboard is never interrupted" class="flex cursor-pointer select-none items-center gap-2 rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-1">
+          <label title="Live data polling for Overview, Logs, Routes, Keys, Storage and Analytics — Models and Providers are never auto-refreshed, so Sync and Health check sweeps always finish uninterrupted. Off by default; always pauses while you type." class="flex cursor-pointer select-none items-center gap-2 rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-1">
             <span class="relative flex size-2">
               <span id="ar-ping" class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60"></span>
               <span id="ar-dot" class="relative inline-flex size-2 rounded-full bg-emerald-400"></span>
@@ -201,7 +201,7 @@
 
       {# Status footer — sticky, server-rendered live stats #}
       <footer class="sticky bottom-0 z-20 mt-auto flex h-9 shrink-0 items-center justify-between gap-4 border-t border-slate-800 bg-[#0d1322]/80 px-4 text-[11px] backdrop-blur md:px-6">
-        <div id="footer-stats" hx-get="/partials/footer-stats" hx-trigger="load, nova:refresh from:body" hx-swap="innerHTML"
+        <div id="footer-stats" hx-get="/partials/footer-stats" hx-trigger="load, nova:refresh from:body, nova:auto-refresh from:body" hx-swap="innerHTML"
           class="flex w-full items-center justify-between gap-4 text-[11px]">
           <span class="font-mono text-slate-500">connecting…</span>
         </div>

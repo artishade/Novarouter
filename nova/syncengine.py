@@ -52,18 +52,30 @@ def _num_or_zero(value) -> float:
     return value if value is not None else 0
 
 
-async def sync_provider(db: Session, provider: dict) -> dict:
+# Detailed per-model log lines are capped to keep the live panel readable
+# (giant catalogues still sync fully — only the printout is capped).
+LOG_DETAIL_CAP = 60
+
+
+def _noop_log(_msg: str) -> None:
+    return None
+
+
+async def sync_provider(db: Session, provider: dict, log=None) -> dict:
     """Sync ONE provider from its live upstream catalogue (real network calls).
 
     `provider` carries the Prisma-shaped fields: id, key, name, kind, baseUrl, prefix.
+    `log` (optional) receives human-readable progress lines for the live panel.
     Returns a ProviderSyncReport dict: {provider, provider_id, ok, discovered,
     created, updated, error?, duration_ms}.
     """
+    log = log or _noop_log
     started = time.monotonic()
     base = {"provider": provider["key"], "provider_id": provider["id"]}
 
     # ── Built-in engine: catalogue is the engine's real surface, no network ──
     if provider["kind"] == "builtin":
+        log("built-in NovaFree engine — refreshing the engine catalogue (no network)…")
         created = 0
         updated = 0
         for entry in NOVA_ENGINE_MODELS:
@@ -79,6 +91,7 @@ async def sync_provider(db: Session, provider: dict) -> dict:
                 existing.capabilities = _default_capabilities(entry["caps"])
                 existing.description = entry["description"]
                 updated += 1
+                log(f"  · {entry['exposedId']} refreshed")
             else:
                 db.add(Model(
                     providerId=provider["id"], modelId=entry["modelId"],
@@ -88,20 +101,27 @@ async def sync_provider(db: Session, provider: dict) -> dict:
                     description=entry["description"],
                 ))
                 created += 1
+                log(f"  + {entry['exposedId']} added ({entry['ctx']} ctx)")
         db.commit()
+        log(f"engine catalogue up to date — {created} added, {updated} refreshed")
         return {**base, "ok": True, "discovered": len(NOVA_ENGINE_MODELS),
                 "created": created, "updated": updated, "duration_ms": _ms(started)}
 
     # ── Everything else: live discovery against the real upstream /models endpoint ──
+    log(f"querying live catalogue for “{provider['key']}” at {provider.get('baseUrl') or '(no base URL)'}…")
     try:
-        result = await discover_provider_fresh(db, provider["id"])
+        result = await discover_provider_fresh(db, provider["id"], log=log)
         if not result.get("ok"):
             db.rollback()
+            error = result.get("error") or "discovery failed"
+            log(f"discovery failed — {error}")
             return {**base, "ok": False, "discovered": 0, "created": 0, "updated": 0,
-                    "error": result.get("error") or "discovery failed",
-                    "duration_ms": _ms(started)}
+                    "error": error, "duration_ms": _ms(started)}
 
         discovered = result["models"][:MAX_MODELS_PER_PROVIDER]
+        if result["count"] > len(discovered):
+            log(f"upstream lists {result['count']} models — capping at {MAX_MODELS_PER_PROVIDER}")
+        log(f"discovered {len(discovered)} model(s) — comparing with the database…")
         existing_rows = {
             row.modelId: row
             for row in db.scalars(select(Model).where(Model.providerId == provider["id"])).all()
@@ -109,6 +129,7 @@ async def sync_provider(db: Session, provider: dict) -> dict:
 
         created = 0
         updated = 0
+        logged = 0
         prefix = provider.get("prefix") or ""
 
         for m in discovered:
@@ -130,6 +151,9 @@ async def sync_provider(db: Session, provider: dict) -> dict:
                 row.priceIn = data["priceIn"]
                 row.priceOut = data["priceOut"]
                 updated += 1
+                if logged < LOG_DETAIL_CAP:
+                    log(f"  · {prefix}{mid} refreshed")
+                    logged += 1
             else:
                 obj = Model(
                     providerId=provider["id"], modelId=mid,
@@ -141,9 +165,18 @@ async def sync_provider(db: Session, provider: dict) -> dict:
                 db.flush()  # assign the id now so a duplicate id in this batch updates
                 existing_rows[mid] = obj
                 created += 1
+                if logged < LOG_DETAIL_CAP:
+                    free = " (free)" if data["isFree"] else ""
+                    ctx = f" · {data['contextLength']} ctx" if data["contextLength"] else ""
+                    log(f"  + {prefix}{mid}{free}{ctx}")
+                    logged += 1
+        if logged >= LOG_DETAIL_CAP:
+            log(f"  … (+{created + updated - logged} more not printed)")
         db.commit()
+        log(f"catalogue saved — {created} new, {updated} refreshed ({_ms(started)}ms)")
     except Exception as err:  # a failing provider must never break the whole sync
         db.rollback()
+        log(f"sync error — {str(err)[:160]}")
         return {**base, "ok": False, "discovered": 0, "created": 0, "updated": 0,
                 "error": str(err)[:200], "duration_ms": _ms(started)}
 
@@ -151,7 +184,7 @@ async def sync_provider(db: Session, provider: dict) -> dict:
             "created": created, "updated": updated, "duration_ms": _ms(started)}
 
 
-async def sync_providers(db: Session, provider_id: int | None = None) -> list[dict]:
+async def sync_providers(db: Session, provider_id: int | None = None, log=None) -> list[dict]:
     """Sync enabled providers sequentially (optionally just one); returns reports."""
     stmt = (
         select(Provider)
@@ -167,5 +200,5 @@ async def sync_providers(db: Session, provider_id: int | None = None) -> list[di
         reports.append(await sync_provider(db, {
             "id": p.id, "key": p.key, "name": p.name,
             "kind": p.kind, "baseUrl": p.baseUrl, "prefix": p.prefix,
-        }))
+        }, log=log))
     return reports

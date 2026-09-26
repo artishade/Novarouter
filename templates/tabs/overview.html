@@ -6,7 +6,7 @@
 <span class="inline-flex items-center rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-300">{{ caller() }}</span>
 {%- endmacro %}
 <div id="tab-overview" class="flex flex-col gap-4" data-live="1"
-  hx-get="/partials/tab/overview" hx-trigger="nova:refresh from:body" hx-swap="outerHTML">
+  hx-get="/partials/tab/overview" hx-trigger="nova:refresh from:body, nova:auto-refresh from:body" hx-swap="outerHTML">
 
   {# (a) KPI grid #}
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">

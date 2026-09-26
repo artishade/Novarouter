@@ -71,8 +71,16 @@
     <button type="button" data-health-check data-ids="{{ health_ids | join(',') }}" data-total="{{ health_candidates }}"
       class="inline-flex h-9 items-center gap-1.5 rounded-md border border-emerald-800/70 px-2.5 text-xs text-emerald-300 transition-colors hover:bg-emerald-950/40">
       <i data-lucide="heart-pulse" class="size-3.5"></i>
-      Health check
+      <span data-hc-label>Health check</span>
     </button>
+    {% if stats and stats.dead_models and stats.dead_models > 0 %}
+    <button type="button" hx-post="/ui/models/disable-unreachable" hx-swap="none" hx-disabled-elt="this"
+      hx-confirm="Disable all {{ stats.dead_models }} unreachable (dead) models? The gateway and the agent will stop using them. You can re-enable any model individually."
+      class="inline-flex h-9 items-center gap-1.5 rounded-md border border-rose-900/70 px-2.5 text-xs text-rose-300 transition-colors hover:bg-rose-950/30 disabled:opacity-60">
+      <i data-lucide="power-off" class="size-3.5"></i>
+      Disable unreachable ({{ stats.dead_models }})
+    </button>
+    {% endif %}
   </div>
 </div>
 

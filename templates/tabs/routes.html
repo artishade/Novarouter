@@ -1,5 +1,5 @@
 {# Routes tab — port of src/components/nova/tabs/RoutesTab.tsx #}
-<div id="rt-root" class="space-y-4" hx-get="/partials/tab/routes" hx-trigger="nova:refresh from:body" hx-swap="outerHTML">
+<div id="rt-root" class="space-y-4" hx-get="/partials/tab/routes" hx-trigger="nova:refresh from:body, nova:auto-refresh from:body" hx-swap="outerHTML">
   {% if error %}
     <div class="flex flex-col items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/5 p-6">
       <p class="text-sm text-rose-300">Failed to load routes — {{ error }}</p>

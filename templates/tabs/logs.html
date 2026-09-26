@@ -19,7 +19,7 @@
 </style>
 <div id="tab-logs" class="flex flex-col gap-3" data-live="1" hx-disinherit="*"
   hx-get="/partials/tab/logs" hx-include="#logs-search, #logs-status, #logs-via"
-  hx-trigger="nova:refresh from:body" hx-swap="outerHTML">
+  hx-trigger="nova:refresh from:body, nova:auto-refresh from:body" hx-swap="outerHTML">
 
   {# Toolbar — never swapped by filter actions (typing safety) #}
   <div class="flex flex-wrap items-center gap-2">

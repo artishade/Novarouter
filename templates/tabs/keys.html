@@ -1,5 +1,5 @@
 {# Keys tab — port of KeysTab.tsx: frame + dialogs + HTMX body loader. #}
-<div id="keys-main" hx-get="/partials/keys/main" hx-trigger="load, nova:refresh from:body" hx-swap="innerHTML">
+<div id="keys-main" hx-get="/partials/keys/main" hx-trigger="load, nova:refresh from:body, nova:auto-refresh from:body" hx-swap="innerHTML">
   <div class="space-y-3" aria-busy="true">
     <div class="nova-skeleton h-14 rounded-xl"></div>
     <div class="nova-skeleton h-40 rounded-xl"></div>

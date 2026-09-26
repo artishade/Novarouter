@@ -5,7 +5,7 @@
  *   POST /chat     {messages, stream?, thinking?} → OpenAI-shaped JSON or SSE stream
  *   POST /search   {query}  → {results: [{url, name, snippet, host_name, date}]}
  *   POST /read_url {url}    → {title, text, published_time, url}
- *   GET  /health            → {ok: true}
+ *   GET  /health            → 200 {ok: true} only when the SDK is usable; 503 otherwise
  */
 import ZAI from 'z-ai-web-dev-sdk';
 
@@ -22,6 +22,20 @@ function json(res, status, body) {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+/* ------------------------------ /health ------------------------------ */
+
+async function handleHealth() {
+  try {
+    await zai();
+    return json(await Promise.resolve(), 200, { ok: true, engine: 'novafree' });
+  } catch (err) {
+    return json(await Promise.resolve(), 503, {
+      ok: false,
+      error: String(err?.message || err),
+    });
+  }
 }
 
 /* ------------------------------ /chat ------------------------------ */
@@ -178,9 +192,7 @@ Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
     try {
-      if (req.method === 'GET' && url.pathname === '/health') {
-        return json(await Promise.resolve(), 200, { ok: true, engine: 'novafree' });
-      }
+      if (req.method === 'GET' && url.pathname === '/health') return await handleHealth();
       if (req.method === 'POST' && url.pathname === '/chat') return await handleChat(req);
       if (req.method === 'POST' && url.pathname === '/search') return await handleSearch(req);
       if (req.method === 'POST' && url.pathname === '/read_url') return await handleReadUrl(req);

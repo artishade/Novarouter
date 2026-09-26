@@ -43,6 +43,12 @@ async def start_sidecar() -> bool:
     async with _sidecar_lock:
         if await health_check(timeout=1.0):
             return True
+        if not _has_credentials():
+            log.warning(
+                "engine sidecar: no z-ai credentials (ZAI_API_KEY env or .z-ai-config "
+                "in home/project) — builtin engine disabled"
+            )
+            return False
         runtime = shutil.which("bun") or shutil.which("node")
         if runtime is None:
             log.warning("engine sidecar: no bun/node runtime found — builtin engine disabled")

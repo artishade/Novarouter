@@ -43,6 +43,29 @@ def public_base_url(request_base: str | None = None) -> str:
 _PRISMA_QUERY_KEYS = {"pgbouncer", "connection_limit", "pool_timeout", "sslaccept", "sslmode"}
 
 
+def _postgres_dialect() -> str | None:
+    """Explicitly resolve an installed psycopg driver.
+
+    SQLAlchemy >= 2.1 resolves a plain `postgresql://` URL to the psycopg3
+    dialect and crashes at import time when psycopg3 is not installed — even
+    when psycopg2 is present. Pinning the dialect keeps the same DATABASE_URL
+    working everywhere (local, Docker image, Render) regardless of the
+    SQLAlchemy minor version.
+    """
+    try:
+        import psycopg2  # noqa: F401
+
+        return "postgresql+psycopg2"
+    except ImportError:
+        pass
+    try:
+        import psycopg  # noqa: F401
+
+        return "postgresql+psycopg"
+    except ImportError:
+        return None
+
+
 def normalize_database_url(raw: str | None) -> str:
     """Translate Prisma-style DATABASE_URL values into SQLAlchemy URLs."""
     url = (raw or "").strip()
@@ -60,10 +83,17 @@ def normalize_database_url(raw: str | None) -> str:
     if parsed.scheme == "postgres":
         parsed = parsed._replace(scheme="postgresql")
 
-    # Drop Prisma-specific pool params that psycopg2 does not understand.
+    # Drop Prisma-specific pool params that psycopg does not understand.
     if parsed.scheme.startswith("postgresql"):
         query = [(k, v) for k, v in parse_qsl(parsed.query) if k not in _PRISMA_QUERY_KEYS]
         parsed = parsed._replace(query=urlencode(query))
+        url = urlunparse(parsed)
+        # Pin the dialect only when the URL has no explicit +driver part.
+        if parsed.scheme == "postgresql":
+            dialect = _postgres_dialect()
+            if dialect:
+                url = f"{dialect}://{url.split('://', 1)[1]}"
+        return url
 
     return urlunparse(parsed)
 

@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from nova import engine as nova_engine
 from nova.bootstrap import run_bootstrap
-from nova.config import CORS_ALLOW_ORIGINS, PORT, PROJECT_ROOT
+from nova.config import CORS_ALLOW_ORIGINS, IS_POSTGRES, PORT, PROJECT_ROOT
 from nova.database import ensure_sqlite_dir, ping
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -36,10 +36,23 @@ log = logging.getLogger("nova.main")
 STARTED_AT = time.time()
 
 
+EPHEMERAL_DB_WARNING = (
+    "SQLite lives inside the ephemeral container — every deploy (git push) or "
+    "restart wipes providers, models, keys, routes and configs. Set DATABASE_URL "
+    "to a managed Postgres URL (free at neon.tech) in the Render dashboard to "
+    "keep your data forever."
+)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     ensure_sqlite_dir()
     run_bootstrap()
+    if not IS_POSTGRES:
+        log.warning("=" * 74)
+        log.warning("EPHEMERAL DATABASE — no Postgres DATABASE_URL configured.")
+        log.warning("%s", EPHEMERAL_DB_WARNING)
+        log.warning("=" * 74)
     await nova_engine.start_sidecar()
     log.info("NovaRouter up on 0.0.0.0:%s (Python UI + API)", PORT)
     yield
@@ -81,6 +94,11 @@ async def health_payload() -> dict:
         "uptime_s": int(time.time() - STARTED_AT),
         "db": "ok" if db_ok else "error",
         "engine": "up" if engine_ok else "down",
+        "storage": {
+            "driver": "postgres" if IS_POSTGRES else "sqlite",
+            "persistent": IS_POSTGRES,
+            "warning": None if IS_POSTGRES else EPHEMERAL_DB_WARNING,
+        },
     }
 
 

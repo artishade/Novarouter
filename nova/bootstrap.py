@@ -1,13 +1,16 @@
-"""Database bootstrap — port of prisma/ensure-seed.ts + prisma/seed.ts.
+"""Database bootstrap — ADDITIVE-ONLY, idempotent, NON-DESTRUCTIVE.
 
-1. EMPTY database  → bootstrap the real minimum: built-in NovaFree engine
-   (provider + its 3 engine models), gateway_started_at, the real free-GPU
-   service catalogue. Nothing fake.
-2. SEEDED database (older Prisma-era deployment with demo data) → one-time
-   surgical purge of every seeded artifact (placeholder keys, simulated logs,
-   fake sessions/terminal/storage/client keys, demo agent tasks, seeded preset
-   providers that never received a real key).
-3. Otherwise → untouched.
+Data-safety contract (the "git push wiped my data" fix):
+  1. Missing tables are created via `create_all` — purely additive schema sync
+     (works identically on SQLite and Postgres). Existing columns/rows are
+     never dropped or altered destructively.
+  2. An EMPTY database gets the real minimum seeded once: the built-in
+     NovaFree engine (provider + its 3 engine models), `gateway_started_at`,
+     and the real free-GPU service catalogue. Nothing fake.
+  3. A NON-EMPTY database is NEVER modified, cleaned or purged — not at boot,
+     not after a deploy, not ever. Providers, models, keys, routes, configs,
+     logs and files survive every restart and every `git push` (as long as
+     DATABASE_URL points at a persistent store, e.g. Postgres/Neon on Render).
 """
 from __future__ import annotations
 
@@ -17,29 +20,16 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .database import engine
-from .kv import set_config
+from .kv import get_config, set_config, set_config_json
 from .models import (
     ALL_TABLES,
-    AgentStep,
-    AgentTask,
     Base,
-    ClientKey,
     Model,
     Provider,
-    ProviderKey,
-    ProviderSession,
-    RequestLog,
-    StorageFile,
     StorageProviderRow,
-    TerminalCommand,
 )
 
 log = logging.getLogger("nova.bootstrap")
-
-SEEDED_PRESET_KEYS = [
-    "openrouter", "groq", "gemini", "cerebras", "github-models", "mistral",
-    "nvidia", "deepseek", "together", "xai", "fireworks", "ollama", "openai", "anthropic",
-]
 
 NOVA_ENGINE_MODELS = [
     {"modelId": "nova-air", "exposedId": "nova/air", "displayName": "Nova Air",
@@ -78,38 +68,45 @@ GPU_CATALOGUE = [
 
 
 def create_schema() -> None:
+    """Create missing tables only — never drops, never alters existing data."""
     Base.metadata.create_all(bind=engine)
 
 
-def bootstrap_empty(db: Session) -> None:
-    count = db.scalar(select(func.count()).select_from(Provider)) or 0
-    if count > 0:
-        log.info("database already has %s provider(s) — checking for legacy demo data", count)
-        purge_legacy_demo_data(db)
-        return
+def bootstrap_minimum(db: Session) -> None:
+    """Seed the real minimum into an empty database. Additive-only:
+    existing rows (user providers, keys, configs, logs…) are never touched."""
+    provider_count = db.scalar(select(func.count()).select_from(Provider)) or 0
+    if provider_count == 0:
+        log.info("empty database — bootstrapping the real minimum…")
+        novafree = Provider(
+            key="novafree", name="NovaFree Engine", kind="builtin",
+            baseUrl="internal://nova-engine", prefix="nova/", priority=1,
+            color="#10b981",
+            freeTier="Built-in — every model here is free, no key required",
+            docsUrl="https://github.com/artishade/Novarouter",
+        )
+        db.add(novafree)
+        db.flush()
+        for m in NOVA_ENGINE_MODELS:
+            db.add(Model(
+                providerId=novafree.id, modelId=m["modelId"], exposedId=m["exposedId"],
+                displayName=m["displayName"], isFree=True,
+                contextLength=m["ctx"], maxOutput=m["maxOut"],
+                capabilities=_json_caps(m["caps"]), description=m["description"],
+            ))
+        db.commit()
+        log.info("bootstrapped: NovaFree Engine (3 models)")
+    else:
+        log.info("database intact — %s provider(s) found, nothing touched "
+                 "(boot is additive-only; deploys never wipe data)", provider_count)
 
-    log.info("empty database — bootstrapping the real minimum…")
-    novafree = Provider(
-        key="novafree", name="NovaFree Engine", kind="builtin",
-        baseUrl="internal://nova-engine", prefix="nova/", priority=1,
-        color="#10b981",
-        freeTier="Built-in — every model here is free, no key required",
-        docsUrl="https://github.com/artishade/Novarouter",
-    )
-    db.add(novafree)
-    db.flush()
-    for m in NOVA_ENGINE_MODELS:
-        db.add(Model(
-            providerId=novafree.id, modelId=m["modelId"], exposedId=m["exposedId"],
-            displayName=m["displayName"], isFree=True,
-            contextLength=m["ctx"], maxOutput=m["maxOut"],
-            capabilities=_json_caps(m["caps"]), description=m["description"],
-        ))
-    set_config(db, "gateway_started_at", str(_now_ms()))
+    # Missing-but-expected config keys are filled in (add-only, never overwritten).
+    if get_config(db, "gateway_started_at") is None:
+        set_config(db, "gateway_started_at", str(_now_ms()))
+
+    # Storage catalogue: only when the table is completely empty.
     if not db.scalar(select(func.count()).select_from(StorageProviderRow)):
         _seed_gpu_catalogue(db)
-    db.commit()
-    log.info("bootstrapped: NovaFree Engine (3 models) + gateway config")
 
 
 def _json_caps(caps: dict) -> str:
@@ -130,52 +127,14 @@ def _seed_gpu_catalogue(db: Session) -> None:
         isBuiltin=True, active=True, freeTier="Uses the server's own disk",
         quotaMb=0, region="local", docsUrl=None, authUrl=None,
     ))
-    from .kv import set_config_json
-
     set_config_json(db, "gpu_providers", GPU_CATALOGUE)
-
-
-def purge_legacy_demo_data(db: Session) -> None:
-    """One-time cleanup of the old Prisma-era demo seed (guarded by a flag)."""
-    from .kv import get_config as kv_get
-
-    if kv_get(db, "demo_data_purged"):
-        return
-
-    demo_keys = db.scalars(
-        select(ProviderKey).where(ProviderKey.apiKey.contains("SEED-DEMO-PLACEHOLDER"))
-    ).all()
-
-    if demo_keys:
-        log.info("seeded demo data detected — purging every mock artifact…")
-        for k in demo_keys:
-            db.delete(k)
-
-        seeded = db.scalars(
-            select(Provider).where(
-                Provider.key.in_(SEEDED_PRESET_KEYS), Provider.kind != "builtin"
-            )
-        ).all()
-        for p in seeded:
-            if not p.keys:  # never received a real key — pure seed noise
-                db.delete(p)  # cascades models + keys
-                log.info('removed seeded provider "%s" (no real key was ever added)', p.key)
-
-        for table in (RequestLog, ProviderSession, TerminalCommand, StorageFile,
-                      ClientKey, AgentStep, AgentTask):
-            db.query(table).delete()
-        set_config(db, "demo_data_purged", str(_now_ms()))
-        db.commit()
-        log.info("demo data purged — the dashboard now shows only real data")
-    else:
-        set_config(db, "demo_data_purged", str(_now_ms()))
-        db.commit()
+    db.commit()
 
 
 def run_bootstrap() -> None:
     create_schema()
     with Session(engine) as db:
-        bootstrap_empty(db)
+        bootstrap_minimum(db)
 
 
 __all__ = ["run_bootstrap", "create_schema", "ALL_TABLES"]

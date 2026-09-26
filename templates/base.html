@@ -35,7 +35,7 @@
   <script src="https://unpkg.com/lucide@0.525.0/dist/umd/lucide.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
   <link rel="stylesheet" href="/static/nova.css" />
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=2" defer></script>
 </head>
 <body class="sb-expanded bg-[#080c14] font-sans text-slate-200 antialiased">
   <div id="shell" class="flex min-h-screen">
@@ -149,6 +149,44 @@
           <div id="clock" class="hidden w-[70px] text-right font-mono text-xs tabular-nums text-slate-400 lg:block">--:--:--</div>
         </div>
       </header>
+
+      {# Ephemeral-database warning (server-rendered once; dismiss stored per browser) #}
+      {% if ephemeral_db %}
+      <div id="db-banner" class="relative z-10 shrink-0 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2.5 md:px-6">
+        <div class="flex items-start gap-3">
+          <i data-lucide="triangle-alert" class="mt-0.5 size-4 shrink-0 text-amber-400"></i>
+          <div class="min-w-0 flex-1 text-xs leading-relaxed text-amber-200/90">
+            <span class="font-semibold text-amber-300">Ephemeral database — providers, models, keys and configs reset on every deploy.</span>
+            Data is stored in SQLite inside the container, so each <span class="font-mono">git push</span> (Render redeploy) starts from an empty database.
+            <details class="mt-1">
+              <summary class="inline-block cursor-pointer select-none font-medium text-amber-300 underline decoration-amber-500/40 underline-offset-2">Keep my data forever (free, ~2 min)</summary>
+              <ol class="mt-1.5 list-decimal space-y-0.5 pl-4 text-amber-200/80">
+                <li>Create a free project at <a href="https://neon.tech" target="_blank" rel="noopener" class="underline decoration-amber-500/40 hover:text-amber-200">neon.tech</a> and copy the connection string (<span class="font-mono">postgresql://…?sslmode=require</span>).</li>
+                <li>Render dashboard → your NovaRouter service → <span class="font-medium">Environment</span> → add <span class="font-mono">DATABASE_URL</span> with that string.</li>
+                <li>Save &amp; deploy — tables are created automatically, and everything you configure afterwards survives every future deploy.</li>
+              </ol>
+            </details>
+          </div>
+          <button id="db-banner-close" type="button" aria-label="Dismiss database warning"
+            class="inline-flex size-6 shrink-0 items-center justify-center rounded text-amber-400/70 transition-colors hover:bg-amber-500/15 hover:text-amber-300">
+            <i data-lucide="x" class="size-3.5"></i>
+          </button>
+        </div>
+      </div>
+      <script>
+        (function () {
+          try {
+            var b = document.getElementById('db-banner');
+            if (!b) return;
+            if (localStorage.getItem('nova_db_banner_dismissed')) { b.remove(); return; }
+            document.getElementById('db-banner-close').addEventListener('click', function () {
+              try { localStorage.setItem('nova_db_banner_dismissed', '1'); } catch (e) {}
+              b.remove();
+            });
+          } catch (e) {}
+        })();
+      </script>
+      {% endif %}
 
       {# Tab content #}
       <main class="flex-1 px-4 py-5 md:px-6 lg:px-8">

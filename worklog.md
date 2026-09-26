@@ -548,3 +548,22 @@ Work Log:
 
 Stage Summary:
 - Mobile keyboard can no longer be closed by any background or filter-triggered swap; auto-refresh is opt-in and typing-aware; all prior features (live poll, manual refresh, filters, expand state) preserved. Server currently running on :3000 as a detached daemon (pid in dev.log).
+
+---
+Task ID: 2
+Agent: Z.ai Code (main)
+Task: Fix "git push wipes all data" — providers/models/configs cleared on every deploy (user report: "everytime gitpush korly all data remove hoye jay... jeno git push korleo previous kono data remove na hoy")
+
+Work Log:
+- Root cause: Dockerfile defaults DATABASE_URL=file:/app/db/custom.db (inside the container); Render replaces the container on every deploy and VOLUME /app/db does NOT persist on Render → fresh empty SQLite each deploy → bootstrap re-seeded minimum. Postgres support existed but was never activated, AND was latently broken: SQLAlchemy 2.1.1 resolves plain postgresql:// to the psycopg3 dialect and crashes when psycopg3 is missing (psycopg2-binary installed instead).
+- nova/bootstrap.py rewritten to be STRICTLY ADDITIVE: removed the boot-time purge_legacy_demo_data (its table-truncating branch was a standing data-loss risk); new bootstrap_minimum() only creates missing tables (create_all), seeds NovaFree Engine + gateway_started_at + storage catalogue ONLY when missing, and never deletes/alters existing rows. Non-empty DBs log "database intact — N provider(s) found, nothing touched".
+- nova/config.py: normalize_database_url() now pins the psycopg dialect explicitly (postgresql+psycopg2 if psycopg2 importable, else postgresql+psycopg) so the same DATABASE_URL works on SQLAlchemy 2.0/2.1+, local, Docker and Render; Prisma-style params (pgbouncer/connection_limit) still stripped.
+- main.py: /health now returns storage:{driver, persistent, warning}; boot logs a loud EPHEMERAL DATABASE warning when running on the SQLite fallback.
+- ui/shell.py + templates/base.html: server-rendered dismissible amber banner on every dashboard page when storage is ephemeral, with 3-step Neon setup instructions (app.js?v=2 cache-bust added); dismissal persists in localStorage.
+- static/app.js: fixed pre-existing mobile overflow bug — base-URL chip was un-hidden at all viewports (classList.remove('hidden') broke hidden md:flex), causing 13px horizontal scroll at 390px; now only the text is populated.
+- README.md: new "Keep your data across deploys (IMPORTANT)" section (Neon steps, Render disk alternative, additive-boot guarantee); .env.example strengthened with the same warning.
+- Verification: compileall lint OK; REAL E2E with pgserver (embedded Postgres): 18/18 assertions — PG boot with Prisma-style DSN, /health storage flags, provider create, FULL restart → provider survives + novafree not duplicated + "database intact" log + zero purge logs; SQLite restart persistence + banner render; local dev server restarted as daemon with new code, /health shows storage block, agent-browser E2E: banner renders desktop+mobile, expand shows steps, dismiss persists across reload, 390px has NO horizontal scroll, sticky footer OK, typing focus survives 3.5s, zero console errors.
+- No git commit made yet by this task (files staged in working tree); reminder to user: set DATABASE_URL (Neon) on Render to activate persistence, and rotate the exposed GitHub token + Neon password.
+
+Stage Summary:
+- Deploys are now guaranteed non-destructive: boot is additive-only (create missing tables, seed missing minimums, never delete), and with DATABASE_URL pointed at Neon Postgres every provider/model/key/route/config survives every future git push. The dashboard warns visibly (banner + /health + boot log) until Postgres is connected. Bonus: mobile 390px horizontal overflow fixed; SQLAlchemy 2.1 psycopg3 crash fixed for the Postgres path.

@@ -7,9 +7,9 @@ GET /partials/tab/<key> route; unknown tabs 404.
 from __future__ import annotations
 
 from fastapi import APIRouter
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
-from nova.config import PROJECT_ROOT
+from nova.config import IS_POSTGRES, PROJECT_ROOT
 from ui.api_client import ApiError, api
 from ui.render import html, render
 
@@ -19,7 +19,10 @@ shell_router = APIRouter(tags=["ui:shell"])
 @shell_router.get("/")
 async def index() -> HTMLResponse:
     """Dashboard shell — sidebar + header + empty tab container + footer."""
-    return html(render("base.html"))
+    # Without a Postgres DATABASE_URL the DB is SQLite inside the (ephemeral)
+    # container: on Render every deploy would wipe user data. The dashboard
+    # shows a dismissible banner explaining the one-time fix.
+    return html(render("base.html", ephemeral_db=not IS_POSTGRES))
 
 
 @shell_router.get("/partials/footer-stats")

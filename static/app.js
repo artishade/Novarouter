@@ -219,9 +219,10 @@
     .then((meta) => {
       if (meta && meta.base_url) {
         store.base_url = meta.base_url;
-        const chip = document.getElementById('baseurl-chip');
         const span = document.getElementById('base-url');
-        if (chip) chip.classList.remove('hidden');
+        /* The chip itself stays `hidden md:flex` (template) — removing the
+           hidden class un-hid it on phones too and caused horizontal
+           overflow at 390px. Only the text needs populating. */
         if (span) span.textContent = meta.base_url;
       }
     })

@@ -66,12 +66,26 @@ docker run -d -p 3000:3000 -v nova-db:/app/db novarouter
 
 1. **New → Web Service** → connect this repo → **Runtime: Docker** (no build/start commands needed — the image self-initializes).
 2. Add an environment variable:
-   - `DATABASE_URL` — **recommended: a free Postgres URL** (Neon, Supabase, Aiven, …). Existing Prisma-style values (`postgres://…`, `pgbouncer` params) are accepted and normalized automatically.
-   - Or SQLite: `file:/app/db/custom.db` (the container filesystem is ephemeral on free plans — prefer Postgres, or mount a disk at `/app/db`).
+   - `DATABASE_URL` — **strongly recommended: a free Postgres URL** (Neon, Supabase, Aiven, …) — see [Keep your data across deploys](#-keep-your-data-across-deploys-important). Prisma-style values (`postgres://…`, `pgbouncer` params) are accepted and normalized automatically.
+   - Or SQLite: `file:/app/db/custom.db` (⚠ the container filesystem is ephemeral on Render — without Postgres every deploy resets your data).
    - Optional: `PUBLIC_BASE_URL=https://novarouter.onrender.com` (the request origin is used when unset).
    - Optional: `CORS_ALLOW_ORIGINS=*` (default) or a comma-separated origin list.
 3. Set the **Health Check Path** to `/health`.
 4. Deploy. Render injects `PORT` automatically; the server binds `0.0.0.0:$PORT`.
+
+### 💾 Keep your data across deploys (IMPORTANT)
+
+**Why data can disappear:** without `DATABASE_URL`, the server falls back to SQLite at `/app/db/custom.db` — a file **inside the container**. Render replaces the container on every `git push` (and free instances restart on idle), so providers, models, keys, routes and configs would reset each time. The dashboard shows a warning banner and `/health` reports `"storage": {"persistent": false}` until this is fixed.
+
+**The fix (one time, free, ~2 minutes):**
+
+1. Create a free project at [neon.tech](https://neon.tech) (or Supabase/Aiven) and copy the connection string — it looks like `postgresql://user:password@ep-xxx.aws.neon.tech/neondb?sslmode=require`.
+2. Render dashboard → your NovaRouter service → **Environment** → add `DATABASE_URL` = that string. Prisma-style `postgres://…` URLs and `pgbouncer`/`connection_limit` params are handled automatically.
+3. Save & redeploy. On first boot the app creates every table it needs (additive schema sync) and seeds the built-in NovaFree engine if the database is empty.
+
+From then on **deploys never touch your data**: bootstrapping is strictly additive — it creates missing tables and seeds only what's missing, and never deletes, resets or "purges" anything. New deploys only bring new features, bug fixes and additive schema updates.
+
+> Alternative: a Render **persistent disk** (paid plans) mounted at `/var/data` with `DATABASE_URL=file:/var/data/custom.db` works too — but the free Postgres route is recommended.
 
 ### Run locally (Python)
 

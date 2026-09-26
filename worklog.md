@@ -512,3 +512,19 @@ Deviations (intentional):
 
 Stage Summary:
 - Providers + Models tabs are complete and verified against the LIVE JSON API: 64/64 TestClient assertions pass, all embedded JS node --check clean, compileall clean. The critical live-root swap bug is fixed (roots are self-reproducing like logs/overview), keys-panel error UX matches the TSX, and detail-dialog errors are surfaced. Deviations logged above; the only remaining orchestrator action is a dev-server restart so the .py changes (providers.py, models.py) go live (templates auto-reload), then E2E: tab render on :3000, search/filter/expand, Test All + Health check sweeps with real upstreams, Add Provider + Sign-in dialogs, model toggle from card and detail dialog.
+
+---
+Task ID: F-5/F-6/F-7
+Agent: orchestrator (Z.ai Code main)
+Task: Remove the Next.js frontend entirely, infra/docs rewrite, final E2E, commit + push.
+
+Work Log:
+- E2E (agent-browser, before removal): found + fixed TWO real bugs — (1) htmx attribute inheritance: #tab-content's hx-target="this" leaked to swapped-in fragment roots, whose outerHTML swap then DESTROYED #tab-content; fixed with hx-disinherit="*" on the container (verified: targets now resolve correctly, live refresh stable); (2) storage upload file input had no name="file" → htmx sent no file; direct multipart curl proved the BFF correct; after adding the name, UI upload works end-to-end.
+- Full browser E2E green: all 9 tabs render with real data; streaming chat reply with honest _nova chips (NovaFree Engine · fallback · identity spoofed · 293 tokens · 343ms); $ nova status real terminal block; autonomous agent task completed (discover_models, steps 2/8, real result summary); Providers Test All (real 259ms engine probe) + Add Provider dialog with all 15 presets; Models filters/picker; Routes 3-stage preview (Stage 3 auto stand-in nova/air); Storage upload→delete round-trip with toasts; Client key mint → show-once token dialog → REAL gateway call with that nova-sk- key (reply OK, _nova stage 2) → revoke; Analytics real hourly buckets incl. E2E traffic; mobile 390px icon-rail + sticky footer (bottom=844=viewport); zero browser console errors, zero page errors.
+- Removal: deleted src/**, public/**, node_modules, .next, next/tailwind/postcss/tsconfig/eslint configs, components.json, docker-entrypoint.sh, examples/; engine deps made self-contained (engine/node_modules via bun install, SDK verified); root node_modules removed safely.
+- package.json → thin launcher (dev/dev:python/start/db:push/lint all run Python — db:push runs nova.bootstrap so the platform boot flow (.zscripts/dev.sh) no longer dies on the missing prisma script; lint = compileall). requirements.txt + jinja2. Dockerfile rewritten: python:3.12-slim + bun binary copied from oven/bun stage (engine sidecar host) + engine/node_modules + ui/templates/static copied; no Node build stage at all. .env.example: NOVA_UI_* removed; README rewritten (100% Python stack, ui/ structure, local run now engine-only bun install). .dockerignore cleaned.
+- Post-removal verification: bun run lint OK, bun run db:push OK, /health ok (db ok, ENGINE UP from the new engine/node_modules), real chat completion through NovaFree Engine ("ping"), shell + tabs 200, browser reload clean.
+- Committed 8583d1b (138 files, +7,220/−16,359) and pushed to GitHub main (fabbf6c..8583d1b). `.env` restored before commit via git checkout.
+
+Stage Summary:
+- NovaRouter is now 100% Python end-to-end: FastAPI owns the OpenAI-spec gateway (/v1 + /api/v1, SSE streaming), admin/agent JSON APIs, AND the dashboard frontend (ui/ package, Jinja2 + HTMX BFF — no Node/React anywhere in the serving path). All prior features preserved and browser-verified. Render image is smaller and simpler (Python + bun sidecar only). Reminders: rotate the GitHub token and Neon password (both were pasted in chat history), and re-add DATABASE_URL (Neon) on Render for persistence.

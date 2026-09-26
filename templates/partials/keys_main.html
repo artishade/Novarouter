@@ -1,0 +1,37 @@
+{# Keys tab body — header + key cards + gateway hint (KeysTab.tsx parity). #}
+<div class="flex flex-wrap items-center gap-2">
+  <h2 class="text-lg font-semibold text-slate-100">Client keys</h2>
+  <span class="inline-flex items-center rounded-full border border-slate-700 px-2 py-0.5 text-[11px] font-medium text-slate-400">{{ keys | length }} issued</span>
+  {% if stats %}
+  <span class="inline-flex items-center rounded-full border border-emerald-900/70 bg-emerald-950/30 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
+    {{ stats.total_requests | fmt_num }} gateway requests · {{ stats.total_tokens | fmt_num }} tokens
+  </span>
+  {% endif %}
+  <button type="button" data-keys-issue
+    class="ml-auto inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-500 px-3 text-xs font-medium text-emerald-950 transition-colors hover:bg-emerald-400">
+    <i data-lucide="plus" class="size-3.5"></i>
+    Issue New Key
+  </button>
+</div>
+
+{% if keys %}
+<div class="space-y-3">
+  {% for k in keys %}{% include 'partials/keys_card.html' %}{% endfor %}
+</div>
+{% else %}
+<div class="rounded-xl border border-dashed border-slate-800 bg-[#0d1322]/60 p-10 text-center text-sm text-slate-500">
+  No client keys yet — issue one to start talking to the gateway.
+</div>
+{% endif %}
+
+{% if meta %}
+<div class="border-t border-slate-800/70 pt-4">
+  <p class="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600">
+    <i data-lucide="check" class="size-3 text-emerald-600"></i>
+    <span>Send keys as</span>
+    <span class="font-mono text-slate-400">Authorization: Bearer nova-sk-...</span>
+    <span>against</span>
+    <span class="font-mono text-slate-400">{{ meta.base_url }}/chat/completions</span>
+  </p>
+</div>
+{% endif %}

@@ -1,0 +1,150 @@
+{# Models tab — live list root (self-reproducing partial) + detail dialog slot.
+   The root div lives INSIDE partials/models_list.html so that every swap of the
+   list (filters, live refresh, mutation refreshes) re-renders the wiring.
+   #models-detail-slot stays OUTSIDE the swapped root so an open detail dialog
+   survives live re-renders. #}
+{% include "partials/models_list.html" %}
+<div id="models-detail-slot"></div>
+
+<script>
+(function () {
+  if (window.__nmUIBound) return;
+  window.__nmUIBound = true;
+
+  var STYLES = {
+    healthy: ['border-emerald-900/70 bg-emerald-950/40 text-emerald-300', 'bg-emerald-400'],
+    cooling: ['border-amber-900/70 bg-amber-950/40 text-amber-300', 'bg-amber-400'],
+    dead: ['border-rose-900/70 bg-rose-950/40 text-rose-300', 'bg-rose-400'],
+    unknown: ['border-slate-700 bg-slate-900/60 text-slate-400', 'bg-slate-500']
+  };
+  var ZAP_SVG = '<svg xmlns="http://www.w3.org/2000/svg" class="size-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>';
+
+  function $(id) { return document.getElementById(id); }
+
+  function nmApplyPing(id, data) {
+    data = data || {};
+    var st = data.status || 'unknown';
+    var style = STYLES[st] || STYLES.unknown;
+    var chip = $('mchip-' + id);
+    if (chip) {
+      chip.className = 'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] ' + style[0];
+      chip.innerHTML = '<span class="size-1.5 rounded-full ' + style[1] + '"></span>' + st;
+    }
+    var lat = $('mlat-' + id);
+    if (lat) {
+      if ((data.latency_ms || 0) > 0) {
+        lat.className = 'flex items-center gap-0.5 rounded border border-slate-800 bg-black/30 px-1.5 py-0.5 text-emerald-300/90';
+        lat.innerHTML = ZAP_SVG + '<span>' + data.latency_ms + 'ms</span>';
+      } else {
+        lat.className = 'hidden';
+        lat.textContent = '';
+      }
+    }
+  }
+
+  function nmOpenDetail(id) {
+    if (window.htmx) {
+      window.htmx.ajax('GET', '/partials/models/detail?id=' + id, {
+        target: '#models-detail-slot', swap: 'innerHTML'
+      });
+    }
+  }
+
+  async function nmPingModel(id, exposed) {
+    var btn = document.querySelector('[data-ping="' + id + '"]');
+    if (btn) { btn.disabled = true; btn.classList.add('opacity-60'); var s = btn.querySelector('svg'); if (s) s.classList.add('nova-spin'); }
+    try {
+      var res = await fetch('/ui/models/ping?id=' + id, { method: 'POST' });
+      var data = await res.json();
+      if (data && data.error) {
+        NovaUI.toast('Ping failed for ' + exposed + ' — ' + data.error, 'error');
+      } else if (data) {
+        nmApplyPing(id, data);
+        if (data.ok) {
+          NovaUI.toast(exposed + ': ' + data.status + ' · ' + data.latency_ms + 'ms', 'success');
+        } else {
+          NovaUI.toast(exposed + ': ' + data.status + ' — ' + (data.detail || 'Unreachable'), 'error');
+        }
+      }
+    } catch (e) {
+      NovaUI.toast('Ping failed for ' + exposed, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.classList.remove('opacity-60'); var s2 = btn.querySelector('svg'); if (s2) s2.classList.remove('nova-spin'); }
+    }
+    return null;
+  }
+
+  async function nmHealthCheck(btn) {
+    var ids = (btn.dataset.ids || '').split(',').filter(Boolean);
+    if (!ids.length) { NovaUI.toast('No enabled models to check right now', 'info'); return; }
+    btn.disabled = true; btn.classList.add('opacity-60');
+    var spin = btn.querySelector('svg'); if (spin) spin.classList.add('nova-spin');
+    var ok = 0;
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var res = await fetch('/ui/models/ping?id=' + ids[i], { method: 'POST' });
+        var data = await res.json();
+        if (data && data.ok) ok += 1;
+        nmApplyPing(ids[i], data);
+      } catch (e) { /* continue sweep */ }
+    }
+    var total = Number(btn.dataset.total || 0);
+    var suffix = total > ids.length ? ' (checked first ' + ids.length + ' of ' + total + ')' : '';
+    NovaUI.toast('Health check done — ' + ok + '/' + ids.length + ' reachable' + suffix, 'success');
+    btn.disabled = false; btn.classList.remove('opacity-60');
+    if (spin) spin.classList.remove('nova-spin');
+    NovaUI.refresh();
+  }
+
+  /* card click → detail dialog, skipping interactive controls (TSX stopPropagation parity) */
+  function nmCardActivate(e) {
+    var t = e.target;
+
+    var pingBtn = t.closest('[data-ping]');
+    if (pingBtn) {
+      e.preventDefault();
+      nmPingModel(pingBtn.dataset.ping, pingBtn.dataset.exposed || pingBtn.dataset.ping);
+      return;
+    }
+
+    var hcBtn = t.closest('[data-health-check]');
+    if (hcBtn) {
+      e.preventDefault();
+      nmHealthCheck(hcBtn);
+      return;
+    }
+
+    var copyBtn = t.closest('[data-copy-curl]');
+    if (copyBtn) {
+      e.preventDefault();
+      var pre = $('nm-curl');
+      NovaUI.copy(pre ? pre.textContent.trim() : '', 'cURL command copied');
+      return;
+    }
+
+    var closer = t.closest('[data-close-dialog]');
+    if (closer) {
+      var d = closer.closest('dialog');
+      if (d) d.close();
+      return;
+    }
+
+    var card = t.closest('[data-detail-id]');
+    if (!card) return;
+    if (t.closest('button, a, input, select, label, form, details')) return;
+    nmOpenDetail(card.dataset.detailId);
+  }
+
+  document.body.addEventListener('click', nmCardActivate);
+
+  /* keyboard access on cards (TSX: tabIndex + Enter opens details) */
+  document.body.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var card = e.target.closest ? e.target.closest('[data-detail-id]') : null;
+    if (!card) return;
+    if (e.target.closest('button, a, input, select, label, form, details')) return;
+    e.preventDefault();
+    nmOpenDetail(card.dataset.detailId);
+  });
+})();
+</script>

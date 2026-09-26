@@ -1,0 +1,210 @@
+{# Analytics tab — port of AnalyticsTab.tsx (range selector, traffic bars, top models/providers, percentiles, status donut, cache hit rate) #}
+{% macro chip(cls) -%}
+<span class="inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-xs font-semibold {{ cls }}">{{ caller() }}</span>
+{%- endmacro %}
+<div id="tab-analytics" class="flex flex-col gap-4">
+
+  {# Header: range selector + summary chips #}
+  <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+    <div class="flex flex-wrap items-center gap-2">
+      {% call chip('border-emerald-500/30 bg-emerald-500/10 text-emerald-300') %}{{ total | default(0) | fmt_num }} requests{% endcall %}
+      {% call chip('border-emerald-500/30 bg-emerald-500/10 text-emerald-300') %}{{ summary.total_tokens | default(0) | fmt_num }} tokens{% endcall %}
+      {% if (summary.error_rate | default(0)) > 5 %}
+      {% call chip('border-rose-500/30 bg-rose-500/10 text-rose-300') %}{{ error_rate_text }}% errors{% endcall %}
+      {% else %}
+      {% call chip('border-amber-500/30 bg-amber-500/10 text-amber-300') %}{{ error_rate_text }}% errors{% endcall %}
+      {% endif %}
+      {% call chip('border-slate-700 bg-slate-800/40 text-slate-300') %}{{ summary.spoofed_fallbacks_count | default(0) | fmt_num }} spoofed fallbacks{% endcall %}
+      {% if stats_avg %}
+      {% call chip('border-teal-500/30 bg-teal-500/10 text-teal-300') %}live avg {{ stats_avg }}{% endcall %}
+      {% endif %}
+    </div>
+    <div class="flex items-center gap-2">
+      {% if meta_version %}
+      <span class="hidden font-mono text-[10px] text-slate-600 sm:inline">gateway v{{ meta_version }}</span>
+      {% endif %}
+      <button type="button" title="Refresh shared gateway data" aria-label="Refresh shared gateway data"
+        class="rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-1 font-mono text-[11px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-400"
+        hx-get="/partials/tab/analytics" hx-vals='{"hours": {{ hours }}}' hx-target="#tab-analytics" hx-swap="outerHTML"
+        onclick="NovaUI.refresh()">sync</button>
+      <select name="hours" aria-label="Analytics time range"
+        class="h-8 rounded-md border border-slate-800 bg-[#080c14] px-2 font-mono text-xs text-slate-200 focus:border-emerald-500/40 focus:outline-none"
+        hx-get="/partials/tab/analytics" hx-trigger="change" hx-include="this" hx-target="#tab-analytics" hx-swap="outerHTML">
+        {% for value, label in ranges %}
+        <option value="{{ value }}" {% if hours == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+
+  {# Requests & Errors over time #}
+  <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Requests &amp; Errors</h2>
+        <p class="mt-0.5 text-[11px] text-slate-600">Per {{ group_by }} bucket, emerald = requests, rose = errors</p>
+      </div>
+      {% if series | length == 0 %}
+      <span class="font-mono text-[10px] text-slate-600">no data</span>
+      {% else %}
+      <span class="font-mono text-[10px] text-slate-600">max {{ (series | map(attribute='reqs') | max) | default(0) | fmt_num }} requests</span>
+      {% endif %}
+    </div>
+    {% if series | length == 0 %}
+    <div class="flex h-64 items-center justify-center text-xs text-slate-500">No traffic in this range.</div>
+    {% else %}
+    <div class="flex h-64 flex-col">
+      <div class="relative min-h-0 flex-1">
+        <div class="pointer-events-none absolute inset-0 flex flex-col justify-between" aria-hidden="true">
+          <div class="border-t border-dashed border-slate-800/80"></div>
+          <div class="border-t border-dashed border-slate-800/60"></div>
+          <div class="border-t border-dashed border-slate-800/60"></div>
+          <div class="border-t border-slate-800"></div>
+        </div>
+        <div class="absolute inset-0 flex items-end gap-[2px]">
+          {% for b in series %}
+          <div class="flex h-full min-w-0 flex-1 items-end justify-center gap-[1px]"
+            title="{{ b.bucket }} — {{ b.reqs }} requests · {{ b.errors }} errors">
+            <div class="w-full max-w-[10px] rounded-t-sm bg-emerald-400/80" style="height: {{ b.req_pct }}%"></div>
+            <div class="w-full max-w-[10px] rounded-t-sm bg-rose-400/80" style="height: {{ b.err_pct }}%"></div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="mt-1 flex gap-[2px] font-mono text-[9px] text-slate-600">
+        {% for b in series %}
+        <div class="min-w-0 flex-1 truncate text-center">{{ b.bucket if b.show_label }}</div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  {# Top models + top providers #}
+  <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+
+    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Top Models</h2>
+          <p class="mt-0.5 text-[11px] text-slate-600">Tokens processed (in + out)</p>
+        </div>
+      </div>
+      {% if top_models | length == 0 %}
+      <div class="flex h-64 items-center justify-center text-xs text-slate-500">No models used in this range.</div>
+      {% else %}
+      <div class="flex h-56 items-end gap-3">
+        {% for m in top_models %}
+        <div class="flex h-full min-w-0 flex-1 flex-col items-center justify-end" title="{{ m.label }} — {{ m.value | default(0) | fmt_num }} tokens">
+          <div class="w-full max-w-[42px] rounded-t-sm bg-emerald-400" style="height: {{ m.pct }}%"></div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="mt-1.5 flex gap-3">
+        {% for m in top_models %}
+        <div class="min-w-0 flex-1 truncate text-center font-mono text-[10px] text-slate-500" title="{{ m.label }}">{{ m.short }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Top Providers</h2>
+          <p class="mt-0.5 text-[11px] text-slate-600">Requests routed per provider</p>
+        </div>
+      </div>
+      {% if top_providers | length == 0 %}
+      <div class="flex h-64 items-center justify-center text-xs text-slate-500">No provider traffic in this range.</div>
+      {% else %}
+      <div class="flex h-64 flex-col justify-center gap-2.5">
+        {% for p in top_providers %}
+        <div class="flex items-center gap-2" title="{{ p.label }} — {{ p.value | default(0) | fmt_num }} requests">
+          <span class="w-[104px] shrink-0 truncate text-right font-mono text-[10px] text-slate-500">{{ p.label or '—' }}</span>
+          <div class="h-4 min-w-0 flex-1 overflow-hidden rounded-r-sm bg-slate-800/40">
+            <div class="h-full rounded-r-sm bg-emerald-400" style="width: {{ p.pct }}%"></div>
+          </div>
+          <span class="w-12 shrink-0 text-right font-mono text-[10px] tabular-nums text-slate-400">{{ p.value | default(0) | fmt_num }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Percentiles + donut + cache #}
+  <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+
+    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Latency Percentiles</h2>
+          <p class="mt-0.5 text-[11px] text-slate-600">Nearest-rank over the selected range</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-1">
+        {% for p in percentiles %}
+        <div class="flex items-center justify-between rounded-lg border border-slate-800 bg-[#080c14] px-3 py-2.5">
+          <div class="flex items-center gap-2">
+            <span class="size-2 rounded-full {{ p.dot }}"></span>
+            <span class="text-xs text-slate-400">{{ p.label }}</span>
+          </div>
+          <span class="font-mono text-lg font-semibold tabular-nums text-slate-100">{{ p.value }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Status Distribution</h2>
+          <p class="mt-0.5 text-[11px] text-slate-600">2xx success vs errors</p>
+        </div>
+      </div>
+      <div class="relative h-64">
+        <svg viewBox="0 0 120 120" class="mx-auto h-full" role="img" aria-label="Status distribution donut">
+          <circle cx="60" cy="60" r="48" fill="none" stroke="#1e293b" stroke-width="14"></circle>
+          {% if (donut.total | default(0)) > 0 %}
+          <circle cx="60" cy="60" r="48" fill="none" stroke="#34d399" stroke-width="14"
+            stroke-dasharray="{{ donut.seg }} {{ donut.rest }}" transform="rotate(-90 60 60)"></circle>
+          <circle cx="60" cy="60" r="48" fill="none" stroke="#fb7185" stroke-width="14"
+            stroke-dasharray="{{ donut.rest }} {{ donut.rest }}" stroke-dashoffset="{{ donut.offset }}" transform="rotate(-90 60 60)"></circle>
+          {% endif %}
+        </svg>
+        <div class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span class="font-mono text-2xl font-semibold tabular-nums text-slate-100">{{ donut.total | default(0) | fmt_num }}</span>
+          <span class="text-[10px] uppercase tracking-widest text-slate-500">requests</span>
+        </div>
+        <div class="absolute inset-x-0 bottom-0 flex justify-center gap-4">
+          <div class="flex items-center gap-1.5 text-[11px] text-slate-400">
+            <span class="size-2 rounded-full bg-emerald-400"></span>2xx success · {{ donut.success | default(0) | fmt_num }}
+          </div>
+          <div class="flex items-center gap-1.5 text-[11px] text-slate-400">
+            <span class="size-2 rounded-full bg-rose-400"></span>errors · {{ donut.errors | default(0) | fmt_num }}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Cache Hit Rate</h2>
+          <p class="mt-0.5 text-[11px] text-slate-600">Requests served by the response cache</p>
+        </div>
+      </div>
+      <div class="flex h-64 flex-col items-center justify-center gap-4">
+        <div class="font-mono text-4xl font-semibold tabular-nums text-emerald-400">{{ cache_rate }}%</div>
+        <div class="h-2 w-40 overflow-hidden rounded-full bg-slate-800">
+          <div class="h-full rounded-full bg-emerald-400 transition-[width] duration-500" style="width: {{ cache_width }}%"></div>
+        </div>
+        <div class="text-center font-mono text-[11px] text-slate-500">
+          {{ summary.cache_hits | default(0) | fmt_num }} of {{ total | default(0) | fmt_num }} requests<br />
+          served straight from the response cache
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

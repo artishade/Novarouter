@@ -1,0 +1,86 @@
+{# Client key card — KeysTab.tsx card layout (badge row, token row, usage row, budget bar). #}
+{% set pct = ([100, ((k.tokens_out / k.tpd_limit * 100) | round(0, 'common') | int)] | min) if k.tpd_limit and k.tpd_limit > 0 else 0 %}
+<div class="keys-card rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4" data-key-id="{{ k.id }}">
+  <div class="flex flex-wrap items-center gap-2">
+    <i data-lucide="key-round" class="size-4 text-emerald-400"></i>
+    <span class="text-sm font-semibold text-slate-100">{{ k.name }}</span>
+    {% if not k.enabled %}
+    <span class="inline-flex items-center rounded-full border border-amber-900/60 bg-amber-950/30 px-2 py-0.5 text-[10px] font-medium text-amber-300">disabled</span>
+    {% endif %}
+    <span class="inline-flex items-center rounded-full border border-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
+      {{ 'all models' if k.allowed_models == '*' else k.allowed_models }}
+    </span>
+    <div class="ml-auto flex items-center gap-2">
+      <button type="button" data-keys-edit data-key-id="{{ k.id }}" data-key-name="{{ k.name }}" data-key-models="{{ k.allowed_models }}"
+        data-key-rpm="{{ k.rpm_limit }}" data-key-tpd="{{ k.tpd_limit }}" title="Edit limits" aria-label="Edit limits for key {{ k.name }}"
+        class="inline-flex size-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:text-slate-200">
+        <i data-lucide="pencil" class="size-3.5"></i>
+      </button>
+      <button type="button" hx-post="/ui/keys/{{ k.id }}/delete"
+        hx-confirm='Revoke key "{{ k.name }}"? Clients using this token will immediately receive 401 responses. This cannot be undone.'
+        hx-target="closest .keys-card" hx-swap="outerHTML" aria-label="Delete key {{ k.name }}"
+        class="inline-flex size-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:text-rose-400">
+        <i data-lucide="trash-2" class="size-3.5"></i>
+      </button>
+      <button type="button" role="switch" aria-checked="{{ 'true' if k.enabled else 'false' }}" aria-label="Toggle key {{ k.name }}"
+        hx-post="/ui/keys/{{ k.id }}/toggle" hx-vals='{"enabled": "{{ '0' if k.enabled else '1' }}"}'
+        hx-target="closest .keys-card" hx-swap="outerHTML"
+        class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors {{ 'bg-emerald-500/80' if k.enabled else 'bg-slate-700' }}">
+        <span class="absolute size-4 rounded-full bg-slate-300 transition-transform {{ 'translate-x-4' if k.enabled else 'translate-x-0.5' }}"></span>
+      </button>
+    </div>
+  </div>
+
+  {# Token row #}
+  <div class="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-black/30 px-2.5 py-2">
+    <code class="keys-token min-w-0 flex-1 truncate font-mono text-xs text-slate-300" data-token="{{ k.token }}" data-revealed="">
+      {{- k.token[:12] }}{{ '•' * 18 }}{{ k.token[-4:] -}}
+    </code>
+    <button type="button" data-keys-reveal aria-label="Reveal token for {{ k.name }}" title="Reveal to copy the full token"
+      class="inline-flex size-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:text-emerald-300">
+      <i data-lucide="eye" data-icon="eye" class="size-3.5"></i>
+      <i data-lucide="eye-off" data-icon="eye-off" class="hidden size-3.5"></i>
+    </button>
+    <button type="button" data-keys-copy data-token="{{ k.token }}" aria-label="Copy token for {{ k.name }}" title="Copy token"
+      class="inline-flex size-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:text-emerald-300">
+      <i data-lucide="copy" class="size-3.5"></i>
+    </button>
+  </div>
+
+  {# Usage stats #}
+  <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400">
+    <span class="flex items-center gap-1" title="Total requests">
+      <i data-lucide="activity" class="size-3.5 text-slate-500"></i> {{ k.req_count | fmt_num }} req
+    </span>
+    <span class="flex items-center gap-1" title="Tokens in / out">
+      <i data-lucide="coins" class="size-3.5 text-slate-500"></i> {{ k.tokens_in | fmt_num }} in · {{ k.tokens_out | fmt_num }} out
+    </span>
+    <span class="flex items-center gap-1" title="Last used">
+      <i data-lucide="clock" class="size-3.5 text-slate-500"></i> {{ k.last_used_at | time_ago }}
+    </span>
+    <span class="flex items-center gap-1" title="Created">
+      <i data-lucide="calendar-days" class="size-3.5 text-slate-500"></i> {{ k.created_at | fmt_date }}
+    </span>
+    <span class="ml-auto flex items-center gap-1.5">
+      <span class="inline-flex items-center rounded-full border border-slate-700 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+        RPM {{ k.rpm_limit if k.rpm_limit > 0 else 'unlimited' }}
+      </span>
+      <span class="inline-flex items-center rounded-full border border-slate-700 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+        TPD {{ (k.tpd_limit | fmt_num) if k.tpd_limit > 0 else 'unlimited' }}
+      </span>
+    </span>
+  </div>
+
+  {# Usage bar #}
+  {% if k.tpd_limit and k.tpd_limit > 0 %}
+  <div class="mt-3">
+    <div class="mb-1 flex items-center justify-between text-[10px] text-slate-500">
+      <span>Daily token budget (out)</span>
+      <span class="font-mono">{{ k.tokens_out | fmt_num }} / {{ k.tpd_limit | fmt_num }} ({{ pct }}%)</span>
+    </div>
+    <div class="h-1.5 overflow-hidden rounded-full bg-slate-800">
+      <div class="h-full rounded-full {{ 'bg-rose-500' if pct >= 90 else ('bg-amber-500' if pct >= 75 else 'bg-emerald-500') }}" style="width: {{ pct }}%"></div>
+    </div>
+  </div>
+  {% endif %}
+</div>

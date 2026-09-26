@@ -1,0 +1,70 @@
+{# Add custom storage provider dialog — port of the Custom Provider Dialog in StorageTab.tsx.
+   Context: fields[(name,label,placeholder)], custom_types, sel_type, values, error #}
+<dialog id="st-custom-dialog" aria-label="Add custom storage provider"
+  class="h-fit w-[calc(100%-2rem)] max-w-lg rounded-xl border border-slate-800 bg-[#0d1322] p-6 text-slate-200 shadow-2xl backdrop:bg-black/70">
+  <form hx-post="/ui/storage/custom-provider" hx-target="#st-custom-zone" hx-swap="innerHTML">
+    <h3 class="flex items-center gap-2 text-base font-semibold text-slate-100">
+      <i data-lucide="plus" class="size-4 text-emerald-400"></i>Add Custom Storage Provider
+    </h3>
+    <p class="mt-1 text-sm leading-relaxed text-slate-500">
+      Register any S3-compatible bucket, Supabase project, Firebase bucket, GitHub repo, WebDAV share or local
+      path as a storage target.
+    </p>
+    {% if error %}
+    <p class="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{{ error }}</p>
+    {% endif %}
+
+    <div class="mt-4 grid gap-3 sm:grid-cols-2">
+      {% for key, label, placeholder in fields %}
+      {% if key == 'name' %}
+      <div class="space-y-1.5">
+        <label for="cp-{{ key }}" class="text-xs text-slate-400">{{ label }}</label>
+        <input id="cp-{{ key }}" name="{{ key }}" value="{{ values.get(key, '') }}" placeholder="{{ placeholder }}" autocomplete="off"
+          class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+      </div>
+      {% elif key == 'secret_key' %}
+      <div class="space-y-1.5">
+        <label for="cp-{{ key }}" class="text-xs text-slate-400">{{ label }}</label>
+        <input id="cp-{{ key }}" name="{{ key }}" type="password" value="{{ values.get(key, '') }}" autocomplete="off"
+          class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-emerald-500/50" />
+      </div>
+      {% else %}
+      <div class="space-y-1.5">
+        <label for="cp-{{ key }}" class="text-xs text-slate-400">{{ label }}</label>
+        <input id="cp-{{ key }}" name="{{ key }}" value="{{ values.get(key, '') }}" placeholder="{{ placeholder }}" autocomplete="off"
+          class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+      </div>
+      {% endif %}
+      {% if key == 'name' %}
+      {# Type select sits next to Name, mirroring the TSX grid order #}
+      <div class="space-y-1.5">
+        <label class="text-xs text-slate-400">Type</label>
+        <select name="type" aria-label="Provider type"
+          class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-emerald-500/50">
+          {% for t in custom_types %}
+          <option value="{{ t }}" class="bg-[#0d1322]" {{ 'selected' if t == sel_type }}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+
+    <div class="mt-6 flex justify-end gap-2">
+      <button type="button" onclick="document.getElementById('st-custom-dialog') && document.getElementById('st-custom-dialog').close()"
+        class="inline-flex h-9 items-center rounded-md border border-slate-700 bg-transparent px-4 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800">
+        Cancel
+      </button>
+      <button type="submit"
+        class="inline-flex h-9 items-center rounded-md bg-emerald-500 px-4 text-sm font-medium text-slate-950 transition-colors hover:bg-emerald-400">
+        Create Provider
+      </button>
+    </div>
+  </form>
+</dialog>
+<script>
+  (function () {
+    var d = document.getElementById('st-custom-dialog');
+    if (d && !d.open) d.showModal();
+  })();
+</script>

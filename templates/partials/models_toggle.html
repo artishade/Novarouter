@@ -1,0 +1,8 @@
+{# Model enabled switch — used inside the detail dialog (swappable in place). #}
+<label id="nm-dtoggle" class="relative inline-flex h-5 w-9 cursor-pointer items-center">
+  <input type="checkbox" name="enabled" {{ 'checked' if enabled }} hx-post="/ui/models/toggle"
+    hx-vals='{"id": {{ mid }}, "exposed": "{{ exposed }}", "context": "dialog"}' hx-trigger="change"
+    hx-target="#nm-dtoggle" hx-swap="outerHTML"
+    class="peer sr-only" aria-label="Toggle model {{ exposed }}" />
+  <span class="pointer-events-none absolute inset-0 rounded-full bg-slate-700 transition-colors after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-slate-300 after:transition-transform peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-4"></span>
+</label>

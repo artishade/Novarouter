@@ -4,70 +4,36 @@ Binds to 0.0.0.0:$PORT (Render assigns PORT dynamically; local default 3000).
 Owns:
   • /health, /api/health          — health checks for uptime pings
   • /v1/* + /api/v1/*             — OpenAI-compatible gateway (with CORS)
-  • /api/admin/* , /api/agent/*   — dashboard backend (port of the TS routes)
-  • everything else               — proxied to the Next.js dashboard process
-                                    (dev: `next dev`, prod: standalone server.js)
+  • /api/admin/* , /api/agent/*   — JSON API (source of truth for the UI)
+  • / and /partials/tab/*         — the Python dashboard UI (Jinja2 + HTMX BFF)
+                                    rendered by the `ui` package from Python —
+                                    no Node/React frontend anymore.
+
+The frontend module is Python: `ui/` renders templates server-side and calls
+this same JSON API (self-BFF), so UI behaviour always matches the gateway.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import shlex
-import subprocess
 import time
 from contextlib import asynccontextmanager
 
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRouter
-from starlette.background import BackgroundTask
+from fastapi.staticfiles import StaticFiles
 
 from nova import engine as nova_engine
 from nova.bootstrap import run_bootstrap
-from nova.config import CORS_ALLOW_ORIGINS, PORT, UI_COMMAND, UI_PORT, UI_TARGET
+from nova.config import CORS_ALLOW_ORIGINS, PORT, PROJECT_ROOT
 from nova.database import ensure_sqlite_dir, ping
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("nova.main")
 
 STARTED_AT = time.time()
-ui_proc: subprocess.Popen | None = None
-
-
-# --------------------------------------------------------------------------- #
-# Dashboard UI subprocess
-# --------------------------------------------------------------------------- #
-
-def start_ui() -> None:
-    global ui_proc
-    if ui_proc is not None:
-        return
-    cmd = UI_COMMAND.strip()
-    if not cmd:
-        # Dev default: Next dev server on the internal UI port.
-        cmd = f"bun run next dev -p {UI_PORT}"
-    argv = shlex.split(cmd)
-    env = {**os.environ, "PORT": str(UI_PORT), "HOSTNAME": "127.0.0.1"}
-    try:
-        ui_proc = subprocess.Popen(argv, env=env, cwd=os.getcwd())  # noqa: S603
-        log.info("dashboard UI spawned: %s (target %s)", " ".join(argv), UI_TARGET)
-    except FileNotFoundError as err:
-        log.warning("could not spawn dashboard UI (%s): %s — API-only mode", argv[0], err)
-        ui_proc = None
-
-
-def stop_ui() -> None:
-    global ui_proc
-    if ui_proc is not None:
-        ui_proc.terminate()
-        try:
-            ui_proc.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            ui_proc.kill()
-        ui_proc = None
 
 
 @asynccontextmanager
@@ -75,10 +41,9 @@ async def lifespan(_app: FastAPI):
     ensure_sqlite_dir()
     run_bootstrap()
     await nova_engine.start_sidecar()
-    start_ui()
+    log.info("NovaRouter up on 0.0.0.0:%s (Python UI + API)", PORT)
     yield
     await nova_engine.stop_sidecar()
-    stop_ui()
 
 
 app = FastAPI(
@@ -167,77 +132,16 @@ app.include_router(gateway.router, prefix="/api/v1", include_in_schema=False, ta
 app.include_router(admin_router)
 app.include_router(agent_router)
 
-
 # --------------------------------------------------------------------------- #
-# Dashboard proxy — everything that is not an API path goes to the UI process
+# Python UI (frontend module) — shell + tab fragments from `ui/`
 # --------------------------------------------------------------------------- #
 
-PROXIED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
+from ui.shell import shell_router  # noqa: E402
+from ui.tabs import ui_router  # noqa: E402
 
-HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "te", "trailer",
-              "proxy-authenticate", "proxy-authorization", "upgrade",
-              "proxy-connection", "host", "content-length"}
-
-_ui_client: httpx.AsyncClient | None = None
-
-
-def ui_client() -> httpx.AsyncClient:
-    global _ui_client
-    if _ui_client is None or _ui_client.is_closed:
-        # read=None: SSE/HMR streams stay open; cleanup happens via aclose.
-        _ui_client = httpx.AsyncClient(
-            base_url=UI_TARGET,
-            timeout=httpx.Timeout(connect=10.0, read=None, write=60.0, pool=120.0),
-        )
-    return _ui_client
-
-
-@app.api_route("/{path:path}", methods=PROXIED_METHODS, include_in_schema=False)
-async def proxy_ui(request: Request, path: str):
-    # API paths must never leak into the proxy (they are all registered above).
-    if path.startswith(("api/", "v1/", "health")) or path in ("api", "v1", "health"):
-        return JSONResponse({"error": "Not found"}, status_code=404)
-
-    url = httpx.URL(path="/" + path, query=request.url.query.encode("utf-8"))
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP}
-
-    body = await request.body() if request.method in ("POST", "PUT", "PATCH", "DELETE") else None
-
-    client = ui_client()
-    try:
-        req = client.build_request(request.method, url, headers=headers, content=body)
-        upstream = await client.send(req, stream=True)
-    except httpx.HTTPError:
-        return HTMLResponse(
-            "<!doctype html><html><body style='font-family:system-ui;display:flex;"
-            "align-items:center;justify-content:center;height:100vh;margin:0'>"
-            "<div style='text-align:center'><h1>NovaRouter</h1>"
-            "<p>Gateway API is running, but the dashboard UI is starting…</p>"
-            "<p>Refresh in a few seconds.</p></div></body></html>",
-            status_code=503,
-        )
-
-    resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in HOP_BY_HOP}
-
-    # STREAM everything through (SSE, HMR, big assets) — never buffer.
-    async def relay():
-        try:
-            async for chunk in upstream.aiter_raw():
-                yield chunk
-        finally:
-            await upstream.aclose()
-
-    return StreamingResponse(
-        relay(),
-        status_code=upstream.status_code,
-        headers=resp_headers,
-        background=BackgroundTask(upstream.aclose),
-    )
-
-
-@app.websocket("/{path:path}")
-async def proxy_ws(_ws, _path: str):  # pragma: no cover — dashboard uses HTTP only
-    await _ws.close(code=1013)
+app.include_router(shell_router)
+app.include_router(ui_router)
+app.mount("/static", StaticFiles(directory=str(PROJECT_ROOT / "static")), name="static")
 
 
 if __name__ == "__main__":

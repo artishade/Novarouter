@@ -1,0 +1,50 @@
+{# Storage provider connect dialog — port of the Connect Dialog in StorageTab.tsx.
+   Context: provider, fields[{key,label,password,placeholder}], note, link_label, link_url, error, values #}
+<dialog id="st-connect-dialog" aria-label="Connect {{ provider.name }}"
+  class="h-fit w-[calc(100%-2rem)] max-w-md rounded-xl border border-slate-800 bg-[#0d1322] p-6 text-slate-200 shadow-2xl backdrop:bg-black/70">
+  <form hx-post="/ui/storage/connect" hx-target="#st-connect-zone" hx-swap="innerHTML">
+    <input type="hidden" name="provider_key" value="{{ provider.id }}" />
+    <h3 class="flex items-center gap-2 text-base font-semibold text-slate-100">
+      <i data-lucide="plug-zap" class="size-4 text-purple-300"></i>Connect {{ provider.name }}
+    </h3>
+    <p class="mt-1 text-sm leading-relaxed text-slate-500">{{ note }}</p>
+    {% if error %}
+    <p class="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{{ error }}</p>
+    {% endif %}
+
+    <div class="mt-4 space-y-3">
+      {% for f in fields %}
+      <div class="space-y-1.5">
+        <label for="cf-{{ f.key }}" class="text-xs text-slate-400">{{ f.label }}</label>
+        <input id="cf-{{ f.key }}" name="{{ f.key }}" type="{{ 'password' if f.password else 'text' }}"
+          placeholder="{{ f.placeholder or '' }}" value="{{ values.get(f.key, '') }}"
+          autocomplete="off" spellcheck="false"
+          class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+      </div>
+      {% endfor %}
+      {% if link_url %}
+      <a href="{{ link_url }}" target="_blank" rel="noreferrer"
+        class="inline-flex items-center gap-1.5 text-xs text-emerald-400 transition hover:text-emerald-300">
+        <i data-lucide="external-link" class="size-3.5"></i>{{ link_label }}
+      </a>
+      {% endif %}
+    </div>
+
+    <div class="mt-6 flex justify-end gap-2">
+      <button type="button" onclick="document.getElementById('st-connect-dialog') && document.getElementById('st-connect-dialog').close()"
+        class="inline-flex h-9 items-center rounded-md border border-slate-700 bg-transparent px-4 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800">
+        Cancel
+      </button>
+      <button type="submit"
+        class="inline-flex h-9 items-center rounded-md bg-emerald-500 px-4 text-sm font-medium text-slate-950 transition-colors hover:bg-emerald-400">
+        Connect
+      </button>
+    </div>
+  </form>
+</dialog>
+<script>
+  (function () {
+    var d = document.getElementById('st-connect-dialog');
+    if (d && !d.open) d.showModal();
+  })();
+</script>

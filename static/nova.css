@@ -1,0 +1,95 @@
+/* NovaRouter Python UI — shell behaviours + custom bits beyond Tailwind utilities. */
+
+/* ---------------- Sidebar expand/collapse (body class driven) ---------------- */
+body.sb-expanded #sidebar { width: 15rem; }
+body.sb-collapsed #sidebar { width: 3.5rem; }
+
+body.sb-collapsed .sb-only { display: none !important; }
+.sb-collapsed-only { display: none; }
+body.sb-collapsed .sb-collapsed-only { display: flex; }
+body.sb-collapsed #sidebar-toggle { display: none; }
+
+.brand-row { padding: 0 0.75rem; justify-content: space-between; }
+body.sb-collapsed .brand-row { padding: 0; justify-content: center; }
+
+body.sb-expanded .nav-item { gap: 0.75rem; padding: 0.5rem 0.75rem; }
+body.sb-collapsed .nav-item { height: 2.5rem; justify-content: center; padding: 0; }
+
+/* Active nav item (JS toggles .is-active) */
+.nav-item.is-active { background: rgb(16 185 129 / 0.1); color: rgb(110 231 183); }
+.nav-item.is-active .nav-icon { color: #34d399; }
+.nav-item.is-active .nav-active-bar { display: block; }
+
+/* Below lg the sidebar is always an icon rail (original auto-collapse behaviour) */
+@media (max-width: 1023px) {
+  #sidebar { width: 3.5rem !important; }
+  .sb-only { display: none !important; }
+  #sidebar-toggle { display: none !important; }
+  .sb-collapsed-only { display: flex !important; }
+  body.sb-expanded .nav-item, body.sb-collapsed .nav-item { height: 2.5rem; justify-content: center; padding: 0; }
+}
+
+/* ---------------- Refresh busy state ---------------- */
+.nova-spin svg, svg.nova-spin { animation: nova-rotate 0.9s linear infinite; }
+@keyframes nova-rotate { to { transform: rotate(360deg); } }
+
+/* ---------------- Loading skeleton ---------------- */
+.nova-skeleton {
+  background: linear-gradient(90deg, #0d1322 25%, #131b2e 50%, #0d1322 75%);
+  background-size: 200% 100%;
+  animation: nova-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes nova-shimmer { to { background-position: -200% 0; } }
+
+/* ---------------- Toasts ---------------- */
+.nova-toast {
+  pointer-events: auto;
+  display: flex; align-items: flex-start; gap: 0.625rem;
+  border-radius: 0.5rem; border: 1px solid; padding: 0.625rem 0.75rem;
+  font-size: 12px; line-height: 1.35;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+  animation: nova-toast-in 0.18s ease-out;
+  background: #0d1322;
+  cursor: pointer;
+}
+.nova-toast-success { border-color: rgb(16 185 129 / 0.4); color: #a7f3d0; }
+.nova-toast-error { border-color: rgb(244 63 94 / 0.45); color: #fecdd3; }
+.nova-toast-info { border-color: rgb(148 163 184 / 0.35); color: #e2e8f0; }
+.nova-toast-success .nova-toast-dot { background: #34d399; }
+.nova-toast-error .nova-toast-dot { background: #fb7185; }
+.nova-toast-info .nova-toast-dot { background: #94a3b8; }
+.nova-toast.leaving { animation: nova-toast-out 0.15s ease-in forwards; }
+@keyframes nova-toast-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } }
+@keyframes nova-toast-out { to { opacity: 0; transform: translateY(4px); } }
+
+/* ---------------- Scrollbars (dark terminal aesthetic) ---------------- */
+* { scrollbar-width: thin; scrollbar-color: #1e293b transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: #334155; }
+
+/* ---------------- Misc ---------------- */
+.heap-bar { transition: width 0.5s ease; }
+
+/* Simple fade/slide-in for swapped tab content (framer-motion parity) */
+#tab-content > * { animation: nova-tab-in 0.25s ease-out; }
+@keyframes nova-tab-in { from { opacity: 0; transform: translateY(8px); } }
+
+/* Terminal caret */
+.nova-caret { animation: nova-blink 1.05s step-end infinite; }
+@keyframes nova-blink { 50% { opacity: 0; } }
+
+/* Native dialog polish */
+dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
+
+/* Markdown-ish chat output */
+.md-body code { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 0.92em; background: #080c14; border: 1px solid #1e293b; border-radius: 0.25rem; padding: 0.05rem 0.3rem; }
+.md-body pre { background: #080c14; border: 1px solid #1e293b; border-radius: 0.5rem; padding: 0.625rem 0.75rem; overflow-x: auto; margin: 0.375rem 0; }
+.md-body pre code { background: transparent; border: 0; padding: 0; font-size: 12px; line-height: 1.55; }
+.md-body p { margin: 0.25rem 0; }
+.md-body ul, .md-body ol { margin: 0.25rem 0 0.25rem 1.1rem; }
+.md-body ul { list-style: disc; }
+.md-body ol { list-style: decimal; }
+.md-body a { color: #34d399; text-decoration: underline; text-underline-offset: 2px; }
+.md-body strong { color: #f1f5f9; }

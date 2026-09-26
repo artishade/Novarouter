@@ -1,0 +1,30 @@
+{# Live status bar content — server-rendered port of StatusFooter.tsx #}
+{% set heap_used = stats.memory.heap_used_mb if stats and stats.memory else 0 %}
+{% set heap_total = stats.memory.heap_total_mb if stats and stats.memory else 0 %}
+{% set heap_pct = [([100, (heap_used / heap_total * 100) | round(0, 'common')] | min), 0] | max if heap_total and heap_total > 0 else 0 %}
+{# Left: status + uptime #}
+<div class="flex min-w-0 items-center gap-2">
+  <span class="relative flex size-2">
+    <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60"></span>
+    <span class="relative inline-flex size-2 rounded-full bg-emerald-400"></span>
+  </span>
+  <span class="font-medium text-slate-300">Gateway online</span>
+  <span class="text-slate-700">|</span>
+  <span class="font-mono text-slate-500">up {{ (stats.uptime_s | fmt_uptime) if stats else '—' }}</span>
+</div>
+{# Middle: heap usage #}
+<div class="hidden items-center gap-2 md:flex">
+  <span class="text-slate-500">V8 heap</span>
+  <div class="h-1.5 w-28 overflow-hidden rounded-full bg-slate-800">
+    <div class="heap-bar h-full rounded-full bg-purple-400" style="width: {{ heap_pct }}%"></div>
+  </div>
+  <span class="font-mono text-slate-500">{{ heap_used | fmt_mb if stats else '—' }}{% if stats %} / {{ heap_total | fmt_mb }}{% endif %}</span>
+</div>
+{# Right: fleet summary + Dhaka time #}
+<div class="flex min-w-0 items-center gap-2 font-mono text-slate-500">
+  <span class="hidden truncate sm:inline">
+    {% if stats %}{{ stats.providers_count }} providers · {{ stats.active_models }} models · avg {{ stats.avg_latency_ms | round(0, 'common') | int }}ms{% else %}— providers · — models{% endif %}
+  </span>
+  <span class="hidden text-slate-700 sm:inline">|</span>
+  <span class="tabular-nums">Asia/Dhaka <span id="dhaka-clock">--:--:--</span></span>
+</div>

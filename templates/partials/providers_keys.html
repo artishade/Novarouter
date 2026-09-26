@@ -1,0 +1,67 @@
+{# One provider's upstream-keys panel — own id so mutations can swap just this panel. #}
+<div id="pkeys-{{ p.id }}" class="border-t border-slate-800 bg-black/20 p-4">
+  <div class="mb-2 flex items-center justify-between">
+    <span class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Upstream keys</span>
+    <button type="button" hx-get="/partials/providers/keys?provider_id={{ p.id }}" hx-target="#pkeys-{{ p.id }}" hx-swap="outerHTML"
+      aria-label="Reload keys for {{ p.name }}" title="Reload keys"
+      class="inline-flex size-6 items-center justify-center rounded text-slate-500 transition-colors hover:text-emerald-300">
+      <i data-lucide="refresh-cw" class="size-3"></i>
+    </button>
+  </div>
+
+  {% if keys | length == 0 %}
+  <p class="rounded-lg border border-dashed border-slate-800 px-3 py-3 text-[11px] text-slate-500">
+    No keys yet — add one below or use Sign In{{ ' via the menu' if not p.auth_url else '' }}.
+  </p>
+  {% else %}
+  <div class="nova-scroll max-h-56 space-y-2 overflow-y-auto pr-2">
+    {% for k in keys %}
+    {% set cooling = k.cooldown_until and k.cooldown_until > now_ms %}
+    <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-slate-800/80 bg-[#0d1322]/70 px-2.5 py-2">
+      <i data-lucide="key-round" class="size-3.5 shrink-0 text-slate-600"></i>
+      <span class="font-mono text-[11px] text-slate-300">{{ k.api_key_preview }}</span>
+      {% if k.label %}
+      <span class="max-w-[140px] truncate text-[11px] text-slate-500" title="{{ k.label }}">{{ k.label }}</span>
+      {% endif %}
+      <span class="inline-flex items-center rounded border border-slate-700 px-1 font-mono text-[10px] text-slate-500" title="Rotation weight">w{{ k.weight }}</span>
+      <span class="text-[10px] text-slate-500" title="Requests / errors">{{ k.req_count | fmt_num }} req · {{ k.err_count | fmt_num }} err</span>
+      {% if cooling %}
+      <span class="inline-flex items-center gap-1 rounded border border-amber-900/60 bg-amber-950/40 px-1.5 text-[10px] text-amber-300">
+        <i data-lucide="timer" class="size-3"></i>
+        cooldown until {{ k.cooldown_until | fmt_clock }}
+      </span>
+      {% else %}
+      <span class="text-[10px] text-slate-600">last used {{ k.last_used_at | time_ago }}</span>
+      {% endif %}
+      <button type="button" hx-post="/ui/providers/keys/delete" hx-vals='{"id": {{ k.id }}, "provider_id": {{ p.id }}}'
+        hx-target="#pkeys-{{ p.id }}" hx-swap="outerHTML" hx-confirm="Delete key {{ k.api_key_preview }}?"
+        aria-label="Delete key {{ k.api_key_preview }}"
+        class="ml-auto text-slate-600 transition hover:text-rose-400">
+        <i data-lucide="trash-2" class="size-3.5"></i>
+      </button>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="my-3 border-t border-slate-800/70"></div>
+
+  <div class="rounded-lg border border-dashed border-slate-700/80 p-3">
+    <form hx-post="/ui/providers/keys/add" hx-target="#pkeys-{{ p.id }}" hx-swap="outerHTML"
+      class="flex flex-col gap-2 sm:flex-row" autocomplete="off">
+      <input type="hidden" name="provider_id" value="{{ p.id }}" />
+      <input name="label" placeholder="Label (optional)" aria-label="Label for new key on {{ p.name }}"
+        class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50 sm:w-40" />
+      <input name="api_key" placeholder="Paste API key" aria-label="API key value for {{ p.name }}" autocomplete="off"
+        class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+      <button type="submit" class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded border border-emerald-800/70 px-2.5 text-xs text-emerald-300 transition-colors hover:bg-emerald-950/50 hover:text-emerald-200">
+        <i data-lucide="plus" class="size-3.5"></i>
+        Add key
+      </button>
+    </form>
+    <p class="mt-1.5 flex items-center gap-1 text-[11px] text-slate-600">
+      <i data-lucide="link-2" class="size-3"></i>
+      Bulk paste: separate multiple keys with newlines or commas to import them at once.
+    </p>
+  </div>
+</div>

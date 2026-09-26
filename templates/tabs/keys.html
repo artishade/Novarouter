@@ -1,0 +1,279 @@
+{# Keys tab — port of KeysTab.tsx: frame + dialogs + HTMX body loader. #}
+<div id="keys-main" hx-get="/partials/keys/main" hx-trigger="load, nova:refresh from:body" hx-swap="innerHTML">
+  <div class="space-y-3" aria-busy="true">
+    <div class="nova-skeleton h-14 rounded-xl"></div>
+    <div class="nova-skeleton h-40 rounded-xl"></div>
+    <div class="nova-skeleton h-40 rounded-xl"></div>
+  </div>
+</div>
+
+{# ------------------------------ Issue dialog ------------------------------ #}
+<dialog id="keys-issue-dialog" class="w-[min(92vw,28rem)] rounded-xl border border-slate-800 bg-[#0d1322] p-0 text-slate-200 backdrop:bg-black/70">
+  <div class="flex items-start justify-between gap-3 border-b border-slate-800/80 px-6 py-4">
+    <div>
+      <div class="text-sm font-semibold text-slate-100">Issue new client key</div>
+      <p class="mt-1 text-xs text-slate-400">Keys authenticate requests to the gateway. The full token is shown once after issuing.</p>
+    </div>
+    <button type="button" data-close-dialog aria-label="Close" class="inline-flex size-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300">
+      <i data-lucide="x" class="size-4"></i>
+    </button>
+  </div>
+  <form id="keys-issue-form" class="space-y-3 px-6 py-4">
+    <div class="space-y-1.5">
+      <label for="ck-name" class="text-xs font-medium text-slate-300">Name</label>
+      <input id="ck-name" name="name" type="text" placeholder="e.g. my-app-production" autocomplete="off"
+        class="w-full rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-2 text-xs text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/50 focus:outline-none" />
+    </div>
+    <div class="space-y-1.5">
+      <label for="ck-models" class="text-xs font-medium text-slate-300">Allowed models</label>
+      <input id="ck-models" name="allowed_models" type="text" value="*" placeholder="* or comma-separated exposed ids" autocomplete="off"
+        class="w-full rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-2 font-mono text-xs text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/50 focus:outline-none" />
+      <p class="text-[11px] text-slate-500">Use * to allow every enabled model.</p>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div class="space-y-1.5">
+        <label for="ck-rpm" class="text-xs font-medium text-slate-300">RPM limit</label>
+        <input id="ck-rpm" name="rpm_limit" type="number" min="0" value="60"
+          class="w-full rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-2 font-mono text-xs text-slate-100 focus:border-emerald-500/50 focus:outline-none" />
+      </div>
+      <div class="space-y-1.5">
+        <label for="ck-tpd" class="text-xs font-medium text-slate-300">TPD limit (0 = unlimited)</label>
+        <input id="ck-tpd" name="tpd_limit" type="number" min="0" value="0"
+          class="w-full rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-2 font-mono text-xs text-slate-100 focus:border-emerald-500/50 focus:outline-none" />
+      </div>
+    </div>
+    <p id="keys-issue-error" class="hidden rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-300"></p>
+    <div class="flex justify-end gap-2 pt-1">
+      <button type="button" data-close-dialog class="inline-flex h-8 items-center rounded-md border border-slate-700 px-3 text-xs text-slate-300 transition-colors hover:bg-slate-800 hover:text-slate-100">Cancel</button>
+      <button id="keys-issue-submit" type="submit" class="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-500 px-3 text-xs font-medium text-emerald-950 transition-colors hover:bg-emerald-400 disabled:opacity-50">
+        <i data-lucide="plus" class="size-3.5"></i>Issue key
+      </button>
+    </div>
+  </form>
+</dialog>
+
+{# --------------------------- Show-once dialog --------------------------- #}
+<dialog id="keys-showonce-dialog" class="w-[min(92vw,28rem)] rounded-xl border border-slate-800 bg-[#0d1322] p-0 text-slate-200 backdrop:bg-black/70">
+  <div class="flex items-start gap-3 px-6 pt-5">
+    <div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
+      <i data-lucide="shield-alert" class="size-4 text-emerald-400"></i>
+    </div>
+    <div>
+      <div class="text-sm font-semibold text-slate-100">Save your token now</div>
+      <p class="mt-1 text-xs text-slate-400">This is the only time the full token is shown. Copy it into your app before closing.</p>
+    </div>
+  </div>
+  <div class="px-6 pt-4">
+    <div class="rounded-lg border border-emerald-800/70 bg-emerald-950/30 p-3">
+      <code id="keys-showonce-token" class="block break-all font-mono text-sm leading-relaxed text-emerald-200"></code>
+    </div>
+  </div>
+  <div class="flex justify-end gap-2 px-6 py-5">
+    <button type="button" data-keys-copy-token class="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-800/70 px-3 text-xs text-emerald-300 transition-colors hover:bg-emerald-950/50 hover:text-emerald-200">
+      <i data-lucide="copy" class="size-3.5"></i>Copy token
+    </button>
+    <button type="button" data-keys-saved class="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-500 px-3 text-xs font-medium text-emerald-950 transition-colors hover:bg-emerald-400">
+      <i data-lucide="check" class="size-3.5"></i>I saved it
+    </button>
+  </div>
+</dialog>
+
+{# ------------------------------ Edit dialog ------------------------------ #}
+<dialog id="keys-edit-dialog" class="w-[min(92vw,28rem)] rounded-xl border border-slate-800 bg-[#0d1322] p-0 text-slate-200 backdrop:bg-black/70">
+  <div class="border-b border-slate-800/80 px-6 py-4">
+    <div class="text-sm font-semibold text-slate-100">Edit key limits</div>
+    <p id="keys-edit-desc" class="mt-1 text-xs text-slate-400"></p>
+  </div>
+  <form id="keys-edit-form" class="space-y-3 px-6 py-4">
+    <input type="hidden" name="key_id" id="ek-id" value="" />
+    <div class="space-y-1.5">
+      <label for="ek-name" class="text-xs font-medium text-slate-300">Name</label>
+      <input id="ek-name" name="name" type="text" autocomplete="off"
+        class="w-full rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-2 text-xs text-slate-100 focus:border-emerald-500/50 focus:outline-none" />
+    </div>
+    <div class="space-y-1.5">
+      <label for="ek-models" class="text-xs font-medium text-slate-300">Allowed models</label>
+      <input id="ek-models" name="allowed_models" type="text" autocomplete="off"
+        class="w-full rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-2 font-mono text-xs text-slate-100 focus:border-emerald-500/50 focus:outline-none" />
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div class="space-y-1.5">
+        <label for="ek-rpm" class="text-xs font-medium text-slate-300">RPM limit</label>
+        <input id="ek-rpm" name="rpm_limit" type="number" min="0"
+          class="w-full rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-2 font-mono text-xs text-slate-100 focus:border-emerald-500/50 focus:outline-none" />
+      </div>
+      <div class="space-y-1.5">
+        <label for="ek-tpd" class="text-xs font-medium text-slate-300">TPD limit (0 = unlimited)</label>
+        <input id="ek-tpd" name="tpd_limit" type="number" min="0"
+          class="w-full rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-2 font-mono text-xs text-slate-100 focus:border-emerald-500/50 focus:outline-none" />
+      </div>
+    </div>
+    <p id="keys-edit-error" class="hidden rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-300"></p>
+    <div class="flex justify-end gap-2 pt-1">
+      <button type="button" data-close-dialog class="inline-flex h-8 items-center rounded-md border border-slate-700 px-3 text-xs text-slate-300 transition-colors hover:bg-slate-800 hover:text-slate-100">Cancel</button>
+      <button id="keys-edit-submit" type="submit" class="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-500 px-3 text-xs font-medium text-emerald-950 transition-colors hover:bg-emerald-400 disabled:opacity-50">
+        <i data-lucide="check" class="size-3.5"></i>Save limits
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ----------------------------- tiny helpers ----------------------------- */
+  const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  function maskToken(token) {
+    const t = String(token || '');
+    if (t.length <= 16) return t.slice(0, 4) + '••••';
+    return t.slice(0, 12) + '•'.repeat(18) + t.slice(-4);
+  }
+
+  const issueDialog = document.getElementById('keys-issue-dialog');
+  const issueForm = document.getElementById('keys-issue-form');
+  const issueError = document.getElementById('keys-issue-error');
+  const issueSubmit = document.getElementById('keys-issue-submit');
+  const showOnceDialog = document.getElementById('keys-showonce-dialog');
+  const showOnceToken = document.getElementById('keys-showonce-token');
+  const editDialog = document.getElementById('keys-edit-dialog');
+  const editForm = document.getElementById('keys-edit-form');
+  const editError = document.getElementById('keys-edit-error');
+  const editSubmit = document.getElementById('keys-edit-submit');
+  let showOnceValue = '';
+
+  function refreshList() {
+    if (window.NovaUI) window.NovaUI.refresh();
+  }
+
+  function setBusy(btn, busy, label) {
+    if (!btn) return;
+    btn.disabled = busy;
+    const icon = busy ? '<i data-lucide="loader-2" class="size-3.5 animate-spin"></i>' : (btn.dataset.icon || '');
+    btn.innerHTML = icon + esc(label);
+    if (window.lucide) window.lucide.createIcons();
+  }
+  if (issueSubmit && !issueSubmit.dataset.icon) issueSubmit.dataset.icon = issueSubmit.innerHTML;
+  if (editSubmit && !editSubmit.dataset.icon) editSubmit.dataset.icon = editSubmit.innerHTML;
+
+  /* ------------------------------ issue flow ------------------------------ */
+  issueForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    issueError.classList.add('hidden');
+    const name = (issueForm.elements.name.value || '').trim();
+    if (!name) {
+      issueError.textContent = 'Give the key a name so you can recognise it later';
+      issueError.classList.remove('hidden');
+      return;
+    }
+    setBusy(issueSubmit, true, 'Issue key');
+    try {
+      const res = await fetch('/ui/keys/create', { method: 'POST', body: new FormData(issueForm) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+      const key = data.key || {};
+      showOnceValue = key.token || '';
+      if (showOnceToken) showOnceToken.textContent = showOnceValue;
+      issueDialog.close();
+      showOnceDialog.showModal();
+      if (window.NovaUI) window.NovaUI.toast('Key "' + (key.name || name) + '" issued', 'success');
+      refreshList();
+    } catch (err) {
+      issueError.textContent = err.message || 'Failed to issue key';
+      issueError.classList.remove('hidden');
+      if (window.NovaUI) window.NovaUI.toast(err.message || 'Failed to issue key', 'error');
+    } finally {
+      setBusy(issueSubmit, false, 'Issue key');
+    }
+  });
+
+  /* ------------------------------- edit flow ------------------------------ */
+  editForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    editError.classList.add('hidden');
+    const id = editForm.elements.key_id.value;
+    const name = (editForm.elements.name.value || '').trim();
+    setBusy(editSubmit, true, 'Save limits');
+    try {
+      const res = await fetch('/ui/keys/' + encodeURIComponent(id), { method: 'PATCH', body: new FormData(editForm) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+      editDialog.close();
+      if (window.NovaUI) window.NovaUI.toast('Key "' + (name || 'key') + '" updated', 'success');
+      refreshList();
+    } catch (err) {
+      editError.textContent = err.message || 'Failed to update key';
+      editError.classList.remove('hidden');
+      if (window.NovaUI) window.NovaUI.toast(err.message || 'Failed to update key', 'error');
+    } finally {
+      setBusy(editSubmit, false, 'Save limits');
+    }
+  });
+
+  /* --------------------------- delegated clicks --------------------------- */
+  function onKeyClick(e) {
+    /* if this fragment was swapped out (re-nav to Keys), drop the stale handler */
+    if (!issueDialog || !document.contains(issueDialog)) {
+      document.removeEventListener('click', onKeyClick);
+      return;
+    }
+    const closer = e.target.closest('[data-close-dialog]');
+    if (closer) { e.preventDefault(); const d = closer.closest('dialog'); if (d) d.close(); return; }
+
+    const issueBtn = e.target.closest('[data-keys-issue]');
+    if (issueBtn) {
+      e.preventDefault();
+      issueError.classList.add('hidden');
+      issueForm.reset();
+      if (showOnceDialog.open) showOnceDialog.close();
+      issueDialog.showModal();
+      const nameField = issueForm.elements.name;
+      if (nameField) nameField.focus();
+      return;
+    }
+
+    const editBtn = e.target.closest('[data-keys-edit]');
+    if (editBtn) {
+      e.preventDefault();
+      const d = editBtn.dataset;
+      editForm.elements.key_id.value = d.keyId || '';
+      editForm.elements.name.value = d.keyName || '';
+      editForm.elements.allowed_models.value = d.keyModels || '*';
+      editForm.elements.rpm_limit.value = d.keyRpm || '0';
+      editForm.elements.tpd_limit.value = d.keyTpd || '0';
+      document.getElementById('keys-edit-desc').textContent = 'Tighten or relax rate and daily token limits for ' + (d.keyName || 'this key') + '.';
+      editError.classList.add('hidden');
+      editDialog.showModal();
+      return;
+    }
+
+    const revealBtn = e.target.closest('[data-keys-reveal]');
+    if (revealBtn) {
+      e.preventDefault();
+      const card = revealBtn.closest('.keys-card');
+      const code = card && card.querySelector('.keys-token');
+      if (!code) return;
+      const revealed = code.dataset.revealed === '1';
+      code.textContent = revealed ? maskToken(code.dataset.token) : code.dataset.token;
+      code.dataset.revealed = revealed ? '' : '1';
+      revealBtn.setAttribute('aria-label', revealed ? 'Reveal token' : 'Hide token');
+      const eye = revealBtn.querySelector('[data-icon="eye"]');
+      const eyeOff = revealBtn.querySelector('[data-icon="eye-off"]');
+      if (eye) eye.classList.toggle('hidden', !revealed);
+      if (eyeOff) eyeOff.classList.toggle('hidden', revealed);
+      return;
+    }
+
+    const copyBtn = e.target.closest('[data-keys-copy]');
+    if (copyBtn) { e.preventDefault(); if (window.NovaUI) window.NovaUI.copy(copyBtn.dataset.token || '', 'Token copied to clipboard'); return; }
+
+    const copyOnce = e.target.closest('[data-keys-copy-token]');
+    if (copyOnce) { e.preventDefault(); if (window.NovaUI) window.NovaUI.copy(showOnceValue, 'Token copied to clipboard'); return; }
+
+    const saved = e.target.closest('[data-keys-saved]');
+    if (saved) { e.preventDefault(); showOnceDialog.close(); showOnceValue = ''; refreshList(); return; }
+  }
+  document.addEventListener('click', onKeyClick);
+})();
+</script>

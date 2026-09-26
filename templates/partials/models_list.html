@@ -1,0 +1,172 @@
+{# Models list — IS the live root (self-reproducing: the root's hx-get re-renders
+   this file, so data-live + nova:refresh wiring survives every swap).
+   Expects ctx from ui/tabs/models.py #}
+<div id="models-root" data-live="1" hx-get="{{ root_url }}"
+  hx-trigger="nova:refresh from:body" hx-swap="outerHTML" class="space-y-4">
+<div class="flex flex-wrap items-center gap-2">
+  <h2 class="text-lg font-semibold text-slate-100">Models</h2>
+  <span class="inline-flex items-center rounded-md border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">{{ total }} shown</span>
+  {% if stats %}
+  <span class="inline-flex items-center rounded-md border border-emerald-900/70 bg-emerald-950/30 px-2 py-0.5 text-[11px] text-emerald-300">{{ stats.healthy_models }} healthy · {{ stats.dead_models }} dead</span>
+  {% endif %}
+  <div class="ml-auto flex flex-wrap items-center gap-2">
+    <form hx-get="/partials/models/list" hx-target="#models-root" hx-swap="outerHTML" hx-trigger="input delay:300ms"
+      onsubmit="return false" class="flex flex-wrap items-center gap-2" autocomplete="off">
+      <div class="relative">
+        <i data-lucide="search" class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-600"></i>
+        <input id="nm-q" name="q" value="{{ q }}" placeholder="Search models..." aria-label="Search models"
+          class="h-9 w-48 rounded-md border border-slate-800 bg-black/30 pl-8 pr-2 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+      </div>
+      <select name="provider_id" aria-label="Filter by provider"
+        class="h-9 w-[150px] rounded-md border border-slate-800 bg-black/30 px-2 text-xs text-slate-300 outline-none focus:border-emerald-500/50">
+        <option value="all">All providers</option>
+        {% for p in providers %}
+        <option value="{{ p.id }}" {{ 'selected' if provider_id == (p.id | string) }}>{{ p.name }}</option>
+        {% endfor %}
+      </select>
+      <select name="status" aria-label="Filter by status"
+        class="h-9 w-[120px] rounded-md border border-slate-800 bg-black/30 px-2 text-xs text-slate-300 outline-none focus:border-emerald-500/50">
+        <option value="all" {{ 'selected' if status == 'all' }}>Any status</option>
+        <option value="healthy" {{ 'selected' if status == 'healthy' }}>Healthy</option>
+        <option value="cooling" {{ 'selected' if status == 'cooling' }}>Cooling</option>
+        <option value="dead" {{ 'selected' if status == 'dead' }}>Dead</option>
+        <option value="unknown" {{ 'selected' if status == 'unknown' }}>Unknown</option>
+      </select>
+      <select name="capability" aria-label="Filter by capability"
+        class="h-9 w-[130px] rounded-md border border-slate-800 bg-black/30 px-2 text-xs text-slate-300 outline-none focus:border-emerald-500/50">
+        <option value="all" {{ 'selected' if capability == 'all' }}>Any capability</option>
+        <option value="tools" {{ 'selected' if capability == 'tools' }}>Tools</option>
+        <option value="vision" {{ 'selected' if capability == 'vision' }}>Vision</option>
+        <option value="reasoning" {{ 'selected' if capability == 'reasoning' }}>Reasoning</option>
+      </select>
+      <label class="flex h-9 cursor-pointer items-center gap-2 rounded-md border border-slate-800 bg-black/30 px-2.5 text-xs text-slate-300">
+        <input type="checkbox" name="free" {{ 'checked' if free }} class="peer sr-only" aria-label="Show free models only" />
+        <span class="relative h-4 w-7 rounded-full bg-slate-700 transition-colors after:absolute after:left-0.5 after:top-0.5 after:size-3 after:rounded-full after:bg-slate-300 after:transition-transform peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-3"></span>
+        Free only
+      </label>
+    </form>
+    <button type="button" hx-post="/ui/models/sync" hx-swap="none" hx-disabled-elt="this"
+      class="inline-flex h-9 items-center gap-1.5 rounded-md border border-slate-700 px-2.5 text-xs text-slate-300 transition-colors hover:bg-slate-800 disabled:opacity-60">
+      <i data-lucide="refresh-ccw" class="size-3.5"></i>
+      Sync Catalogue
+    </button>
+    {% set ns = namespace(p=None) %}
+    {% for p in providers %}
+    {% if provider_id == (p.id | string) %}{% set ns.p = p %}{% endif %}
+    {% endfor %}
+    {% if ns.p %}
+    <button type="button" hx-post="/ui/models/sync" hx-vals='{"provider_id": {{ ns.p.id }}}' hx-swap="none" hx-disabled-elt="this"
+      class="inline-flex h-9 items-center gap-1.5 rounded-md border border-emerald-800/70 px-2.5 text-xs text-emerald-300 transition-colors hover:bg-emerald-950/40 disabled:opacity-60">
+      <i data-lucide="refresh-ccw" class="size-3.5"></i>
+      Sync {{ ns.p.name }}
+    </button>
+    {% endif %}
+    <button type="button" data-health-check data-ids="{{ health_ids | join(',') }}" data-total="{{ health_candidates }}"
+      class="inline-flex h-9 items-center gap-1.5 rounded-md border border-emerald-800/70 px-2.5 text-xs text-emerald-300 transition-colors hover:bg-emerald-950/40">
+      <i data-lucide="heart-pulse" class="size-3.5"></i>
+      Health check
+    </button>
+  </div>
+</div>
+
+{% if error %}
+<div class="rounded-xl border border-rose-900/60 bg-rose-950/20 p-10 text-center">
+  <p class="font-mono text-sm text-rose-300">{{ error }}</p>
+  <button type="button" hx-get="/partials/models/list" hx-target="#models-root" hx-swap="outerHTML"
+    class="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-700 px-3 text-xs text-slate-300 hover:bg-slate-800">
+    <i data-lucide="refresh-cw" class="size-3.5"></i> Retry
+  </button>
+</div>
+{% elif rows | length == 0 %}
+<div class="rounded-xl border border-dashed border-slate-800 bg-[#0d1322]/60 p-10 text-center text-sm text-slate-500">
+  {{ 'No models match the current filters — try clearing them.' if has_filters else 'No models in the catalogue yet — run Sync Catalogue.' }}
+</div>
+{% else %}
+<div class="nova-scroll max-h-[calc(100vh-330px)] overflow-y-auto pr-1">
+  <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+    {% for m in rows %}
+    <div data-detail-id="{{ m.id }}" role="button" tabindex="0" aria-label="Open details for {{ m.display_name }}"
+      class="cursor-pointer rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4 transition hover:border-slate-600 hover:bg-[#0d1322] focus:outline-none focus-visible:border-emerald-500/60">
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <p class="truncate text-sm font-medium text-slate-100">{{ m.display_name }}</p>
+          <p class="truncate font-mono text-[11px] text-slate-500">{{ m.exposed_id }}</p>
+        </div>
+        <label class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center">
+          <input type="checkbox" name="enabled" {{ 'checked' if m.enabled }} hx-post="/ui/models/toggle"
+            hx-vals='{"id": {{ m.id }}, "exposed": "{{ m.exposed_id }}"}' hx-trigger="change" hx-swap="none"
+            class="peer sr-only" aria-label="Toggle model {{ m.exposed_id }}" />
+          <span class="pointer-events-none absolute inset-0 rounded-full bg-slate-700 transition-colors after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-slate-300 after:transition-transform peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-4"></span>
+        </label>
+      </div>
+
+      <div class="mt-2 flex flex-wrap items-center gap-1.5">
+        <span class="flex items-center gap-1.5 rounded-md border border-slate-800 bg-black/30 px-1.5 py-0.5 text-[10px] text-slate-400">
+          <span class="size-1.5 rounded-full" style="background-color: {{ m.provider_color or '#64748b' }}" aria-hidden="true"></span>
+          {{ m.provider_name or 'unknown' }}
+        </span>
+        <span id="mchip-{{ m.id }}" class="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] {{ m.chip }}">
+          <span class="size-1.5 rounded-full {{ m.dot }}" aria-hidden="true"></span>
+          {{ m.status }}
+        </span>
+        {% if m.is_free %}
+        <span class="inline-flex items-center rounded border border-emerald-800/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] text-emerald-300">FREE</span>
+        {% endif %}
+      </div>
+
+      <div class="mt-2.5 flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-slate-500">
+        <span class="rounded border border-slate-800 bg-black/30 px-1.5 py-0.5">{{ m.context_length | fmt_num }} ctx</span>
+        <span class="rounded border border-slate-800 bg-black/30 px-1.5 py-0.5">{{ m.max_output | fmt_num }} out</span>
+        {% if (m.latency_ms or 0) > 0 %}
+        <span id="mlat-{{ m.id }}" class="flex items-center gap-0.5 rounded border border-slate-800 bg-black/30 px-1.5 py-0.5 text-emerald-300/90">
+          <i data-lucide="zap" class="size-2.5"></i>
+          <span>{{ m.latency_ms }}ms</span>
+        </span>
+        {% else %}
+        <span id="mlat-{{ m.id }}" class="hidden"></span>
+        {% endif %}
+      </div>
+
+      {% if (m.price_in or 0) > 0 %}
+      <p class="mt-1.5 text-[11px] text-slate-500">${{ m.price_in }}/M in · ${{ m.price_out }}/M out</p>
+      {% endif %}
+
+      <div class="mt-2.5 flex items-center gap-2.5">
+        <span class="{{ 'text-emerald-300/90' if m.capabilities.tools else 'text-slate-700' }}"
+          title="{{ 'Tool calling supported' if m.capabilities.tools else 'No tool calling' }}">
+          <i data-lucide="wrench" class="size-3.5"></i><span class="sr-only">tools</span>
+        </span>
+        <span class="{{ 'text-emerald-300/90' if m.capabilities.vision else 'text-slate-700' }}"
+          title="{{ 'Vision supported' if m.capabilities.vision else 'No vision' }}">
+          <i data-lucide="eye" class="size-3.5"></i><span class="sr-only">vision</span>
+        </span>
+        <span class="{{ 'text-emerald-300/90' if m.capabilities.reasoning else 'text-slate-700' }}"
+          title="{{ 'Reasoning supported' if m.capabilities.reasoning else 'No reasoning' }}">
+          <i data-lucide="brain" class="size-3.5"></i><span class="sr-only">reasoning</span>
+        </span>
+        <div class="ml-auto">
+          <button type="button" data-ping="{{ m.id }}" data-exposed="{{ m.exposed_id }}" aria-label="Ping {{ m.exposed_id }}"
+            class="inline-flex h-7 items-center gap-1 rounded border border-slate-700 px-2 text-[11px] text-slate-300 transition-colors hover:bg-slate-800">
+            <i data-lucide="gauge" class="size-3"></i>
+            Ping
+          </button>
+        </div>
+      </div>
+
+      {% if m.description %}
+      <p class="mt-2 line-clamp-2 text-[11px] leading-snug text-slate-500">{{ m.description }}</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if has_filters %}
+<button type="button" hx-get="/partials/models/list" hx-target="#models-root" hx-swap="outerHTML"
+  class="inline-flex items-center gap-1 text-[11px] text-slate-500 transition hover:text-slate-200">
+  <i data-lucide="x" class="size-3"></i>
+  Clear filters
+</button>
+{% endif %}
+</div>

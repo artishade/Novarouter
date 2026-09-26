@@ -79,10 +79,6 @@ IS_POSTGRES = DATABASE_URL.startswith("postgresql")
 ENGINE_SIDECAR_PORT = int(os.environ.get("NOVA_ENGINE_PORT", "3099"))
 ENGINE_SIDECAR_URL = f"http://127.0.0.1:{ENGINE_SIDECAR_PORT}"
 
-UI_TARGET = os.environ.get("NOVA_UI_TARGET", "http://127.0.0.1:3001")
-UI_COMMAND = os.environ.get("NOVA_UI_COMMAND", "")  # e.g. "bun /app/ui/server.js"
-UI_PORT = int(os.environ.get("NOVA_UI_PORT", "3001"))
-
 # CORS (requirement #4): browser clients may call the API directly.
 CORS_ALLOW_ORIGINS = [
     o.strip()

@@ -1,0 +1,107 @@
+{# Route create/edit dialog — port of RouteFormDialog in RoutesTab.tsx.
+   Context: editing, route_id, initial {public_id, fallbacks, auto, note}, models, error #}
+<dialog id="rt-form-dialog" aria-label="{{ 'Edit route' if editing else 'New fallback route' }}"
+  class="h-fit w-[calc(100%-2rem)] max-w-xl rounded-xl border border-slate-800 bg-[#0d1322] p-6 text-slate-200 shadow-2xl backdrop:bg-black/70">
+  <form hx-post="{{ ('/ui/routes/' ~ (route_id | urlencode) ~ '/update') if editing else '/ui/routes/create' }}"
+    hx-target="#rt-form-zone" hx-swap="innerHTML">
+    <div x-data='rtChain({{ initial.fallbacks | tojson }}, {{ initial.auto | tojson }})'>
+      <h3 class="text-base font-semibold text-slate-100">{{ 'Edit route' if editing else 'New fallback route' }}</h3>
+      <p class="mt-1 text-sm text-slate-500">
+        Map a public model id to an ordered chain of upstream models. Clients keep asking for the
+        public id — NovaRouter walks the chain until one answers.
+      </p>
+      {% if error %}
+      <p class="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{{ error }}</p>
+      {% endif %}
+
+      <div class="mt-4 space-y-4">
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="space-y-1.5">
+            <label for="rt-public" class="text-sm font-medium text-slate-300">Public model id</label>
+            <input id="rt-public" name="public_id" value="{{ initial.public_id }}" placeholder="my-model or * for default chain"
+              autocomplete="off" spellcheck="false"
+              class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+          </div>
+          <div class="space-y-1.5">
+            <label for="rt-note" class="text-sm font-medium text-slate-300">Note (optional)</label>
+            <input id="rt-note" name="note" value="{{ initial.note }}" placeholder="Why this chain exists"
+              class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+          </div>
+        </div>
+
+        <div class="space-y-1.5">
+          <label class="text-sm font-medium text-slate-300">Pick fallback models (in order)</label>
+          <div class="max-h-40 overflow-y-auto rounded-lg border border-slate-800 bg-black/20 p-2.5">
+            <div class="flex flex-wrap gap-1.5">
+              {% if models | length == 0 %}
+              <span class="text-[11px] text-slate-600">No models in the catalogue yet.</span>
+              {% endif %}
+              {% for m in models %}
+              <button type="button" x-data='{ id: {{ m.exposed_id | tojson }} }' @click="toggle(id)"
+                :aria-pressed="fallbacks.includes(id)" :aria-label="(fallbacks.includes(id) ? 'Remove ' : 'Add ') + id + ' to chain'"
+                :class="fallbacks.includes(id) ? 'border-emerald-700/70 bg-emerald-950/50 text-emerald-300' : 'border-slate-800 bg-black/30 text-slate-400 hover:border-slate-600 hover:text-slate-200'"
+                class="rounded-md border px-2 py-1 font-mono text-[11px] transition">{{ m.exposed_id }}</button>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+
+        <div class="space-y-1.5">
+          <label class="text-sm font-medium text-slate-300">Chain order (<span x-text="fallbacks.length"></span>)</label>
+          <p x-show="fallbacks.length === 0" class="rounded-lg border border-dashed border-slate-800 px-3 py-2 text-[11px] text-slate-600">
+            Nothing selected yet — chips above append here in click order.
+          </p>
+          <div x-show="fallbacks.length > 0" class="flex flex-wrap items-center gap-1.5">
+            <template x-for="(f, idx) in fallbacks" :key="f">
+              <span class="flex items-center gap-1 rounded-md border border-emerald-800/60 bg-emerald-950/40 px-1.5 py-1 font-mono text-[11px] text-emerald-300">
+                <span class="text-[9px] text-emerald-500/80" x-text="'F' + (idx + 1)"></span>
+                <span x-text="f"></span>
+                <input type="hidden" name="fallbacks" :value="f" />
+                <button type="button" @click="move(idx, -1)" :disabled="idx === 0" :aria-label="'Move ' + f + ' up'"
+                  class="text-emerald-500/70 transition hover:text-emerald-300 disabled:opacity-30">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-3"><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></svg>
+                </button>
+                <button type="button" @click="move(idx, 1)" :disabled="idx === fallbacks.length - 1" :aria-label="'Move ' + f + ' down'"
+                  class="text-emerald-500/70 transition hover:text-emerald-300 disabled:opacity-30">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-3"><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></svg>
+                </button>
+                <button type="button" @click="remove(f)" :aria-label="'Remove ' + f + ' from chain'"
+                  class="text-emerald-500/70 transition hover:text-rose-400">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-3"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                </button>
+              </span>
+            </template>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <label class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center">
+            <input id="rt-auto" type="checkbox" name="auto" value="1" class="peer sr-only" role="switch"
+              aria-label="Allow automatic stand-ins" {{ 'checked' if initial.auto }} />
+            <span class="absolute inset-0 rounded-full bg-slate-700 transition-colors peer-checked:bg-emerald-500/80"></span>
+            <span class="absolute left-0.5 size-4 rounded-full bg-slate-300 transition-transform peer-checked:translate-x-4"></span>
+          </label>
+          <label for="rt-auto" class="text-xs text-slate-300">Auto stand-ins</label>
+          <span class="text-[11px] text-slate-500">When the chain is exhausted, healthy free models step in automatically.</span>
+        </div>
+      </div>
+
+      <div class="mt-6 flex justify-end gap-2">
+        <button type="button" onclick="document.getElementById('rt-form-dialog') && document.getElementById('rt-form-dialog').close()"
+          class="inline-flex h-9 items-center rounded-md border border-slate-700 bg-transparent px-4 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800">
+          Cancel
+        </button>
+        <button type="submit"
+          class="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-500 px-4 text-sm font-medium text-emerald-950 transition-colors hover:bg-emerald-400">
+          {{ 'Save changes' if editing else 'Create route' }}
+        </button>
+      </div>
+    </div>
+  </form>
+</dialog>
+<script>
+  (function () {
+    var d = document.getElementById('rt-form-dialog');
+    if (d && !d.open) d.showModal();
+  })();
+</script>

@@ -1,0 +1,166 @@
+{# Routes tab — port of src/components/nova/tabs/RoutesTab.tsx #}
+<div id="rt-root" class="space-y-4" hx-get="/partials/tab/routes" hx-trigger="nova:refresh from:body" hx-swap="outerHTML">
+  {% if error %}
+    <div class="flex flex-col items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/5 p-6">
+      <p class="text-sm text-rose-300">Failed to load routes — {{ error }}</p>
+      <button type="button" hx-get="/partials/tab/routes" hx-target="#rt-root" hx-swap="outerHTML"
+        class="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium text-emerald-950 transition-colors hover:bg-emerald-400">
+        Retry
+      </button>
+    </div>
+  {% else %}
+    {# ------------------------------ Header ------------------------------ #}
+    <div class="flex flex-wrap items-center gap-2">
+      <h2 class="text-lg font-semibold text-slate-100">Fallback routes</h2>
+      <span class="inline-flex items-center rounded-md border border-slate-700 px-2 py-0.5 text-xs font-semibold text-slate-400">
+        {{ routes | length }} routes
+      </span>
+      {% if stats %}
+      <span class="inline-flex items-center rounded-md border border-slate-700 px-2 py-0.5 text-xs font-semibold text-slate-400">
+        {{ stats.healthy_models }} healthy models available as stand-ins
+      </span>
+      {% endif %}
+      <div class="ml-auto flex flex-wrap items-center gap-2">
+        <input id="rt-preview-model" name="model" value="" placeholder="Preview by model id..." autocomplete="off" spellcheck="false"
+          aria-label="Model id to preview fallback chain"
+          hx-get="/ui/routes/preview" hx-trigger="keydown[key==='Enter']" hx-target="#rt-preview-zone" hx-swap="innerHTML"
+          class="h-9 w-52 rounded-md border border-slate-800 bg-black/30 px-3 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+        <button type="button" hx-get="/ui/routes/preview" hx-include="#rt-preview-model" hx-target="#rt-preview-zone" hx-swap="innerHTML"
+          class="inline-flex h-9 items-center gap-1.5 rounded-md border border-slate-700 bg-transparent px-3 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800">
+          <i data-lucide="play" class="size-3.5"></i>Preview
+        </button>
+        <button type="button" hx-get="/ui/routes/form" hx-target="#rt-form-zone" hx-swap="innerHTML"
+          class="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-500 px-3 text-sm font-medium text-emerald-950 transition-colors hover:bg-emerald-400">
+          <i data-lucide="plus" class="size-3.5"></i>New Route
+        </button>
+      </div>
+    </div>
+
+    {# ---------------------------- Intro alert --------------------------- #}
+    <div class="flex items-start gap-3 rounded-xl border border-emerald-900/70 bg-emerald-950/20 p-4">
+      <i data-lucide="info" class="mt-0.5 size-4 shrink-0 text-emerald-400"></i>
+      <div>
+        <p class="text-sm font-semibold text-emerald-300">Identity spoofing keeps clients happy</p>
+        <p class="mt-1 text-sm text-slate-400">
+          When a model is down, NovaRouter retries the chain and still answers with the model id the
+          client asked for. Stage 1 tries the model directly, stage 2 walks your explicit chain, and
+          stage 3 picks healthy free stand-ins when auto is enabled.
+          {{ 'Spoofing is currently ON.' if (meta and meta.fallback and meta.fallback.spoof_model) else 'Spoofing is currently OFF.' }}
+        </p>
+      </div>
+    </div>
+
+    {# ---------------------------- Route cards --------------------------- #}
+    {% if routes | length == 0 %}
+      <div class="flex flex-col items-center gap-3 rounded-xl border border-dashed border-slate-800 bg-[#0d1322]/60 p-10 text-center">
+        <i data-lucide="route" class="size-6 text-slate-600"></i>
+        <p class="text-sm text-slate-500">
+          No fallback routes yet. Create one, or add a <span class="font-mono text-slate-400">*</span>
+          route to define the default chain.
+        </p>
+      </div>
+    {% else %}
+      <div class="space-y-3">
+        {% for r in routes %}
+        <div class="rounded-xl border bg-[#0d1322]/80 p-4 {{ 'border-purple-900/50' if r.public_id == '*' else 'border-slate-800' }}">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-mono text-sm text-emerald-300">{{ r.public_id }}</span>
+            {% if r.public_id == '*' %}
+            <span class="inline-flex items-center rounded-md border border-purple-800/60 bg-purple-950/50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-purple-300">Default chain</span>
+            {% endif %}
+            {% if r.auto %}
+            <span class="inline-flex items-center rounded-md border border-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-400">auto</span>
+            {% endif %}
+            {% if not r.enabled %}
+            <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/30 px-2 py-0.5 text-[10px] font-semibold text-amber-300">disabled</span>
+            {% endif %}
+            <div class="ml-auto flex items-center gap-2">
+              <button type="button" hx-get="/ui/routes/preview?model={{ r.public_id | urlencode }}" hx-target="#rt-preview-zone" hx-swap="innerHTML"
+                title="Preview fallback resolution" aria-label="Preview route {{ r.public_id }}"
+                class="inline-flex size-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/60 hover:text-emerald-300">
+                <i data-lucide="play" class="size-3.5"></i>
+              </button>
+              <button type="button" hx-get="/ui/routes/form?id={{ r.id }}" hx-target="#rt-form-zone" hx-swap="innerHTML"
+                aria-label="Edit route {{ r.public_id }}"
+                class="inline-flex size-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/60 hover:text-slate-200">
+                <i data-lucide="pencil" class="size-3.5"></i>
+              </button>
+              <button type="button" hx-delete="/ui/routes/{{ r.id }}" hx-swap="none"
+                hx-confirm='Delete route {{ r.public_id | tojson }}? Requests for this model will lose their explicit chain and fall through to the default chain (if any) and auto stand-ins.'
+                aria-label="Delete route {{ r.public_id }}"
+                class="inline-flex size-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-rose-500/10 hover:text-rose-400">
+                <i data-lucide="trash-2" class="size-3.5"></i>
+              </button>
+              <label class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center">
+                <input type="checkbox" name="enabled" value="1" class="peer sr-only" role="switch"
+                  aria-label="Toggle route {{ r.public_id }}" {{ 'checked' if r.enabled }}
+                  hx-post="/ui/routes/{{ r.id }}/toggle" hx-trigger="change" hx-swap="none" />
+                <span class="absolute inset-0 rounded-full bg-slate-700 transition-colors peer-checked:bg-emerald-500/80"></span>
+                <span class="absolute left-0.5 size-4 rounded-full bg-slate-300 transition-transform peer-checked:translate-x-4"></span>
+              </label>
+            </div>
+          </div>
+
+          {% if r.note %}
+          <p class="mt-1 text-[11px] text-slate-500">{{ r.note }}</p>
+          {% endif %}
+          <p class="mt-1 text-[10px] text-slate-600">created {{ r.created_at | time_ago }}</p>
+
+          {# ------------------------ Chain visualization ------------------------ #}
+          <div class="mt-3 flex flex-wrap items-center gap-1.5">
+            <span class="flex items-center gap-1.5 rounded-md border border-slate-700 bg-black/40 px-2 py-1 font-mono text-[11px] text-slate-200">
+              <span class="text-[9px] uppercase text-slate-500">req</span>{{ r.public_id }}
+            </span>
+            {% for f in r.fallbacks %}
+            <i data-lucide="arrow-right" class="size-3 shrink-0 text-slate-600"></i>
+            <span class="flex items-center gap-1.5 rounded-md border border-slate-800 bg-black/30 px-2 py-1 font-mono text-[11px] text-slate-300">
+              <span class="text-[9px] text-slate-500">F{{ loop.index }}</span>{{ f }}
+            </span>
+            {% endfor %}
+            {% if r.auto %}
+            <i data-lucide="arrow-right" class="size-3 shrink-0 text-slate-600"></i>
+            <span class="flex items-center gap-1.5 rounded-md border border-emerald-900/60 bg-emerald-950/40 px-2 py-1 font-mono text-[11px] text-emerald-300/90">
+              <span class="text-[9px] uppercase text-emerald-600">auto</span>free stand-ins
+            </span>
+            {% endif %}
+            {% if r.fallbacks | length == 0 and not r.auto %}
+            <span class="text-[11px] text-slate-600">empty chain — requests fail through</span>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endif %}
+
+  {# Dialogs are fetched into these zones and live inside the top layer #}
+  <div id="rt-form-zone" class="contents"></div>
+  <div id="rt-preview-zone" class="contents"></div>
+
+  <script>
+    (function () {
+      /* Alpine component backing the fallback-chain editor in the form dialog. */
+      window.rtChain = function (initial, auto) {
+        return {
+          fallbacks: initial,
+          auto: auto,
+          toggle: function (id) {
+            var i = this.fallbacks.indexOf(id);
+            if (i >= 0) this.fallbacks.splice(i, 1);
+            else this.fallbacks.push(id);
+          },
+          remove: function (id) { this.toggle(id); },
+          move: function (idx, dir) {
+            var target = idx + dir;
+            if (target < 0 || target >= this.fallbacks.length) return;
+            var next = this.fallbacks.slice();
+            var tmp = next[idx];
+            next[idx] = next[target];
+            next[target] = tmp;
+            this.fallbacks = next;
+          },
+        };
+      };
+    })();
+  </script>
+</div>

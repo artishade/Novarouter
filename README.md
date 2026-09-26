@@ -4,7 +4,9 @@
 
 NovaRouter fans out requests across many AI providers (including fully free ones), applies fallback + cooldown strategies, manages keys/models/routes, and ships with a unified **Nova Console** where one chatbox can answer questions, run shell commands, and execute agent tasks.
 
-![stack](https://img.shields.io/badge/Python-FastAPI-009688) ![stack](https://img.shields.io/badge/SQLAlchemy-2-orange) ![stack](https://img.shields.io/badge/UI-Next.js-black)
+![stack](https://img.shields.io/badge/Python-FastAPI-009688) ![stack](https://img.shields.io/badge/SQLAlchemy-2-orange) ![stack](https://img.shields.io/badge/UI-Jinja2%20%2B%20HTMX-emerald)
+
+**100% Python — backend and frontend.** The dashboard UI is a Python module (`ui/`, Jinja2 templates + HTMX + Alpine) rendered and served by the same FastAPI process. No Node frontend, no React build step.
 
 ---
 
@@ -33,7 +35,7 @@ The base URL is also advertised live by `GET /api/admin/meta` (`base_url` field)
 | 🗄️ Storage manager | Firebase + free storage providers (Supabase, Backblaze B2, Cloudflare R2, GitHub…), dashboard sign-in/connect flows, file browser, backups |
 | ⚙️ Compute config | Gateway memory booster, in-terminal RAM booster, free compute providers (Colab, Kaggle…), **GPU pool config** (attach/detach, VRAM) |
 | 🔑 Key management | Multi-key pools per provider, bulk import, cooldown tracking, client keys for the gateway |
-| 🎨 UI/UX | Dark terminal aesthetic (emerald/slate), responsive mobile-first layout, sticky footer, shadcn/ui |
+| 🎨 UI/UX | Dark terminal aesthetic (emerald/slate), responsive mobile-first layout, sticky footer — **Python-rendered UI (Jinja2 + HTMX)** |
 
 ---
 
@@ -77,12 +79,12 @@ docker run -d -p 3000:3000 -v nova-db:/app/db novarouter
 git clone https://github.com/artishade/Novarouter.git
 cd Novarouter
 pip install -r requirements.txt
-bun install                 # dashboard UI tooling (Next.js frontend)
+cd engine && bun install --production && cd ..   # NovaFree engine sidecar deps
 cp .env.example .env
 python3 main.py             # http://localhost:3000 — UI + API in one process
 ```
 
-`python3 main.py` starts the FastAPI server on `0.0.0.0:$PORT` and spawns the dashboard UI (`next dev`) as a managed child process; everything is proxied through one port.
+`python3 main.py` starts the FastAPI server on `0.0.0.0:$PORT`. It serves **everything**: the OpenAI-compatible gateway, the admin/agent JSON APIs, and the dashboard UI itself (Jinja2 templates rendered by the `ui/` Python package — HTMX for interactivity, no Node dev server, no proxy).
 
 ---
 
@@ -153,15 +155,18 @@ Everything lives in one chatbox — input is routed automatically:
 ## 🗂️ Project Structure
 
 ```
-main.py            FastAPI entrypoint — 0.0.0.0:$PORT, CORS, /health, routers, dashboard proxy
+main.py            FastAPI entrypoint — 0.0.0.0:$PORT, CORS, /health, API routers, UI
 nova/              config, SQLAlchemy models (Prisma-layout compatible), bootstrap,
                    engine sidecar client, live discovery, model sync, terminal sandbox,
                    agent runtime, storage lib
 routers/           gateway (/v1), admin CRUD, admin misc, terminal, compute, storage, agent APIs
+ui/                the Python frontend module — shell + 9 dashboard tabs,
+                   server-rendered fragments consumed by HTMX (BFF over the JSON API)
+templates/         Jinja2 templates (base shell, tab fragments, partials)
+static/            nova.css, app.js (HTMX wiring, toasts, streaming chat JS), logo
 engine/            NovaFree engine sidecar (bun/node) — z-ai SDK bridge: chat stream, web search, page reader
-src/               Next.js dashboard UI (client components; served by the Python server)
 db/                SQLite database file (bootstrap at first boot)
-Dockerfile         python:3.12-slim runtime + bun sidecar + Next standalone dashboard
+Dockerfile         python:3.12-slim runtime + bun sidecar (UI is pure Python — no node build)
 docker-compose.yml one-command deploy with persistent volume
 ```
 

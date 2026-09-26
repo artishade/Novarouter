@@ -1,0 +1,90 @@
+{# One model's detail dialog — swapped into #models-detail-slot, auto-shown. #}
+<dialog id="nm-detail-dialog" aria-labelledby="nm-detail-title"
+  class="w-[min(92vw,32rem)] rounded-xl border border-slate-800 bg-[#0d1322] p-0 text-slate-200">
+  <div class="p-5">
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <h3 id="nm-detail-title" class="flex flex-wrap items-center gap-2 text-base font-semibold text-slate-100">
+          <span class="truncate">{{ m.display_name }}</span>
+          {% if m.is_free %}
+          <span class="inline-flex items-center rounded border border-emerald-800/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] text-emerald-300">FREE</span>
+          {% endif %}
+          <span class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] {{ m.chip }}">
+            <span class="size-1.5 rounded-full {{ m.dot }}" aria-hidden="true"></span>
+            {{ m.status }}
+          </span>
+        </h3>
+        <p class="mt-0.5 truncate font-mono text-[11px] text-slate-500">{{ m.exposed_id }} · via {{ m.provider_name or 'unknown' }}</p>
+      </div>
+      <button type="button" data-close-dialog aria-label="Close details"
+        class="inline-flex size-7 shrink-0 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-200">
+        <i data-lucide="x" class="size-4"></i>
+      </button>
+    </div>
+
+    <div class="mt-3 space-y-3">
+      {% if m.description %}
+      <p class="text-xs leading-relaxed text-slate-400">{{ m.description }}</p>
+      {% endif %}
+
+      <div class="grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg border border-slate-800 bg-black/20 p-3 text-[11px]">
+        <span class="text-slate-500">Context</span>
+        <span class="text-right font-mono text-slate-300">{{ m.context_length | fmt_num }}</span>
+        <span class="text-slate-500">Max output</span>
+        <span class="text-right font-mono text-slate-300">{{ m.max_output | fmt_num }}</span>
+        <span class="text-slate-500">Latency</span>
+        <span class="text-right font-mono text-slate-300">{{ (m.latency_ms ~ 'ms') if (m.latency_ms or 0) > 0 else '—' }}</span>
+        <span class="text-slate-500">Last HTTP</span>
+        <span class="text-right font-mono text-slate-300">{{ m.http_status if (m.http_status or 0) > 0 else '—' }}</span>
+        <span class="text-slate-500">Pricing</span>
+        <span class="text-right font-mono text-slate-300">{{ '$' ~ m.price_in ~ '/M in · $' ~ m.price_out ~ '/M out' if (m.price_in or 0) > 0 else 'free' }}</span>
+        <span class="text-slate-500">Checked</span>
+        <span class="text-right font-mono text-slate-300">{{ m.checked_at | time_ago }}</span>
+        {% if m.detail %}
+        <span class="text-slate-500">Detail</span>
+        <span class="truncate text-right text-slate-400" title="{{ m.detail }}">{{ m.detail }}</span>
+        {% endif %}
+      </div>
+
+      <div class="flex items-center gap-3 text-[11px] text-slate-400">
+        <span class="{{ 'text-emerald-300' if m.capabilities.tools else 'text-slate-600' }}">
+          <i data-lucide="wrench" class="mr-1 inline size-3.5"></i>tools
+        </span>
+        <span class="{{ 'text-emerald-300' if m.capabilities.vision else 'text-slate-600' }}">
+          <i data-lucide="eye" class="mr-1 inline size-3.5"></i>vision
+        </span>
+        <span class="{{ 'text-emerald-300' if m.capabilities.reasoning else 'text-slate-600' }}">
+          <i data-lucide="brain" class="mr-1 inline size-3.5"></i>reasoning
+        </span>
+        <span class="ml-auto flex items-center gap-1.5">
+          <i data-lucide="cpu" class="size-3.5 text-slate-600"></i>
+          {% include "partials/models_toggle.html" %}
+        </span>
+      </div>
+
+      <div class="border-t border-slate-800"></div>
+
+      <div>
+        <div class="mb-1.5 flex items-center justify-between">
+          <span class="text-[10px] uppercase tracking-wider text-slate-500">cURL example</span>
+          <button type="button" data-copy-curl aria-label="Copy cURL example"
+            class="inline-flex size-6 items-center justify-center rounded text-slate-500 transition-colors hover:text-emerald-300">
+            <i data-lucide="copy" class="size-3.5"></i>
+          </button>
+        </div>
+        <pre id="nm-curl" class="nova-scroll max-h-44 overflow-auto rounded-lg border border-slate-800 bg-black/40 p-3 font-mono text-[11px] leading-relaxed text-emerald-200/90">{{ curl }}</pre>
+        <p class="mt-1.5 flex items-center gap-1 text-[11px] text-slate-600">
+          <i data-lucide="check" class="size-3 text-emerald-500"></i>
+          Works with any OpenAI SDK — point base_url at {{ base_url }} and use a NovaRouter client key.
+        </p>
+      </div>
+    </div>
+  </div>
+</dialog>
+<script>
+  (function () {
+    var d = document.getElementById('nm-detail-dialog');
+    if (d && d.showModal) d.showModal();
+    if (window.lucide) window.lucide.createIcons();
+  })();
+</script>

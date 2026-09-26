@@ -1,0 +1,9 @@
+{# Console tab error panel — shown when the model catalogue (picker) can't load. #}
+<div class="rounded-xl border border-rose-500/30 bg-rose-500/5 p-8 text-center">
+  <p class="font-mono text-sm text-rose-300">{{ message }}</p>
+  <button type="button" hx-get="{{ retry_url }}" hx-target="#tab-content" hx-swap="innerHTML"
+    class="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-700 px-3 text-xs text-slate-300 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">
+    <i data-lucide="refresh-cw" class="size-3.5"></i>
+    Retry
+  </button>
+</div>

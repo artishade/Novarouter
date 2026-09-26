@@ -1,5 +1,4 @@
 node_modules
-.next
 .git
 .gitignore
 db/*.db
@@ -16,4 +15,4 @@ __pycache__
 **/__pycache__
 *.pyc
 .ruff_cache
-examples
+

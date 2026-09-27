@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -53,88 +52,6 @@ NONSTREAM_READ_TIMEOUT = 30.0
 def estimate_tokens(text: str) -> int:
     return max(1, (len(text) + 3) // 4)
 
-
-THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-THINK_OPEN_RE = re.compile(r"<think>.*", re.DOTALL | re.IGNORECASE)
-
-def strip_think_blocks(text: str | None) -> str | None:
-    """Remove <think>...</think> blocks (including unclosed trailing <think>)."""
-    if not text:
-        return text
-    # Remove complete blocks
-    cleaned = THINK_BLOCK_RE.sub("", text)
-    # If an opening <think> remains without closing, drop it and everything after
-    # (handles truncated stream or unclosed reasoning)
-    if re.search(r"<think>", cleaned, re.IGNORECASE):
-        cleaned = THINK_OPEN_RE.sub("", cleaned)
-        # also handle leftover case like "</think>" stray
-        cleaned = re.sub(r"</think>", "", cleaned, flags=re.IGNORECASE)
-    # Also strip common leaked tool-call markdown that lives INSIDE think leak
-    # e.g. "</think>```bash\nls -la ..."  - if entire remaining text is just that, drop
-    cleaned = cleaned.strip()
-    return cleaned
-
-class ThinkStreamFilter:
-    """Stateful filter for SSE streaming - drops text inside <think>...</think> even when split across chunks."""
-    def __init__(self):
-        self.in_think = False
-        self.buf = ""  # holds partial tag across chunks
-    def feed(self, chunk: str) -> str:
-        if not chunk:
-            return ""
-        combined = self.buf + chunk
-        self.buf = ""
-        out_parts = []
-        i = 0
-        low = combined.lower()
-        while i < len(combined):
-            if not self.in_think:
-                idx = low.find("<think>", i)
-                if idx == -1:
-                    # check for partial opening tag at tail
-                    tail = combined[i:]
-                    # hold back up to 6 chars that could be start of tag
-                    for k in range(6,0,-1):
-                        if len(tail) >= k and tail[-k:].lower() == "<think>"[:k]:
-                            # check that tail actually ends with that prefix and not already emitted
-                            out_parts.append(tail[:-k])
-                            self.buf = tail[-k:]
-                            return "".join(out_parts)
-                    out_parts.append(tail)
-                    break
-                else:
-                    out_parts.append(combined[i:idx])
-                    self.in_think = True
-                    i = idx + 7
-                    low = combined.lower()  # keep in sync
-            else:
-                idx = low.find("</think>", i)
-                if idx == -1:
-                    # partial closing tag?
-                    tail = combined[i:]
-                    for k in range(8,0,-1):
-                        if len(tail) >= k and tail[-k:].lower() == "</think>"[:k]:
-                            # remain in think, buffer partial
-                            self.buf = tail[-k:]
-                            return "".join(out_parts)
-                    # entire tail is inside think -> drop it
-                    break
-                else:
-                    self.in_think = False
-                    i = idx + 8
-        return "".join(out_parts)
-    def flush(self) -> str:
-        # if we were holding a partial tag that never completed and not in think, emit it
-        # but if in_think, drop everything
-        if self.in_think:
-            self.buf = ""
-            return ""
-        b = self.buf
-        self.buf = ""
-        # if buffered partial looks like a think tag start, drop it (was inside leak)
-        if b.lower().startswith("<"):
-            return ""
-        return b
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -203,13 +120,13 @@ def extract_upstream_content(payload: Any) -> str | None:
     if content is None:
         return None
     if isinstance(content, str):
-        return strip_think_blocks(content)
+        return content
     if isinstance(content, list):
         joined = "\n".join(
             str(p.get("text", "")) for p in content if isinstance(p, dict) and "text" in p
         ).strip("\n")
-        return strip_think_blocks(joined) or None
-    return strip_think_blocks(str(content)) if content else None
+        return joined or None
+    return str(content) if content else None
 
 
 def extract_upstream_message(payload: Any) -> dict | None:
@@ -517,7 +434,7 @@ async def pipeline_nonstream(db: Session, requested: str, messages: list[dict], 
         completion = await nova_engine.chat(messages)
         content = ""
         try:
-            content = strip_think_blocks(completion["choices"][0]["message"]["content"])
+            content = completion["choices"][0]["message"]["content"]
         except (KeyError, TypeError, IndexError):
             content = str(completion)
         return {
@@ -632,7 +549,7 @@ async def chat_completions(request: Request):
                       error=err.message)
             return JSONResponse({"error": err.message}, status_code=err.status)
 
-        completion_text = strip_think_blocks(result.get("content") or "") or ""
+        completion_text = result.get("content") or ""
         prompt_tokens = result["usage"]["prompt_tokens"] or tokens_in
         completion_tokens = result["usage"]["completion_tokens"] or estimate_tokens(completion_text)
         usage = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
@@ -644,7 +561,7 @@ async def chat_completions(request: Request):
                   latency_ms=now_ms() - started, tokens_in=prompt_tokens,
                   tokens_out=completion_tokens, via=result["via"], spoofed=meta["spoofed"])
 
-        msg: dict = {"role": "assistant", "content": strip_think_blocks(result.get("content"))}
+        msg: dict = {"role": "assistant", "content": result.get("content")}
         if result.get("tool_calls"):
             msg["tool_calls"] = result["tool_calls"]
         finish_reason = result.get("finish_reason") or ("tool_calls" if result.get("tool_calls") else "stop")
@@ -680,7 +597,6 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
     committed = False
     assembled: list[str] = []
     served = {"upstream_model": "nova-engine", "provider_name": "NovaFree Engine", "via": "nova-engine", "stage": 0}
-    think_filter = ThinkStreamFilter()
     try:
         rows = resolve_pipeline(db, requested)
         stage = 0
@@ -715,10 +631,8 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
             yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]})
             # handle first piece
             if first["text"]:
-                filtered = think_filter.feed(first["text"])
-                if filtered:
-                    assembled.append(filtered)
-                    yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": filtered}, "finish_reason": None}]})
+                assembled.append(first["text"])
+                yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": first["text"]}, "finish_reason": None}]})
             if first.get("tool_calls"):
                 tool_calls_buffer.extend(first["tool_calls"])
                 yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"tool_calls": first["tool_calls"]}, "finish_reason": None}]})
@@ -733,10 +647,8 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
                 break
             async for piece in stream:
                 if piece["text"]:
-                    filtered = think_filter.feed(piece["text"])
-                    if filtered:
-                        assembled.append(filtered)
-                        yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": filtered}, "finish_reason": None}]})
+                    assembled.append(piece["text"])
+                    yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": piece["text"]}, "finish_reason": None}]})
                 if piece.get("tool_calls"):
                     tool_calls_buffer.extend(piece["tool_calls"])
                     yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"tool_calls": piece["tool_calls"]}, "finish_reason": None}]})
@@ -774,10 +686,8 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
                             msg = (choices[0].get("message") or {})
                             text = msg.get("content") or ""
                     if text:
-                        filtered = think_filter.feed(text)
-                        if filtered:
-                            assembled.append(filtered)
-                            yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": filtered}, "finish_reason": None}]})
+                        assembled.append(text)
+                        yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]})
                 yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
                 yield b"data: [DONE]\n\n"
             except nova_engine.EngineUnavailable as err:
@@ -850,7 +760,7 @@ async def legacy_completions(request: Request):
             tout = result["usage"]["completion_tokens"] or estimate_tokens(result["content"])
             total_in += tin
             total_out += tout
-            choices.append({"text": strip_think_blocks(result["content"]) or "", "index": i, "finish_reason": "stop", "logprobs": None})
+            choices.append({"text": result["content"], "index": i, "finish_reason": "stop", "logprobs": None})
             if i == 0:
                 served = result
         write_log(db, model=requested, upstream_model=served["upstream_model"],
@@ -880,7 +790,6 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
     db = SessionLocal()
     committed = False
     served = {"upstream_model": "nova-engine", "provider_name": "NovaFree Engine", "via": "nova-engine", "stage": 0}
-    legacy_think = ThinkStreamFilter()
     try:
         rows = resolve_pipeline(db, requested)
         stage = 0
@@ -910,10 +819,8 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
                                   "choices": [{"text": t, "index": 0, "finish_reason": finish, "logprobs": None}]})
 
             if first["text"]:
-                filtered = legacy_think.feed(first["text"])
-                if filtered:
-                    assembled.append(filtered)
-                    yield text_chunk(filtered)
+                assembled.append(first["text"])
+                yield text_chunk(first["text"])
             if first.get("finish_reason"):
                 yield text_chunk("", "stop")
                 yield b"data: [DONE]\n\n"
@@ -924,10 +831,8 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
                 break
             async for piece in stream:
                 if piece["text"]:
-                    filtered = legacy_think.feed(piece["text"])
-                    if filtered:
-                        assembled.append(filtered)
-                        yield text_chunk(filtered)
+                    assembled.append(piece["text"])
+                    yield text_chunk(piece["text"])
                 if piece["finish_reason"]:
                     break
             yield text_chunk("", "stop")
@@ -941,17 +846,12 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
                 result_content = ""
                 completion = await nova_engine.chat(messages)
                 try:
-                    result_content = strip_think_blocks(completion["choices"][0]["message"]["content"])
+                    result_content = completion["choices"][0]["message"]["content"]
                 except (KeyError, TypeError, IndexError):
-                    result_content = strip_think_blocks(str(completion))
+                    result_content = str(completion)
                 committed = True
-                # result_content already strip_think_blocks'd but also run through filter for safety
-                __f = legacy_think.feed(result_content)
-                if __f:
-                    assembled.append(__f)
-                    result_content = __f
-                else:
-                    result_content = ''
+                assembled.append(result_content)
+
                 def text_chunk(t: str, finish=None) -> bytes:
                     return sse_chunk({"id": completion_id, "object": "text_completion.chunk",
                                       "created": created, "model": requested,
@@ -1070,7 +970,7 @@ async def anthropic_messages(request: Request):
             "type": "message",
             "role": "assistant",
             "model": requested,
-            "content": [{"type": "text", "text": strip_think_blocks(result["content"]) or ""}],
+            "content": [{"type": "text", "text": result["content"]}],
             "stop_reason": "end_turn",
             "stop_sequence": None,
             "usage": {"input_tokens": tin, "output_tokens": tout},
@@ -1116,9 +1016,9 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
     except httpx.HTTPError:
         return None
 
-    content = strip_think_blocks("".join(
+    content = "".join(
         str(b.get("text", "")) for b in data.get("content", []) if isinstance(b, dict) and b.get("type") == "text"
-    ))
+    )
     if not content:
         return None
     usage = data.get("usage", {}) if isinstance(data.get("usage"), dict) else {}
@@ -1159,7 +1059,6 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
         return ev("content_block_delta", {"type": "content_block_delta", "index": 0,
                                           "delta": {"type": "text_delta", "text": text}})
 
-    anthro_think = ThinkStreamFilter()
     def end_events(output_tokens: int) -> list[bytes]:
         return [
             ev("content_block_stop", {"type": "content_block_stop", "index": 0}),
@@ -1212,10 +1111,8 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                         if t == "content_block_delta":
                             text = (obj.get("delta") or {}).get("text", "")
                             if text:
-                                filtered = anthro_think.feed(text)
-                                if filtered:
-                                    assembled.append(filtered)
-                                    yield delta_ev(filtered)
+                                assembled.append(text)
+                                yield delta_ev(text)
                         elif t in ("message_stop", "message_delta"):
                             continue
                     await res.aclose()
@@ -1250,10 +1147,8 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                           "via": "upstream", "stage": stage}
                 yield start_events()[0]
                 if first["text"]:
-                    filtered = anthro_think.feed(first["text"])
-                    if filtered:
-                        assembled.append(filtered)
-                        yield delta_ev(filtered)
+                    assembled.append(first["text"])
+                    yield delta_ev(first["text"])
                 if first.get("finish_reason"):
                     yield b"".join(end_events(estimate_tokens("".join(assembled))))
                     try:
@@ -1263,10 +1158,8 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                     break
                 async for piece in stream:
                     if piece["text"]:
-                        filtered = anthro_think.feed(piece["text"])
-                        if filtered:
-                            assembled.append(filtered)
-                            yield delta_ev(filtered)
+                        assembled.append(piece["text"])
+                        yield delta_ev(piece["text"])
                     if piece["finish_reason"]:
                         break
                 yield b"".join(end_events(estimate_tokens("".join(assembled))))
@@ -1297,10 +1190,8 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                         if not text:
                             text = (choices[0].get("message") or {}).get("content") or ""
                     if text:
-                        filtered = anthro_think.feed(text)
-                        if filtered:
-                            assembled.append(filtered)
-                            yield delta_ev(filtered)
+                        assembled.append(text)
+                        yield delta_ev(text)
                 yield b"".join(end_events(estimate_tokens("".join(assembled))))
             except nova_engine.EngineUnavailable as err:
                 yield ev("error", {"type": "error", "error": {"type": "api_error",

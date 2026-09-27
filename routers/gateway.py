@@ -1117,6 +1117,33 @@ def openai_tool_calls_to_anthropic(tool_calls) -> list[dict]:
     return blocks
 
 
+@router.post("/messages/count_tokens")
+async def anthropic_count_tokens(request: Request):
+    """Claude Code calls /v1/messages/count_tokens?beta=true every turn.
+    Without this route the client gets a 404 and agent sessions die."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    text = ""
+    if isinstance(payload, dict):
+        parts: list[str] = []
+        system = payload.get("system")
+        if isinstance(system, str):
+            parts.append(system)
+        elif isinstance(system, list):
+            parts.extend(str(b.get("text", "")) for b in system if isinstance(b, dict))
+        for m in payload.get("messages") or []:
+            if isinstance(m, dict):
+                c = m.get("content")
+                if isinstance(c, str):
+                    parts.append(c)
+                elif isinstance(c, list):
+                    parts.extend(str(b.get("text", "")) for b in c if isinstance(b, dict) and "text" in b)
+        text = "\n".join(parts)
+    return JSONResponse({"input_tokens": max(1, estimate_tokens(text))})
+
+
 @router.post("/messages")
 async def anthropic_messages(request: Request):
     started = now_ms()
@@ -1185,9 +1212,14 @@ async def anthropic_messages(request: Request):
         text_out = strip_think_blocks(result["content"]) or ""
         if text_out:
             content_blocks.append({"type": "text", "text": text_out})
-        tc = result.get("tool_calls")
-        if tc:
-            content_blocks.extend(openai_tool_calls_to_anthropic(tc))
+        if result.get("tool_blocks"):
+            # native anthropic upstream already returns proper tool_use blocks
+            content_blocks.extend(result["tool_blocks"])
+        else:
+            tc = result.get("tool_calls")
+            if tc:
+                content_blocks.extend(openai_tool_calls_to_anthropic(tc))
+        stop_reason = result.get("stop_reason") or ("tool_use" if result.get("tool_calls") or result.get("tool_blocks") else "end_turn")
 
         return JSONResponse({
             "id": f"msg_{uuid.uuid4().hex[:24]}",
@@ -1195,7 +1227,7 @@ async def anthropic_messages(request: Request):
             "role": "assistant",
             "model": requested,
             "content": content_blocks or [{"type": "text", "text": ""}],
-            "stop_reason": "tool_use" if tc else "end_turn",
+            "stop_reason": stop_reason,
             "stop_sequence": None,
             "usage": {"input_tokens": tin, "output_tokens": tout},
             "_nova": nova_meta(result["upstream_model"], result["provider_name"], result.get("stage", 1), requested, result.get("stage", 1) > 1),
@@ -1252,8 +1284,16 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
     if not content:
         return None
     usage = data.get("usage", {}) if isinstance(data.get("usage"), dict) else {}
+    # Preserve native tool_use blocks (Claude Code agent loops need these)
+    tool_blocks = [
+        b for b in data.get("content", [])
+        if isinstance(b, dict) and b.get("type") == "tool_use"
+    ]
+    stop_reason = data.get("stop_reason") or ("tool_use" if tool_blocks else "end_turn")
     return {
         "content": content,
+        "tool_blocks": tool_blocks,
+        "stop_reason": stop_reason,
         "upstream_model": row.modelId,
         "provider_name": row.provider.name,
         "provider_id": row.provider.id,
@@ -1300,13 +1340,16 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                                           "content_block": {"type": "tool_use", "id": tool_id, "name": name, "input": {}}})
 
     def end_events(output_tokens: int) -> list[bytes]:
-        return [
-            ev("content_block_stop", {"type": "content_block_stop", "index": 0}),
-            ev("message_delta", {"type": "message_delta",
-                                 "delta": {"stop_reason": "tool_use" if tool_used else "end_turn"},
-                                 "usage": {"output_tokens": output_tokens}}),
-            ev("message_stop", {"type": "message_stop"}),
-        ]
+        stops = [ev("content_block_stop", {"type": "content_block_stop", "index": 0})]
+        # close any tool_use blocks we opened (Claude SDK errors on unterminated blocks)
+        for blk in sorted(set(openai_tc_index_to_block.values())):
+            if blk != 0:
+                stops.append(ev("content_block_stop", {"type": "content_block_stop", "index": blk}))
+        stops.append(ev("message_delta", {"type": "message_delta",
+                     "delta": {"stop_reason": "tool_use" if tool_used else "end_turn"},
+                     "usage": {"output_tokens": output_tokens}}))
+        stops.append(ev("message_stop", {"type": "message_stop"}))
+        return stops
 
     def handle_openai_tool_deltas(tc_deltas) -> list[bytes]:
         """OpenAI streaming tool_calls deltas → Anthropic tool_use events."""

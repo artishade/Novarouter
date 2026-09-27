@@ -1020,6 +1020,10 @@ def anthropic_messages_to_openai(payload: dict) -> tuple[list[dict], str | None]
             continue
 
         blocks = [b for b in content if isinstance(b, dict)]
+        # Strip thinking/redacted_thinking blocks from history — their crypto
+        # signature breaks on re-serialization upstream (Anthropic accepts
+        # text-only history, so dropping them is the safe, documented fix).
+        blocks = [b for b in blocks if b.get("type") not in ("thinking", "redacted_thinking")]
         texts = [str(b.get("text", "")) for b in blocks if b.get("type") in (None, "text") and "text" in b]
         tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
         tool_results = [b for b in blocks if b.get("type") == "tool_result"]

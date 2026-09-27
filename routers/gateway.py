@@ -42,8 +42,25 @@ log = logging.getLogger("nova.gateway")
 
 router = APIRouter()
 
-UPSTREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=20.0, pool=10.0)
+UPSTREAM_CONNECT_TIMEOUT = 5.0
+UPSTREAM_TIMEOUT = httpx.Timeout(connect=UPSTREAM_CONNECT_TIMEOUT, read=60.0, write=20.0, pool=10.0)
 NONSTREAM_READ_TIMEOUT = 30.0
+
+# Shared client — connection pooling / keep-alive across requests. A fresh
+# AsyncClient per request pays a full TCP+TLS handshake to the upstream every
+# call (hundreds of ms each); a pooled client reuses warm connections.
+UPSTREAM_CLIENT = httpx.AsyncClient(
+    timeout=UPSTREAM_TIMEOUT,
+    limits=httpx.Limits(max_connections=64, max_keepalive_connections=16, keepalive_expiry=60.0),
+)
+NONSTREAM_CLIENT = httpx.AsyncClient(
+    timeout=httpx.Timeout(connect=UPSTREAM_CONNECT_TIMEOUT, read=NONSTREAM_READ_TIMEOUT, write=20.0, pool=10.0),
+    limits=httpx.Limits(max_connections=64, max_keepalive_connections=16, keepalive_expiry=60.0),
+)
+
+# Provider-key cache — avoids a DB roundtrip per upstream attempt.
+_KEY_CACHE: dict[int, tuple[float, dict | None]] = {}
+_KEY_CACHE_TTL = 30.0
 
 
 # --------------------------------------------------------------------------- #
@@ -352,12 +369,11 @@ async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: flo
         return None
 
     try:
-        async with httpx.AsyncClient(timeout=NONSTREAM_READ_TIMEOUT) as client:
-            res = await client.post(
-                f"{base}/chat/completions",
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
-                json=body,
-            )
+        res = await NONSTREAM_CLIENT.post(
+            f"{base}/chat/completions",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
+            json=body,
+        )
         if res.status_code < 200 or res.status_code >= 300:
             return None
         payload = res.json()
@@ -386,7 +402,11 @@ async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: flo
 
 
 def select_upstream_key_sync(provider_id: int):
-    """Direct key selection used by the streaming path."""
+    """Direct key selection used by the streaming path (cached 30s)."""
+    now_m = time.time()
+    cached = _KEY_CACHE.get(provider_id)
+    if cached is not None and now_m - cached[0] < _KEY_CACHE_TTL:
+        return cached[1]
     from nova.database import SessionLocal
     from nova.models import ProviderKey
 
@@ -399,8 +419,12 @@ def select_upstream_key_sync(provider_id: int):
         now = datetime.utcnow()
         for k in rows:
             if not k.cooldownUntil or k.cooldownUntil <= now:
-                return {"apiKey": k.apiKey}
-        return {"apiKey": rows[0].apiKey} if rows else None
+                info = {"apiKey": k.apiKey}
+                break
+        else:
+            info = {"apiKey": rows[0].apiKey} if rows else None
+    _KEY_CACHE[provider_id] = (now_m, info)
+    return info
 
 
 # --------------------------------------------------------------------------- #
@@ -423,28 +447,20 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
     if not base or base.startswith("internal://"):
         raise UpstreamFailure("no base url")
 
-    if original_body is not None:
-        body = build_upstream_body(original_body, row.modelId, messages, stream=True)
-    else:
-        body = {"model": row.modelId, "messages": messages, "stream": True}
-        if temperature is not None:
-            body["temperature"] = temperature
-
-    client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
+    body = build_upstream_body(original_body, row.modelId, messages, stream=True) if original_body is not None else None
+    client = UPSTREAM_CLIENT
     try:
         req = client.build_request(
             "POST", f"{base}/chat/completions",
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
-            json=body,
+            json=body if body is not None else {"model": row.modelId, "messages": messages, "stream": True, **({"temperature": temperature} if temperature is not None else {})},
         )
         res = await client.send(req, stream=True)
     except httpx.HTTPError as err:
-        await client.aclose()
         raise UpstreamFailure(f"connect failed: {err}") from err
 
     if res.status_code < 200 or res.status_code >= 300:
         await res.aclose()
-        await client.aclose()
         raise UpstreamFailure(f"upstream returned HTTP {res.status_code}", status=res.status_code)
 
     async def relay() -> AsyncIterator[dict]:
@@ -473,10 +489,8 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
                 await res.aclose()
             except Exception:
                 pass
-            try:
-                await client.aclose()
-            except Exception:
-                pass
+            # client is the shared UPSTREAM_CLIENT — never close it, only the
+            # per-response stream; the pooled connection returns to the pool.
 
     return relay(), provider.name, row.modelId
 
@@ -1432,7 +1446,7 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                     tc = payload.get("tool_choice")
                     if isinstance(tc, dict):
                         body["tool_choice"] = tc
-                client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
+                client = UPSTREAM_CLIENT  # shared pooled client — warm connections
                 try:
                     req = client.build_request(
                         "POST", f"{base}/v1/messages",
@@ -1474,11 +1488,9 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                         elif t in ("message_stop", "message_delta"):
                             continue
                     await res.aclose()
-                    await client.aclose()
                     yield b"".join(end_events(estimate_tokens("".join(assembled))))
                 elif res is not None:
                     await res.aclose()
-                    await client.aclose()
 
         if not committed:
             rows = resolve_pipeline(db, requested)

@@ -1197,7 +1197,7 @@ async def anthropic_messages(request: Request):
     if stream:
         return StreamingResponse(
             _messages_stream(requested, payload, openai_msgs, system_text, max_tokens, temperature, tokens_in, started,
-                             openai_tools, openai_tool_choice),
+                             openai_tools, openai_tool_choice, pipeline_body),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **build_headers()},
         )
@@ -1323,7 +1323,9 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
 
 async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict], system_text: str | None,
                            max_tokens: int, temperature, tokens_in: int, started: int,
-                           openai_tools=None, openai_tool_choice=None):
+                           openai_tools=None, openai_tool_choice=None, pipeline_body: dict | None = None):
+    if pipeline_body is None:
+        pipeline_body = dict(payload)
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     assembled: list[str] = []
     from nova.database import SessionLocal

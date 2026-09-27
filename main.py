@@ -84,6 +84,78 @@ app.add_middleware(
 
 
 # --------------------------------------------------------------------------- #
+# Gateway request logging — every /v1/* and /api/v1/* call gets a line with
+# method, path, client, status, duration and (for /v1/messages) a compact
+# summary of what Claude Code actually sent (tools? tool_result blocks?).
+# Errors and 4xx/5xx are logged at WARNING with the response body snippet so
+# agent-session failures can be diagnosed without attaching a debugger.
+# --------------------------------------------------------------------------- #
+
+GATEWAY_PREFIXES = ("/v1", "/api/v1")
+
+def _summarize_anthropic_payload(payload: dict) -> str:
+    msgs = payload.get("messages") or []
+    tools = payload.get("tools") or []
+    n_tool_use = n_tool_result = n_thinking = 0
+    for m in msgs:
+        c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict):
+                    bt = b.get("type")
+                    if bt == "tool_use": n_tool_use += 1
+                    elif bt == "tool_result": n_tool_result += 1
+                    elif bt in ("thinking", "redacted_thinking"): n_thinking += 1
+    tool_names = ",".join(str(t.get("name", "")) for t in tools if isinstance(t, dict))[:120]
+    return (
+        f"model={payload.get('model')} stream={payload.get('stream')} "
+        f"msgs={len(msgs)} tool_defs={len(tools)}[{tool_names}] "
+        f"tool_use={n_tool_use} tool_result={n_tool_result} thinking={n_thinking} "
+        f"max_tokens={payload.get('max_tokens')}"
+    )
+
+@app.middleware("http")
+async def gateway_request_log(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith(GATEWAY_PREFIXES):
+        return await call_next(request)
+    started = time.time()
+    body_snip = ""
+    if path.endswith("/messages") or path.endswith("/count_tokens"):
+        try:
+            raw = await request.body()
+            if raw:
+                import json as _json
+                try:
+                    body_snip = _summarize_anthropic_payload(_json.loads(raw))
+                except Exception:
+                    body_snip = f"<unparsed {len(raw)}B>"
+                # FastAPI caches body for downstream handlers
+                request._body = raw  # noqa: SLF001
+        except Exception:
+            body_snip = "<body read failed>"
+    response = await call_next(request)
+    dur_ms = int((time.time() - started) * 1000)
+    line = (f"{request.client.host if request.client else '-'} "
+            f"{request.method} {path} -> {response.status_code} {dur_ms}ms")
+    if body_snip:
+        line += f" | {body_snip}"
+    if response.status_code >= 400:
+        log.warning("gateway %s", line)
+    else:
+        log.info("gateway %s", line)
+    try:
+        from nova import gwlog
+        gwlog.record_request(
+            request.client.host if request.client else None,
+            request.method, path, response.status_code, dur_ms, body_snip,
+        )
+    except Exception:
+        pass
+    return response
+
+
+# --------------------------------------------------------------------------- #
 # Health (requirement #3) — for Render uptime pings
 # --------------------------------------------------------------------------- #
 

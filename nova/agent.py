@@ -54,6 +54,11 @@ ALLOWED_ACTIONS = {
     "gateway_stats",
     "storage_scan",
     "discover_models",
+    "write_file",
+    "read_file",
+    "edit_file",
+    "mkdir",
+    "bash_exec",
     "finish",
 }
 
@@ -66,6 +71,11 @@ You work toward the user's goal one step at a time using these tools:
 - gateway_stats: inspect live gateway stats, models and routes (no input needed)
 - storage_scan: scan configured storage providers and files (no input needed)
 - discover_models: discover which AI models are ACTUALLY available right now from the configured providers via /v1/models ("query_or_url_or_command" = optional filter: a provider key like "groq" or "openrouter", or "free" for free-tier models only; leave empty for all providers)
+- write_file: CREATE or OVERWRITE a file. query_or_url_or_command = "<path> ||| <full file content>" (split on first " ||| "). Example: "myapp/index.html ||| <!doctype html>..."
+- read_file: READ a file. query_or_url_or_command = "<path>" (e.g. "myapp/index.html")
+- edit_file: EDIT a file. query_or_url_or_command = "<path> ||| <old string> ||| <new string>" (three-way split)
+- mkdir: CREATE a directory. query_or_url_or_command = "<path>"
+- bash_exec: RUN a real shell command (bun, npm, pip, python3, build). query_or_url_or_command = "<shell command>" (e.g. "bun install && bun run build")
 - finish: the goal is achieved ("query_or_url_or_command" = final key takeaway, optional)
 
 STRICT OUTPUT RULE — respond with JSON only, no prose, no markdown fences, exactly this shape:
@@ -76,7 +86,8 @@ Rules:
 2. Titles are short labels (max 60 chars); "reason" explains why this step helps the goal.
 3. Prefer web_search then read_url to gather evidence; use terminal/gateway_stats/storage_scan for system questions; use discover_models whenever the goal involves finding, comparing or choosing AI models or providers.
 4. Never repeat a step that already succeeded with the same input — read the step log first.
-5. As soon as the goal is achieved (or no further step adds value), respond with action "finish"."""
+5. As soon as the goal is achieved (or no further step adds value), respond with action "finish".
+6. NEVER output fake XML like <tool_call>, <invoke>, <write>, ```bash hallucinations. ONLY output the single JSON object described above. Real file writes happen via write_file - dont hallucinate them as text."""
 
 FINAL_SYSTEM_PROMPT = (
     "Write the final answer to the goal in concise markdown (≤200 words), using the evidence gathered."
@@ -134,11 +145,27 @@ class AgentPlan:
     reason: str
 
 
+def _recover_hallucinated_write(raw: str):
+    import re as _re2
+    tc = "<tool_call>"
+    iv = "<invoke"
+    if tc not in raw and iv not in raw.lower():
+        return None
+    fp = _re2.search(r"<parameter[^>]*name\s*=\s*[\x22\x27]?file_path[\x22\x27]?[^>]*>(.*?)</parameter>", raw, _re2.DOTALL | _re2.IGNORECASE)
+    ct = _re2.search(r"<parameter[^>]*name\s*=\s*[\x22\x27]?content[\x22\x27]?[^>]*>(.*?)</parameter>", raw, _re2.DOTALL | _re2.IGNORECASE)
+    if not fp or not ct:
+        return None
+    from dataclasses import dataclass
+    return AgentPlan(action="write_file", title="Recovered write", query=fp.group(1).strip() + " ||| " + ct.group(1), reason="Recovered from leaked tool-call XML")
+
 def parse_plan(raw: str) -> AgentPlan | None:
     """Defensively parse the planner output: strip code fences, find the first
     {...} block (verbatim port of parsePlan)."""
     if not raw:
         return None
+    recovered = _recover_hallucinated_write(raw)
+    if recovered is not None:
+        return recovered
     text = raw.strip()
     text = re.sub(r"^```(?:json)?\s*\n?", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\n?```\s*$", "", text, flags=re.IGNORECASE)
@@ -396,6 +423,59 @@ async def tool_storage_scan() -> str:
     ])
 
 
+
+LEAKED_TOOL_RE = __import__('re').compile(r"<tool_call>.*?</tool_call>|<invoke.*?</invoke>", __import__('re').DOTALL | __import__('re').IGNORECASE)
+def _strip_leaked(text: str) -> str:
+    import re as _re
+    if not text:
+        return text
+    return _re.sub(r"<tool_call>.*?</tool_call>|<invoke.*?</invoke>|```\s*(?:bash|shell).*?```", "", text, flags=_re.DOTALL|_re.IGNORECASE).strip()
+
+async def tool_write_file(arg: str) -> str:
+    if "|||" not in arg:
+        return 'write_file error: need "<path> ||| <content>" got: ' + arg[:120]
+    path, content = arg.split("|||", 1)
+    path=path.strip(); content=content.lstrip("\n")
+    if not path: return "write_file error: empty path"
+    try:
+        from .terminal import builder_write
+        res = builder_write(path, content)
+        return (res.get("output") or str(res))[:2000]
+    except Exception as e: return f"write_file failed: {e}"
+async def tool_read_file(arg: str) -> str:
+    path=(arg or "").strip()
+    if not path: return "read_file error: empty path"
+    try:
+        from .terminal import builder_read
+        res = builder_read(path)
+        return (res.get("output") or str(res))[:2000]
+    except Exception as e: return f"read_file failed: {e}"
+async def tool_edit_file(arg: str) -> str:
+    parts=arg.split("|||", 2)
+    if len(parts)!=3: return 'edit_file error: need <path> ||| <old> ||| <new> got: '+arg[:200]
+    path,old,new=parts[0].strip(),parts[1],parts[2]
+    try:
+        from .terminal import builder_edit
+        res = builder_edit(path, old, new)
+        return (res.get("output") or str(res))[:2000]
+    except Exception as e: return f"edit_file failed: {e}"
+async def tool_mkdir(arg: str) -> str:
+    path=(arg or "").strip()
+    if not path: return "mkdir error: empty"
+    try:
+        from .terminal import builder_mkdir
+        res = builder_mkdir(path)
+        return (res.get("output") or str(res))[:2000]
+    except Exception as e: return f"mkdir failed: {e}"
+async def tool_bash_exec(arg: str) -> str:
+    cmd=(arg or "").strip()
+    if not cmd: return "bash_exec error: empty"
+    try:
+        from .terminal import builder_bash
+        res = builder_bash(cmd)
+        return (res.get("output") or str(res))[:2000]
+    except Exception as e: return f"bash_exec failed: {e}"
+
 async def tool_discover_models(query: str) -> str:
     """Live model discovery via nova.discovery (port of toolDiscoverModels)."""
     q = (query or "").strip().lower()
@@ -432,6 +512,16 @@ async def execute_tool(plan: AgentPlan) -> str:
         return await tool_storage_scan()
     if plan.action == "discover_models":
         return await tool_discover_models(plan.query)
+    if plan.action == "write_file":
+        return await tool_write_file(plan.query)
+    if plan.action == "read_file":
+        return await tool_read_file(plan.query)
+    if plan.action == "edit_file":
+        return await tool_edit_file(plan.query)
+    if plan.action == "mkdir":
+        return await tool_mkdir(plan.query)
+    if plan.action == "bash_exec":
+        return await tool_bash_exec(plan.query)
     raise ValueError(f"Unknown action: {plan.action}")
 
 

@@ -105,11 +105,15 @@ async def _post(path: str, payload: dict, timeout: float) -> httpx.Response:
         raise EngineUnavailable(f"engine sidecar unreachable: {err}") from err
 
 
-async def chat(messages: list[dict], thinking_disabled: bool = True, timeout: float = 60.0) -> dict:
+async def chat(messages: list[dict], thinking_disabled: bool = True, timeout: float = 60.0, tools: list | None = None, tool_choice: str | dict | None = None) -> dict:
     """Non-streaming completion through the builtin engine (OpenAI-shaped)."""
     payload: dict = {"messages": messages}
     if thinking_disabled:
         payload["thinking"] = {"type": "disabled"}
+    if tools is not None:
+        payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
     res = await _post("/chat", payload, timeout)
     if res.status_code != 200:
         try:
@@ -120,11 +124,15 @@ async def chat(messages: list[dict], thinking_disabled: bool = True, timeout: fl
     return res.json()
 
 
-async def chat_stream(messages: list[dict], thinking_disabled: bool = True, timeout: float = 120.0):
+async def chat_stream(messages: list[dict], thinking_disabled: bool = True, timeout: float = 120.0, tools: list | None = None, tool_choice: str | dict | None = None):
     """Streaming completion — yields raw SSE `data:` payload strings."""
     payload: dict = {"messages": messages, "stream": True}
     if thinking_disabled:
         payload["thinking"] = {"type": "disabled"}
+    if tools is not None:
+        payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
     try:
         client = httpx.AsyncClient(timeout=timeout)
         req = client.build_request("POST", f"{ENGINE_SIDECAR_URL}/chat", json=payload)

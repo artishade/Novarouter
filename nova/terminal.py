@@ -16,6 +16,7 @@ import math
 import os
 import platform
 import re
+import pathlib
 import shutil
 import socket
 import stat as stat_mod
@@ -57,10 +58,93 @@ DANGEROUS_WORDS = {
 
 DANGEROUS_CHARS = ["|", ";", "&", ">", "<", "`", "$("]
 
+# ---------------------------------------------------------------------------
+# Builder FS helpers - sandboxed to PROJECT_ROOT + /tmp
+# ---------------------------------------------------------------------------
+BUILDER_ALLOWED_TMP = pathlib.Path("/tmp").resolve()
+def _builder_resolve(target: str):
+    if not target or not target.strip():
+        return None
+    raw = target.strip()
+    p = pathlib.Path(raw)
+    if not p.is_absolute():
+        p = PROJECT_ROOT / p
+    try:
+        rp = p.resolve()
+    except Exception:
+        return None
+    # allow under PROJECT_ROOT or /tmp
+    try:
+        rp.relative_to(PROJECT_ROOT.resolve())
+        return rp
+    except ValueError:
+        try:
+            rp.relative_to(BUILDER_ALLOWED_TMP)
+            return rp
+        except ValueError:
+            return None
+def builder_write(path: str, content: str):
+    rp = _builder_resolve(path)
+    if rp is None:
+        return _err(1, f"write: blocked outside workspace: {path!r}")
+    try:
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        rp.write_text(content, encoding="utf-8")
+        return _ok(f"Wrote {rp.stat().st_size} bytes to {rp}")
+    except Exception as e:
+        return _err(1, f"write failed: {e}")
+def builder_read(path: str):
+    rp = _builder_resolve(path)
+    if rp is None:
+        return _err(1, f"read: blocked: {path!r}")
+    try:
+        if not rp.exists():
+            return _err(1, f"read: not found: {rp}")
+        txt = rp.read_text(encoding="utf-8", errors="replace")
+        return _ok(txt[:12000] + ("\n...[truncated]" if len(txt)>12000 else ""))
+    except Exception as e:
+        return _err(1, f"read failed: {e}")
+def builder_edit(path: str, old: str, new: str):
+    rp = _builder_resolve(path)
+    if rp is None:
+        return _err(1, f"edit: blocked: {path!r}")
+    try:
+        txt = rp.read_text(encoding="utf-8")
+        if old not in txt:
+            return _err(1, f"edit: old not found in {rp}")
+        rp.write_text(txt.replace(old, new, 1), encoding="utf-8")
+        return _ok(f"Edited {rp}")
+    except Exception as e:
+        return _err(1, f"edit failed: {e}")
+def builder_mkdir(path: str):
+    rp = _builder_resolve(path)
+    if rp is None:
+        return _err(1, f"mkdir: blocked: {path!r}")
+    try:
+        rp.mkdir(parents=True, exist_ok=True)
+        return _ok(f"mkdir {rp}")
+    except Exception as e:
+        return _err(1, f"mkdir failed: {e}")
+def builder_bash(cmd: str, timeout: int = 30):
+    import subprocess as _sp
+    cmd = (cmd or "").strip()
+    if not cmd:
+        return _err(1, "bash: empty")
+    try:
+        proc = _sp.run(cmd, shell=True, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=timeout)
+        out = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+        out = out.strip()[:8000] or "(no output)"
+        if proc.returncode != 0:
+            return {"output": f"$ {cmd}\n{out}", "exitCode": proc.returncode, "error": f"exit {proc.returncode}"}
+        return _ok(f"$ {cmd}\n{out}")
+    except Exception as e:
+        return _err(1, f"bash failed: {e}")
+
 ALLOWED = {
     "ls", "pwd", "cat", "df", "free", "ps", "uname", "whoami", "uptime",
     "date", "echo", "node", "bun", "npm", "env", "which", "help", "clear",
     "nova",
+    "mkdir", "touch", "write", "read", "edit", "bash", "python3", "pip", "bun", "npm",
 }
 
 HELP_TEXT = """NovaRouter sandbox — allowed commands:
@@ -885,6 +969,33 @@ def persist_command(db: Session, command: str, output: str, exit_code: int,
 
 
 def execute_command(db: Session, command: str, cwd: str | None = None) -> dict:
+    # --- builder routing (real FS) - before allowlist ---
+    _raw = (command or "").strip()
+    if _raw.startswith("write "):
+        rest = _raw[6:].strip()
+        if " " in rest:
+            pth, content = rest.split(" ", 1)
+            if content.strip().startswith("<<"):
+                content = content.split(chr(10), 1)[-1] if chr(10) in content else content
+                content = content.replace("EOF", "").strip()
+            return builder_write(pth, content)
+        else:
+            return _err(1, "write: usage: write <path> <content>")
+    if _raw.startswith("read "):
+        return builder_read(_raw[5:].strip())
+    if _raw.startswith("mkdir "):
+        return builder_mkdir(_raw[6:].strip())
+    if _raw.startswith("edit "):
+        rest = _raw[5:].strip()
+        if "|||" in rest and " " in rest:
+            pth, remain = rest.split(" ", 1)
+            if "|||" in remain:
+                old, new = remain.split("|||", 1)
+                return builder_edit(pth.strip(), old, new)
+        return _err(1, "edit: usage: edit <path> <old>|||<new>")
+    if _raw.startswith("bash "):
+        return builder_bash(_raw[5:].strip())
+
     """Port of executeCommand() → ExecResult wire shape."""
     started = time.time() * 1000
     raw = command.strip() if isinstance(command, str) else ""

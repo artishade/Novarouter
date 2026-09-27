@@ -57,6 +57,9 @@ async function handleChat(req) {
   try {
     const client = await zai();
     const payload = { messages, thinking };
+    if (body.tools) payload.tools = body.tools;
+    if (body.tool_choice !== undefined) payload.tool_choice = body.tool_choice;
+    if (body.response_format !== undefined) payload.response_format = body.response_format;
     if (stream) payload.stream = true;
     const result = await client.chat.completions.create(payload);
 

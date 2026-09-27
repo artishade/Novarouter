@@ -60,31 +60,10 @@ def now_ms() -> int:
 def normalize_messages(raw: list[dict]) -> list[dict]:
     out = []
     for m in raw:
-        if not isinstance(m, dict):
-            continue
         role = m.get("role")
-        # preserve tool role and assistant tool_calls
-        if role == "tool":
-            out.append({
-                "role": "tool",
-                "tool_call_id": m.get("tool_call_id") or m.get("toolCallId") or "",
-                "content": m.get("content") if isinstance(m.get("content"), str) else str(m.get("content") or ""),
-            })
-            continue
-        if role == "assistant" and m.get("tool_calls"):
-            # preserve full assistant tool_calls verbatim
-            entry = {"role": "assistant", "content": m.get("content")}
-            # keep tool_calls as-is (OpenAI format)
-            entry["tool_calls"] = m["tool_calls"]
-            if m.get("tool_call_id"):
-                entry["tool_call_id"] = m["tool_call_id"]
-            out.append(entry)
-            continue
         role = role if role in ("system", "assistant", "user") else "user"
         content = m.get("content")
-        if content is None:
-            text = ""
-        elif isinstance(content, str):
+        if isinstance(content, str):
             text = content
         elif isinstance(content, list):
             text = "\n".join(
@@ -93,15 +72,7 @@ def normalize_messages(raw: list[dict]) -> list[dict]:
             ).strip("\n")
         else:
             text = str(content or "")
-        entry = {"role": role, "content": text}
-        # Preserve tool_calls if present on any role (some providers send it on user)
-        if m.get("tool_calls"):
-            entry["tool_calls"] = m["tool_calls"]
-        if m.get("tool_call_id"):
-            entry["tool_call_id"] = m["tool_call_id"]
-        if m.get("name"):
-            entry["name"] = m["name"]
-        out.append(entry)
+        out.append({"role": role, "content": text})
     return out
 
 
@@ -110,14 +81,8 @@ def extract_upstream_content(payload: Any) -> str | None:
         choices = payload["choices"]
         if not isinstance(choices, list) or not choices:
             return None
-        msg = choices[0]["message"]
-        # tool_calls response has no content but has tool_calls -> treat as success
-        if msg.get("tool_calls"):
-            return "__tool_calls__"  # sentinel so caller knows it is tool call
-        content = msg.get("content")
+        content = choices[0]["message"]["content"]
     except (KeyError, TypeError, IndexError):
-        return None
-    if content is None:
         return None
     if isinstance(content, str):
         return content
@@ -126,41 +91,7 @@ def extract_upstream_content(payload: Any) -> str | None:
             str(p.get("text", "")) for p in content if isinstance(p, dict) and "text" in p
         ).strip("\n")
         return joined or None
-    return str(content) if content else None
-
-
-def extract_upstream_message(payload: Any) -> dict | None:
-    """Extract full assistant message (content + tool_calls) for passthrough."""
-    try:
-        choices = payload["choices"]
-        if not isinstance(choices, list) or not choices:
-            return None
-        msg = choices[0]["message"]
-        if not isinstance(msg, dict):
-            return None
-        return msg
-    except (KeyError, TypeError, IndexError):
-        return None
-
-
-PASSTHROUGH_FIELDS = ["tools", "tool_choice", "response_format", "max_tokens", "max_completion_tokens", "top_p", "top_k", "frequency_penalty", "presence_penalty", "stop", "seed", "n", "logit_bias", "user", "parallel_tool_calls", "reasoning_effort", "verbosity"]
-
-def build_upstream_body(original_body: dict, model_id: str, messages: list[dict], stream: bool = False) -> dict:
-    body: dict = {"model": model_id, "messages": messages}
-    if stream:
-        body["stream"] = True
-    # passthrough common fields
-    for field in PASSTHROUGH_FIELDS:
-        if field in original_body and original_body[field] is not None:
-            body[field] = original_body[field]
-    # temperature / top_p special handling (allow 0)
-    for k in ["temperature", "top_p"]:
-        if k in original_body and isinstance(original_body[k], (int, float)):
-            body[k] = original_body[k]
-    # stream_options
-    if "stream_options" in original_body:
-        body["stream_options"] = original_body["stream_options"]
-    return body
+    return None
 
 
 def find_model(db: Session, id_or_exposed: str) -> ModelRow | None:
@@ -230,7 +161,7 @@ class UpstreamFailure(Exception):
 # Non-streaming upstream attempt (parity with attemptUpstream)
 # --------------------------------------------------------------------------- #
 
-async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: float | None, original_body: dict | None = None) -> dict | None:
+async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: float | None) -> dict | None:
     provider = row.provider
     if not provider or not provider.enabled or provider.kind in ("builtin", "anthropic"):
         return None
@@ -238,12 +169,9 @@ async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: flo
     if not base or base.startswith("internal://"):
         return None
 
-    if original_body is not None:
-        body = build_upstream_body(original_body, row.modelId, messages, stream=False)
-    else:
-        body = {"model": row.modelId, "messages": messages}
-        if temperature is not None:
-            body["temperature"] = temperature
+    body: dict = {"model": row.modelId, "messages": messages}
+    if temperature is not None:
+        body["temperature"] = temperature
 
     from nova.database import SessionLocal
     from nova.models import ProviderKey
@@ -282,17 +210,13 @@ async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: flo
         if content is None:
             return None
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-        upstream_msg = extract_upstream_message(payload)
         return {
-            "content": content if content != "__tool_calls__" else (upstream_msg.get("content") if upstream_msg else None),
+            "content": content,
             "upstream_model": row.modelId,
             "upstream_exposed_id": row.exposedId,
             "provider_name": provider.name,
             "provider_id": provider.id,
             "via": "upstream",
-            "upstream_message": upstream_msg,
-            "tool_calls": upstream_msg.get("tool_calls") if upstream_msg else None,
-            "finish_reason": (payload.get("choices") or [{}])[0].get("finish_reason"),
             "usage": {
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
@@ -324,7 +248,7 @@ def select_upstream_key_sync(provider_id: int):
 # Streaming upstream attempt (SSE relay)
 # --------------------------------------------------------------------------- #
 
-async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperature: float | None, original_body: dict | None = None):
+async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperature: float | None):
     """Open an SSE stream to the upstream provider.
 
     Returns (stream_iterator, provider_name, upstream_model) or raises UpstreamFailure
@@ -340,12 +264,9 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
     if not base or base.startswith("internal://"):
         raise UpstreamFailure("no base url")
 
-    if original_body is not None:
-        body = build_upstream_body(original_body, row.modelId, messages, stream=True)
-    else:
-        body = {"model": row.modelId, "messages": messages, "stream": True}
-        if temperature is not None:
-            body["temperature"] = temperature
+    body: dict = {"model": row.modelId, "messages": messages, "stream": True}
+    if temperature is not None:
+        body["temperature"] = temperature
 
     client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
     try:
@@ -382,9 +303,8 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
                 delta = choices[0].get("delta") or {}
                 text = delta.get("content")
                 finish = choices[0].get("finish_reason")
-                tool_calls_delta = delta.get("tool_calls")
-                if text or finish or tool_calls_delta:
-                    yield {"text": text or "", "finish_reason": finish, "tool_calls": tool_calls_delta, "raw_delta": delta, "raw_choice": choices[0]}
+                if text or finish:
+                    yield {"text": text or "", "finish_reason": finish}
         finally:
             try:
                 await res.aclose()
@@ -416,14 +336,14 @@ def resolve_pipeline(db: Session, requested: str) -> list[ModelRow]:
     return rows
 
 
-async def pipeline_nonstream(db: Session, requested: str, messages: list[dict], temperature: float | None, original_body: dict | None = None):
+async def pipeline_nonstream(db: Session, requested: str, messages: list[dict], temperature: float | None):
     """Returns (result_dict, stage) or (None, final_stage)."""
     started = now_ms()
     rows = resolve_pipeline(db, requested)
     stage = 0
     for row in rows:
         stage += 1
-        result = await attempt_upstream(row, messages, temperature, original_body)
+        result = await attempt_upstream(row, messages, temperature)
         if result is not None:
             result["stage"] = stage
             return result, stage
@@ -534,14 +454,14 @@ async def chat_completions(request: Request):
 
     if stream:
         return StreamingResponse(
-            _chat_stream_response(requested, messages, temperature, tokens_in, started, body),
+            _chat_stream_response(requested, messages, temperature, tokens_in, started),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **build_headers()},
         )
 
     with SessionLocal() as db:
         try:
-            result, stage = await pipeline_nonstream(db, requested, messages, temperature, body)
+            result, stage = await pipeline_nonstream(db, requested, messages, temperature)
         except HTTPError as err:
             write_log(db, model=requested, upstream_model="nova-engine",
                       provider_name="NovaFree Engine", endpoint="/v1/chat/completions",
@@ -549,9 +469,8 @@ async def chat_completions(request: Request):
                       error=err.message)
             return JSONResponse({"error": err.message}, status_code=err.status)
 
-        completion_text = result.get("content") or ""
         prompt_tokens = result["usage"]["prompt_tokens"] or tokens_in
-        completion_tokens = result["usage"]["completion_tokens"] or estimate_tokens(completion_text)
+        completion_tokens = result["usage"]["completion_tokens"] or estimate_tokens(result["content"])
         usage = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                  "total_tokens": prompt_tokens + completion_tokens}
         meta = nova_meta(result["upstream_model"], result["provider_name"], result["stage"], requested,
@@ -561,17 +480,13 @@ async def chat_completions(request: Request):
                   latency_ms=now_ms() - started, tokens_in=prompt_tokens,
                   tokens_out=completion_tokens, via=result["via"], spoofed=meta["spoofed"])
 
-        msg: dict = {"role": "assistant", "content": result.get("content")}
-        if result.get("tool_calls"):
-            msg["tool_calls"] = result["tool_calls"]
-        finish_reason = result.get("finish_reason") or ("tool_calls" if result.get("tool_calls") else "stop")
         return JSONResponse({
             "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
             "object": "chat.completion",
             "created": int(time.time()),
             "model": requested,
-            "choices": [{"index": 0, "message": msg,
-                         "finish_reason": finish_reason}],
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": result["content"]},
+                         "finish_reason": "stop"}],
             "usage": usage,
             "_nova": meta,
         })
@@ -581,7 +496,7 @@ def sse_chunk(obj: dict) -> bytes:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
-async def _chat_stream_response(requested: str, messages: list[dict], temperature, tokens_in: int, started: int, original_body: dict | None = None):
+async def _chat_stream_response(requested: str, messages: list[dict], temperature, tokens_in: int, started: int):
     """Full pipeline with SSE output. Commits to a stage only after the first
     real content arrives; otherwise falls through to the next stage."""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -603,7 +518,7 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
         for row in rows:
             stage += 1
             try:
-                stream, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature, original_body)
+                stream, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature)
             except UpstreamFailure as err:
                 log.info("stream stage %s failed: %s", stage, err)
                 continue
@@ -611,11 +526,11 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
             # Probe the first delta before committing.
             first = None
             async for piece in stream:
-                if piece["text"] or piece["finish_reason"] or piece.get("tool_calls"):
+                if piece["text"] or piece["finish_reason"]:
                     first = piece
                     break
 
-            if first is None or (not first["text"] and not first["finish_reason"] and not first.get("tool_calls")):
+            if first is None or (not first["text"] and not first["finish_reason"]):
                 try:
                     await stream.aclose()
                 except Exception:
@@ -625,20 +540,12 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
             committed = True
             served = {"upstream_model": upstream_model, "provider_name": provider_name,
                       "via": "upstream", "stage": stage}
-            # Track tool_calls for streaming passthrough
-            tool_calls_buffer: list[dict] = []
-            finish_reason_val = None
             yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]})
-            # handle first piece
             if first["text"]:
                 assembled.append(first["text"])
                 yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": first["text"]}, "finish_reason": None}]})
-            if first.get("tool_calls"):
-                tool_calls_buffer.extend(first["tool_calls"])
-                yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"tool_calls": first["tool_calls"]}, "finish_reason": None}]})
             if first.get("finish_reason"):
-                finish_reason_val = first["finish_reason"]
-                yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason_val}]})
+                yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
                 yield b"data: [DONE]\n\n"
                 try:
                     await stream.aclose()
@@ -649,14 +556,9 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
                 if piece["text"]:
                     assembled.append(piece["text"])
                     yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": piece["text"]}, "finish_reason": None}]})
-                if piece.get("tool_calls"):
-                    tool_calls_buffer.extend(piece["tool_calls"])
-                    yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"tool_calls": piece["tool_calls"]}, "finish_reason": None}]})
                 if piece["finish_reason"]:
-                    finish_reason_val = piece["finish_reason"]
                     break
-            final_reason = finish_reason_val or ("tool_calls" if tool_calls_buffer else "stop")
-            yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {}, "finish_reason": final_reason}]})
+            yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
             yield b"data: [DONE]\n\n"
             break
 

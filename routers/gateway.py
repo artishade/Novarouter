@@ -981,6 +981,8 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
 # --------------------------------------------------------------------------- #
 
 def anthropic_messages_to_openai(payload: dict) -> tuple[list[dict], str | None]:
+    """Full-fidelity Anthropic → OpenAI conversion. Preserves tool_use /
+    tool_result blocks (Claude Code/Desktop agent loops die without these)."""
     msgs: list[dict] = []
     system_text: str | None = None
     system = payload.get("system")
@@ -992,21 +994,127 @@ def anthropic_messages_to_openai(payload: dict) -> tuple[list[dict], str | None]
         ).strip() or None
     if system_text:
         msgs.append({"role": "system", "content": system_text})
+
+    def _block_text(block) -> str:
+        if not isinstance(block, dict):
+            return ""
+        c = block.get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            return "\n".join(
+                str(b.get("text", "")) for b in c if isinstance(b, dict) and "text" in b
+            )
+        return str(c or "")
+
     for m in payload.get("messages") or []:
         if not isinstance(m, dict):
             continue
         role = m.get("role") if m.get("role") in ("user", "assistant") else "user"
         content = m.get("content")
         if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            text = "\n".join(
-                str(b.get("text", "")) for b in content if isinstance(b, dict) and "text" in b
-            ).strip("\n")
-        else:
-            text = str(content or "")
-        msgs.append({"role": role, "content": text})
+            if content:
+                msgs.append({"role": role, "content": content})
+            continue
+        if not isinstance(content, list):
+            continue
+
+        blocks = [b for b in content if isinstance(b, dict)]
+        texts = [str(b.get("text", "")) for b in blocks if b.get("type") in (None, "text") and "text" in b]
+        tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+        tool_results = [b for b in blocks if b.get("type") == "tool_result"]
+        joined = "\n".join(texts).strip("\n")
+
+        if role == "assistant":
+            if tool_uses:
+                msg: dict = {"role": "assistant", "content": joined or None, "tool_calls": []}
+                for i, t in enumerate(tool_uses):
+                    raw_input = t.get("input")
+                    if isinstance(raw_input, str):
+                        args = raw_input or "{}"
+                    else:
+                        try:
+                            args = json.dumps(raw_input or {}, ensure_ascii=False)
+                        except Exception:
+                            args = "{}"
+                    msg["tool_calls"].append({
+                        "id": str(t.get("id") or f"call_{i}"),
+                        "type": "function",
+                        "function": {"name": str(t.get("name") or ""), "arguments": args},
+                    })
+                msgs.append(msg)
+            elif joined:
+                msgs.append({"role": "assistant", "content": joined})
+        else:  # user
+            if joined:
+                msgs.append({"role": "user", "content": joined})
+            for t in tool_results:
+                tr_text = _block_text(t)
+                msgs.append({
+                    "role": "tool",
+                    "tool_call_id": str(t.get("tool_call_id") or ""),
+                    "content": tr_text,
+                })
     return msgs, system_text
+
+
+def anthropic_tools_to_openai(tools) -> list[dict] | None:
+    """Anthropic tool defs → OpenAI function defs."""
+    if not isinstance(tools, list) or not tools:
+        return None
+    out: list[dict] = []
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        name = t.get("name")
+        if not name or ("input_schema" not in t and t.get("type") not in (None, "custom")):
+            continue
+        out.append({
+            "type": "function",
+            "function": {
+                "name": str(name),
+                "description": str(t.get("description") or ""),
+                "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
+            },
+        })
+    return out or None
+
+
+def anthropic_tool_choice_to_openai(tool_choice) -> object | None:
+    if not isinstance(tool_choice, dict):
+        return None
+    tc_type = tool_choice.get("type")
+    if tc_type == "auto":
+        return "auto"
+    if tc_type == "any":
+        return "required"
+    if tc_type == "tool" and tool_choice.get("name"):
+        return {"type": "function", "function": {"name": str(tool_choice["name"])}}
+    return None
+
+
+def openai_tool_calls_to_anthropic(tool_calls) -> list[dict]:
+    """OpenAI tool_calls → Anthropic tool_use content blocks."""
+    blocks: list[dict] = []
+    for i, tc in enumerate(tool_calls or []):
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                input_obj = json.loads(args) if args.strip() else {}
+            except Exception:
+                input_obj = {}
+        else:
+            input_obj = args or {}
+        blocks.append({
+            "type": "tool_use",
+            "id": str(tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}"),
+            "name": str(fn.get("name") or ""),
+            "input": input_obj if isinstance(input_obj, dict) else {},
+        })
+    return blocks
 
 
 @router.post("/messages")
@@ -1031,12 +1139,20 @@ async def anthropic_messages(request: Request):
     temperature = payload.get("temperature") if isinstance(payload.get("temperature"), (int, float)) else None
     openai_msgs, system_text = anthropic_messages_to_openai(payload)
     tokens_in = estimate_tokens("\n".join(f"{m['role']}:{m['content']}" for m in openai_msgs))
+    openai_tools = anthropic_tools_to_openai(payload.get("tools"))
+    openai_tool_choice = anthropic_tool_choice_to_openai(payload.get("tool_choice"))
+    pipeline_body = dict(payload)
+    if openai_tools:
+        pipeline_body["tools"] = openai_tools
+        if openai_tool_choice is not None:
+            pipeline_body["tool_choice"] = openai_tool_choice
 
     from nova.database import SessionLocal
 
     if stream:
         return StreamingResponse(
-            _messages_stream(requested, payload, openai_msgs, system_text, max_tokens, temperature, tokens_in, started),
+            _messages_stream(requested, payload, openai_msgs, system_text, max_tokens, temperature, tokens_in, started,
+                             openai_tools, openai_tool_choice),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **build_headers()},
         )
@@ -1048,7 +1164,7 @@ async def anthropic_messages(request: Request):
             result = native
         else:
             try:
-                result, stage = await pipeline_nonstream(db, requested, openai_msgs, temperature)
+                result, stage = await pipeline_nonstream(db, requested, openai_msgs, temperature, pipeline_body)
             except HTTPError as err:
                 write_log(db, model=requested, upstream_model="nova-engine",
                           provider_name="NovaFree Engine", endpoint="/v1/messages",
@@ -1065,13 +1181,21 @@ async def anthropic_messages(request: Request):
                   tokens_out=tout, via=result.get("via", "upstream"),
                   spoofed=requested != result["upstream_model"])
 
+        content_blocks: list[dict] = []
+        text_out = strip_think_blocks(result["content"]) or ""
+        if text_out:
+            content_blocks.append({"type": "text", "text": text_out})
+        tc = result.get("tool_calls")
+        if tc:
+            content_blocks.extend(openai_tool_calls_to_anthropic(tc))
+
         return JSONResponse({
             "id": f"msg_{uuid.uuid4().hex[:24]}",
             "type": "message",
             "role": "assistant",
             "model": requested,
-            "content": [{"type": "text", "text": strip_think_blocks(result["content"]) or ""}],
-            "stop_reason": "end_turn",
+            "content": content_blocks or [{"type": "text", "text": ""}],
+            "stop_reason": "tool_use" if tc else "end_turn",
             "stop_sequence": None,
             "usage": {"input_tokens": tin, "output_tokens": tout},
             "_nova": nova_meta(result["upstream_model"], result["provider_name"], result.get("stage", 1), requested, result.get("stage", 1) > 1),
@@ -1101,6 +1225,12 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
         body["system"] = system_text
     if temperature is not None:
         body["temperature"] = temperature
+    # Pass tool definitions through natively (Claude Code agent loops need this)
+    if isinstance(payload.get("tools"), list) and payload["tools"]:
+        body["tools"] = payload["tools"]
+        tc = payload.get("tool_choice")
+        if isinstance(tc, dict):
+            body["tool_choice"] = tc
 
     try:
         async with httpx.AsyncClient(timeout=NONSTREAM_READ_TIMEOUT) as client:
@@ -1134,7 +1264,8 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
 
 
 async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict], system_text: str | None,
-                           max_tokens: int, temperature, tokens_in: int, started: int):
+                           max_tokens: int, temperature, tokens_in: int, started: int,
+                           openai_tools=None, openai_tool_choice=None):
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     assembled: list[str] = []
     from nova.database import SessionLocal
@@ -1158,15 +1289,78 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
     def delta_ev(text: str) -> bytes:
         return ev("content_block_delta", {"type": "content_block_delta", "index": 0,
                                           "delta": {"type": "text_delta", "text": text}})
-
     anthro_think = ThinkStreamFilter()
+
+    tool_used = False
+    next_block = 1  # index 0 = text block
+    openai_tc_index_to_block: dict = {}
+
+    def tool_block_start(block_index: int, tool_id: str, name: str) -> bytes:
+        return ev("content_block_start", {"type": "content_block_start", "index": block_index,
+                                          "content_block": {"type": "tool_use", "id": tool_id, "name": name, "input": {}}})
+
     def end_events(output_tokens: int) -> list[bytes]:
         return [
             ev("content_block_stop", {"type": "content_block_stop", "index": 0}),
-            ev("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+            ev("message_delta", {"type": "message_delta",
+                                 "delta": {"stop_reason": "tool_use" if tool_used else "end_turn"},
                                  "usage": {"output_tokens": output_tokens}}),
             ev("message_stop", {"type": "message_stop"}),
         ]
+
+    def handle_openai_tool_deltas(tc_deltas) -> list[bytes]:
+        """OpenAI streaming tool_calls deltas → Anthropic tool_use events."""
+        nonlocal tool_used, next_block
+        out: list[bytes] = []
+        for tc in tc_deltas or []:
+            if not isinstance(tc, dict):
+                continue
+            oi = tc.get("index", 0)
+            block = openai_tc_index_to_block.get(oi)
+            if block is None:
+                fn = tc.get("function") or {}
+                block = next_block
+                next_block += 1
+                openai_tc_index_to_block[oi] = block
+                tool_used = True
+                out.append(tool_block_start(
+                    block,
+                    str(tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}"),
+                    str(fn.get("name") or ""),
+                ))
+            args = (tc.get("function") or {}).get("arguments")
+            if args:
+                out.append(ev("content_block_delta", {"type": "content_block_delta", "index": block,
+                                                      "delta": {"type": "input_json_delta", "partial_json": args}}))
+        return out
+
+    def relay_native_anthropic_events(obj: dict) -> list[bytes]:
+        """Relay tool_use blocks from a native anthropic upstream stream."""
+        nonlocal tool_used, next_block
+        out: list[bytes] = []
+        t = obj.get("type")
+        if t == "content_block_start":
+            cb = obj.get("content_block") or {}
+            if cb.get("type") == "tool_use":
+                tool_used = True
+                out.append(tool_block_start(next_block, str(cb.get("id") or f"toolu_{uuid.uuid4().hex[:16]}"),
+                                            str(cb.get("name") or "")))
+                openai_tc_index_to_block[obj.get("index", next_block)] = next_block
+                next_block += 1
+        elif t == "content_block_delta":
+            d = obj.get("delta") or {}
+            if d.get("type") == "input_json_delta":
+                block = openai_tc_index_to_block.get(obj.get("index"))
+                if block is not None:
+                    out.append(ev("content_block_delta", {"type": "content_block_delta", "index": block,
+                                                          "delta": {"type": "input_json_delta",
+                                                                    "partial_json": d.get("partial_json") or ""}}))
+        elif t == "content_block_stop":
+            block = openai_tc_index_to_block.get(obj.get("index"))
+            if block is not None:
+                out.append(ev("content_block_stop", {"type": "content_block_stop", "index": block}))
+        return out
+
 
     try:
         # Native anthropic passthrough (streaming relay)
@@ -1185,6 +1379,12 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                     body["system"] = system_text
                 if temperature is not None:
                     body["temperature"] = temperature
+                # Native tool passthrough (Claude Code needs tool_use blocks back)
+                if isinstance(payload.get("tools"), list) and payload["tools"]:
+                    body["tools"] = payload["tools"]
+                    tc = payload.get("tool_choice")
+                    if isinstance(tc, dict):
+                        body["tool_choice"] = tc
                 client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
                 try:
                     req = client.build_request(
@@ -1210,12 +1410,20 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                             continue
                         t = obj.get("type")
                         if t == "content_block_delta":
-                            text = (obj.get("delta") or {}).get("text", "")
+                            d = obj.get("delta") or {}
+                            if d.get("type") == "input_json_delta":
+                                for b in relay_native_anthropic_events(obj):
+                                    yield b
+                                continue
+                            text = d.get("text", "")
                             if text:
                                 filtered = anthro_think.feed(text)
                                 if filtered:
                                     assembled.append(filtered)
                                     yield delta_ev(filtered)
+                        elif t in ("content_block_start", "content_block_stop"):
+                            for b in relay_native_anthropic_events(obj):
+                                yield b
                         elif t in ("message_stop", "message_delta"):
                             continue
                     await res.aclose()
@@ -1231,7 +1439,7 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
             for r in rows:
                 stage += 1
                 try:
-                    stream, provider_name, upstream_model = await attempt_upstream_stream(r, openai_msgs, temperature)
+                    stream, provider_name, upstream_model = await attempt_upstream_stream(r, openai_msgs, temperature, pipeline_body)
                 except UpstreamFailure:
                     continue
                 first = None
@@ -1249,6 +1457,9 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                 served = {"upstream_model": upstream_model, "provider_name": provider_name,
                           "via": "upstream", "stage": stage}
                 yield start_events()[0]
+                if first.get("tool_calls"):
+                    for b in handle_openai_tool_deltas(first["tool_calls"]):
+                        yield b
                 if first["text"]:
                     filtered = anthro_think.feed(first["text"])
                     if filtered:
@@ -1267,6 +1478,9 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                         if filtered:
                             assembled.append(filtered)
                             yield delta_ev(filtered)
+                    if piece.get("tool_calls"):
+                        for b in handle_openai_tool_deltas(piece["tool_calls"]):
+                            yield b
                     if piece["finish_reason"]:
                         break
                 yield b"".join(end_events(estimate_tokens("".join(assembled))))

@@ -56,6 +56,11 @@ async def lifespan(_app: FastAPI):
     await nova_engine.start_sidecar()
     log.info("NovaRouter up on 0.0.0.0:%s (Python UI + API)", PORT)
     yield
+    try:
+        from ui.api_client import api as _ui_api
+        await _ui_api.close()
+    except Exception:
+        pass
     await nova_engine.stop_sidecar()
 
 

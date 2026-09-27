@@ -65,3 +65,4 @@ server.log
 __pycache__/
 *.pyc
 .venv/
+.zscripts/dev.pid

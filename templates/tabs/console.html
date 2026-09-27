@@ -755,8 +755,9 @@
           let obj = null;
           try { obj = JSON.parse(data); } catch (e) { continue; }
           if (!obj) continue;
-          if (obj.error) { streamErr = obj.error.message || 'Gateway error'; continue; }
+          if (obj.error) { streamErr = obj.error.message || obj.error || 'Gateway error'; continue; }
           const ch = obj.choices && obj.choices[0];
+          if (ch && ch.finish_reason) { /* stream completed normally — no more deltas expected */ }
           const delta = ch && (ch.delta || ch.message);
           const piece = delta && delta.content ? delta.content : '';
           if (piece) { m.content += piece; paint(); }

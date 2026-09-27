@@ -19,6 +19,7 @@ logged to RequestLog.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -172,8 +173,6 @@ async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: flo
     if temperature is not None:
         body["temperature"] = temperature
 
-    import asyncio
-
     from nova.database import SessionLocal
     from nova.models import ProviderKey
 
@@ -252,13 +251,13 @@ def select_upstream_key_sync(provider_id: int):
 async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperature: float | None):
     """Open an SSE stream to the upstream provider.
 
-    Returns (generator, provider_name, upstream_model) or raises UpstreamFailure
+    Returns (stream_iterator, provider_name, upstream_model) or raises UpstreamFailure
     before anything is committed (connect errors / HTTP error status).
     """
     provider = row.provider
     if not provider or not provider.enabled or provider.kind in ("builtin", "anthropic"):
         raise UpstreamFailure("provider not streamable")
-    key_info = select_upstream_key_sync(provider.id)
+    key_info = await asyncio.to_thread(select_upstream_key_sync, provider.id)
     if key_info is None:
         raise UpstreamFailure("no enabled key")
     base = provider.baseUrl.rstrip("/")
@@ -307,10 +306,16 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
                 if text or finish:
                     yield {"text": text or "", "finish_reason": finish}
         finally:
-            await res.aclose()
-            await client.aclose()
+            try:
+                await res.aclose()
+            except Exception:
+                pass
+            try:
+                await client.aclose()
+            except Exception:
+                pass
 
-    return relay, provider.name, row.modelId
+    return relay(), provider.name, row.modelId
 
 
 # --------------------------------------------------------------------------- #
@@ -513,19 +518,23 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
         for row in rows:
             stage += 1
             try:
-                relay, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature)
+                stream, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature)
             except UpstreamFailure as err:
                 log.info("stream stage %s failed: %s", stage, err)
                 continue
 
             # Probe the first delta before committing.
             first = None
-            async for piece in relay():
+            async for piece in stream:
                 if piece["text"] or piece["finish_reason"]:
                     first = piece
                     break
 
             if first is None or (not first["text"] and not first["finish_reason"]):
+                try:
+                    await stream.aclose()
+                except Exception:
+                    pass
                 continue
 
             committed = True
@@ -535,7 +544,15 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
             if first["text"]:
                 assembled.append(first["text"])
                 yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": first["text"]}, "finish_reason": None}]})
-            async for piece in relay():
+            if first.get("finish_reason"):
+                yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+                yield b"data: [DONE]\n\n"
+                try:
+                    await stream.aclose()
+                except Exception:
+                    pass
+                break
+            async for piece in stream:
                 if piece["text"]:
                     assembled.append(piece["text"])
                     yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": piece["text"]}, "finish_reason": None}]})
@@ -681,15 +698,19 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
         for row in rows:
             stage += 1
             try:
-                relay, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature)
+                stream, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature)
             except UpstreamFailure:
                 continue
             first = None
-            async for piece in relay():
+            async for piece in stream:
                 if piece["text"] or piece["finish_reason"]:
                     first = piece
                     break
             if first is None:
+                try:
+                    await stream.aclose()
+                except Exception:
+                    pass
                 continue
             committed = True
             served = {"upstream_model": upstream_model, "provider_name": provider_name, "via": "upstream", "stage": stage}
@@ -702,7 +723,15 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
             if first["text"]:
                 assembled.append(first["text"])
                 yield text_chunk(first["text"])
-            async for piece in relay():
+            if first.get("finish_reason"):
+                yield text_chunk("", "stop")
+                yield b"data: [DONE]\n\n"
+                try:
+                    await stream.aclose()
+                except Exception:
+                    pass
+                break
+            async for piece in stream:
                 if piece["text"]:
                     assembled.append(piece["text"])
                     yield text_chunk(piece["text"])
@@ -857,7 +886,7 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
     row = find_model(db, requested)
     if row is None or row.provider is None or row.provider.kind != "anthropic" or not row.provider.enabled:
         return None
-    key_info = select_upstream_key_sync(row.provider.id)
+    key_info = await asyncio.to_thread(select_upstream_key_sync, row.provider.id)
     if key_info is None:
         return None
     base = row.provider.baseUrl.rstrip("/")
@@ -944,7 +973,7 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
         # Native anthropic passthrough (streaming relay)
         row = find_model(db, requested)
         if row is not None and row.provider is not None and row.provider.kind == "anthropic" and row.provider.enabled:
-            key_info = select_upstream_key_sync(row.provider.id)
+            key_info = await asyncio.to_thread(select_upstream_key_sync, row.provider.id)
             base = row.provider.baseUrl.rstrip("/")
             if key_info and base and not base.startswith("internal://"):
                 body: dict = {"model": row.modelId, "max_tokens": max_tokens, "stream": True, "messages": []}
@@ -1001,15 +1030,19 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
             for r in rows:
                 stage += 1
                 try:
-                    relay, provider_name, upstream_model = await attempt_upstream_stream(r, openai_msgs, temperature)
+                    stream, provider_name, upstream_model = await attempt_upstream_stream(r, openai_msgs, temperature)
                 except UpstreamFailure:
                     continue
                 first = None
-                async for piece in relay():
+                async for piece in stream:
                     if piece["text"] or piece["finish_reason"]:
                         first = piece
                         break
                 if first is None:
+                    try:
+                        await stream.aclose()
+                    except Exception:
+                        pass
                     continue
                 committed = True
                 served = {"upstream_model": upstream_model, "provider_name": provider_name,
@@ -1018,7 +1051,14 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                 if first["text"]:
                     assembled.append(first["text"])
                     yield delta_ev(first["text"])
-                async for piece in relay():
+                if first.get("finish_reason"):
+                    yield b"".join(end_events(estimate_tokens("".join(assembled))))
+                    try:
+                        await stream.aclose()
+                    except Exception:
+                        pass
+                    break
+                async for piece in stream:
                     if piece["text"]:
                         assembled.append(piece["text"])
                         yield delta_ev(piece["text"])
@@ -1101,7 +1141,7 @@ async def embeddings(request: Request):
                 "error": f"Model '{requested}' is not configured. Sync models in the dashboard or pick one from GET /v1/models.",
             }, status_code=404)
         provider = row.provider
-        key_info = select_upstream_key_sync(provider.id)
+        key_info = await asyncio.to_thread(select_upstream_key_sync, provider.id)
         base = provider.baseUrl.rstrip("/")
 
         if provider.kind == "openai" and key_info and base and not base.startswith("internal://"):

@@ -89,4 +89,9 @@ class NovaApiClient:
         return await self.request("DELETE", path, **kw)
 
 
+    async def close(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+
 api = NovaApiClient()

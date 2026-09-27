@@ -281,7 +281,7 @@ def stats(db: Session = Depends(get_db)):
 
     recent = db.execute(
         select(RequestLog.status, RequestLog.latencyMs, RequestLog.via)
-        .where(RequestLog.ts >= day_ago)
+        .where(RequestLog.ts >= day_ago).limit(10000)
     ).all()
 
     active_keys = db.scalar(
@@ -412,7 +412,7 @@ def analytics(request: Request, db: Session = Depends(get_db)):
             RequestLog.ts, RequestLog.model, RequestLog.providerName, RequestLog.clientName,
             RequestLog.status, RequestLog.latencyMs, RequestLog.tokensIn, RequestLog.tokensOut,
             RequestLog.via, RequestLog.spoofed,
-        ).where(RequestLog.ts >= ms_to_dt(from_ms))
+        ).where(RequestLog.ts >= ms_to_dt(from_ms)).limit(20000)
     ).all()
 
     # ---- Zero-filled timeseries buckets (ascending) ----

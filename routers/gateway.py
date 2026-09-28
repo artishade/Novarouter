@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -42,9 +43,13 @@ log = logging.getLogger("nova.gateway")
 
 router = APIRouter()
 
-UPSTREAM_CONNECT_TIMEOUT = 5.0
-UPSTREAM_TIMEOUT = httpx.Timeout(connect=UPSTREAM_CONNECT_TIMEOUT, read=60.0, write=20.0, pool=10.0)
-NONSTREAM_READ_TIMEOUT = 30.0
+UPSTREAM_CONNECT_TIMEOUT = float(os.environ.get("NOVA_CONNECT_TIMEOUT", "5.0"))
+# Read timeout = max silence BETWEEN bytes from upstream. Claude/long-thinking runs
+# can legally sit silent for minutes (thinking blocks, cold queue) — 60s caused
+# ReadTimeout mid-stream → "request failed" in Claude Code. Env-tunable.
+UPSTREAM_READ_TIMEOUT = float(os.environ.get("NOVA_UPSTREAM_READ_TIMEOUT", "600.0"))
+NONSTREAM_READ_TIMEOUT = float(os.environ.get("NOVA_NONSTREAM_READ_TIMEOUT", "300.0"))
+UPSTREAM_TIMEOUT = httpx.Timeout(connect=UPSTREAM_CONNECT_TIMEOUT, read=UPSTREAM_READ_TIMEOUT, write=120.0, pool=30.0)
 
 # Shared client — connection pooling / keep-alive across requests. A fresh
 # AsyncClient per request pays a full TCP+TLS handshake to the upstream every
@@ -54,7 +59,7 @@ UPSTREAM_CLIENT = httpx.AsyncClient(
     limits=httpx.Limits(max_connections=64, max_keepalive_connections=16, keepalive_expiry=60.0),
 )
 NONSTREAM_CLIENT = httpx.AsyncClient(
-    timeout=httpx.Timeout(connect=UPSTREAM_CONNECT_TIMEOUT, read=NONSTREAM_READ_TIMEOUT, write=20.0, pool=10.0),
+    timeout=httpx.Timeout(connect=UPSTREAM_CONNECT_TIMEOUT, read=NONSTREAM_READ_TIMEOUT, write=120.0, pool=30.0),
     limits=httpx.Limits(max_connections=64, max_keepalive_connections=16, keepalive_expiry=60.0),
 )
 

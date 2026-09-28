@@ -11,7 +11,7 @@ Project: Rebuild https://github.com/artishade/Novarouter (AI API gateway + dashb
 Key facts for all agents:
 - Next.js 16 App Router, TypeScript, Tailwind 4, shadcn/ui (New York), Prisma SQLite.
 - DB access: `import { db } from '@/lib/db'`. Schema at `prisma/schema.prisma`. DB file at `db/custom.db`.
-- z-ai-web-dev-sdk (ZAI.create(), zai.chat.completions.create, zai.functions.invoke('web_search'|'page_reader')) — BACKEND ONLY.
+- NovaFree engine: dependency-free bun/node sidecar (engine/index.js) over the ClawLabsAI/free-ai-models catalogue (engine/free-models.json) — the z-ai SDK and its config gate were removed. BACKEND ONLY.
 - Only route visible to user: `/` (src/app/page.tsx). All APIs are route handlers under src/app/api/**.
 - API contract (MUST follow): `agent-ctx/api-contract.md`. Shared types: `src/lib/types.ts`. Client wrapper: `src/lib/api.ts`.
 - Dark terminal aesthetic: page background `#080c14`, emerald primary accent, mono font (Geist Mono). shadcn components styled via `dark` class on <html>.
@@ -584,3 +584,22 @@ Work Log:
 
 Stage Summary:
 - Models and Providers tabs are now auto-refresh-free (sweeps always finish); health checks prove models actually ANSWER a random question; one click disables every unreachable model for gateway+agent; adding a provider shows a live terminal log of the real discovery. Server running on :3000 as daemon. Not yet committed at task end.
+
+---
+Task ID: 6 (Python rewrite continuation) — polish + Claude Code fix + free-ai-models base
+Agent: Z.ai Code (main)
+Task: Full polish; make Claude Code desktop-app task requests work; remove the z-ai config dependency and rebase the built-in engine on ClawLabsAI/free-ai-models; fix existing bugs without removing working features.
+
+Work Log:
+- z-ai config gate removed: engine/package.json now has zero dependencies (z-ai-web-dev-sdk dropped), nova/engine.py lost _has_credentials()/the ~/.z-ai-config gate (only a JS runtime + engine files are required), .gitignore lost the .z-ai-config entry, Dockerfile lost the engine-deps `bun install` stage and now copies the whole dependency-free engine/ dir (catalogue included), and z-ai wording was purged from README/nova/config/nova/agent/admin_providers/api-contract/worklog/tests.
+- New model base: engine/free-models.json bundles a snapshot of ClawLabsAI/free-ai-models (22 free models + a per-provider routing table: keyless Pollinations/OVHcloud, key-gated OpenRouter/Zerolimitai). engine/index.js routes onto it: `nova/*` tiers keep working (best free model first), real free model ids are honoured directly, plus a whole-catalogue scan and a guaranteed keyless last resort. /chat (JSON+SSE), /search, /read_url, /models, /health all preserved; responses carry `_nova` + X-Nova-Model/X-Nova-Provider. Runs on bun or node>=18.
+- Python side: nova/freemodels.py loads the catalogue (mtime-cached) and exposes the alias + free-model rows; nova/bootstrap.py seeds them additively (ensure_engine_models, never updates/deletes existing rows); nova/syncengine.py resolves the catalogue per call so a refresh applies without a restart; nova/engine.py chat()/chat_stream() forward the requested model.
+- BUG (Claude Code agent turns silently produced nothing): streaming POST /v1/messages emitted only message_start — the index-0 text content_block_start was never sent before the deltas, so the Anthropic SDK assembled an empty message. Fixed: start_events() returns one pre-joined preamble (message_start + content_block_start index 0 + ping) emitted by every call site.
+- BUG (engine fallback dropped tool use): the final engine stage discarded tools/tool_choice and returned no tool_calls/finish_reason, and attribution stayed "nova-engine". It now forwards tools/tool_choice + model, returns tool_calls/finish_reason, and reports the real upstream_model/provider from the engine `_nova` meta (stream + non-stream).
+- BUG (gateway request log permanently disabled): nova/gwlog.py executed a multi-statement schema with conn.execute(), which sqlite3 rejects ("You can only execute one statement at a time") — every request-log write failed silently. Fixed with conn.executescript().
+- BUG (Anthropic SSE block sequencing): with tool_use, the index-0 text content_block_stop was emitted AFTER tool_use blocks had opened (Claude SDK rejects out-of-order blocks), duplicate stops were possible via the native relay, and text arriving after a tool call had nowhere to go. Streaming now tracks the active text block: it closes exactly when the first tool block opens, tool/native stops are de-duplicated, and post-tool text reopens a fresh text block.
+- Routers split: the Anthropic adapter lives in routers/anthropic_adapter.py (POST /v1/messages, /v1/messages/count_tokens, native passthrough → pipeline → engine, tool_use/tool_result preservation, thinking-block stripping, tool_use streaming); routers/gateway.py imports + includes it at the end, so all existing gateway logic is untouched. Stale gateway.py.orig/.bak/.bak2 and the old engine/bun.lock removed.
+- Verification (tests/smoke_gateway.py — real ASGI app + REAL engine sidecar + real keyless Pollinations answer): /health engine=up; nova/* tiers + full free catalogue in /v1/models; chat/completions returns a real free-model answer with _nova attribution; count_tokens; full Anthropic SSE sequence (message_start → content_block_start(0) → deltas → content_block_stop → message_delta(stop_reason) → message_stop); non-stream /v1/messages; dashboard shell. tests/smoke_tool_calls.py (stub engine): streaming + non-stream tool_use round-trip with strict block ordering, argument reassembly, stop_reason=tool_use, engine attribution, OpenAI tool_calls passthrough. All green.
+
+Stage Summary:
+- The built-in engine is now 100% config-free and keyless-capable on the free-ai-models catalogue, and the Claude Code /v1/messages path streams a valid Anthropic event sequence with tool use intact. Every pre-existing feature (gateway pipeline, fallbacks, admin/agent APIs, dashboard UI, storage/compute/terminal) is preserved.

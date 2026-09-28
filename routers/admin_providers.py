@@ -580,7 +580,7 @@ async def probe_upstream(provider_key: str, kind: str, base_url: str, api_key: s
 
 
 async def probe_nova_engine() -> dict:
-    """Real end-to-end ping of the built-in NovaFree engine (z-ai sidecar)."""
+    """Real end-to-end ping of the built-in NovaFree engine (free-model sidecar)."""
     started = time.monotonic()
     try:
         completion = await nova_engine.chat(

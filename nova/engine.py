@@ -1,8 +1,10 @@
-"""NovaFree engine client — talks to the z-ai SDK sidecar (engine/index.js).
+"""NovaFree engine client — talks to the free-model sidecar (engine/index.js).
 
-The sidecar is spawned automatically on the loopback interface only. When no
-JS runtime or SDK credentials are available, every method raises
-EngineUnavailable and the gateway degrades honestly (upstreams only).
+The sidecar is spawned automatically on the loopback interface only. It needs
+no configuration and no API key: it routes onto the free model catalogue in
+`engine/free-models.json` (keyless Pollinations/OVHcloud by default, OpenRouter
+/ZeroLimitAI once their key is present). Every method raises EngineUnavailable
+when the sidecar cannot run, and the gateway degrades honestly (upstreams only).
 """
 from __future__ import annotations
 
@@ -11,7 +13,6 @@ import logging
 import os
 import shutil
 import subprocess
-from pathlib import Path
 
 import httpx
 
@@ -30,25 +31,16 @@ class EngineUnavailable(RuntimeError):
     pass
 
 
-def _has_credentials() -> bool:
-    """z-ai SDK needs its config (env or ~/.z-ai-config) to work."""
-    if os.environ.get("ZAI_API_KEY") or os.environ.get("Z_AI_API_KEY"):
-        return True
-    return (Path.home() / ".z-ai-config").exists() or (PROJECT_ROOT / ".z-ai-config").exists()
-
-
 async def start_sidecar() -> bool:
-    """Spawn the engine sidecar; returns True when it reports healthy."""
+    """Spawn the engine sidecar; returns True when it reports healthy.
+
+    The engine is config-free (free-ai-models based), so the only requirements
+    are a JS runtime and the engine files — no credentials or config files.
+    """
     global _sidecar_proc
     async with _sidecar_lock:
         if await health_check(timeout=1.0):
             return True
-        if not _has_credentials():
-            log.warning(
-                "engine sidecar: no z-ai credentials (ZAI_API_KEY env or .z-ai-config "
-                "in home/project) — builtin engine disabled"
-            )
-            return False
         runtime = shutil.which("bun") or shutil.which("node")
         if runtime is None:
             log.warning("engine sidecar: no bun/node runtime found — builtin engine disabled")
@@ -59,7 +51,7 @@ async def start_sidecar() -> bool:
         env = {**os.environ, "ENGINE_PORT": str(ENGINE_SIDECAR_PORT)}
         _sidecar_proc = subprocess.Popen(  # noqa: S603 — fixed argv
             [runtime, str(ENGINE_SCRIPT)],
-            cwd=str(PROJECT_ROOT),  # resolves node_modules (dev); engine/ ships its own in Docker
+            cwd=str(PROJECT_ROOT),  # engine/ is dependency-free; cwd keeps logs in the project
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
@@ -105,11 +97,23 @@ async def _post(path: str, payload: dict, timeout: float) -> httpx.Response:
         raise EngineUnavailable(f"engine sidecar unreachable: {err}") from err
 
 
-async def chat(messages: list[dict], thinking_disabled: bool = True, timeout: float = 60.0, tools: list | None = None, tool_choice: str | dict | None = None) -> dict:
-    """Non-streaming completion through the builtin engine (OpenAI-shaped)."""
+async def chat(
+    messages: list[dict],
+    thinking_disabled: bool = True,
+    timeout: float = 60.0,
+    tools: list | None = None,
+    tool_choice: str | dict | None = None,
+    model: str | None = None,
+) -> dict:
+    """Non-streaming completion through the builtin engine (OpenAI-shaped).
+
+    `model` is the model the client asked for — the engine resolves it onto a
+    free model (a `nova/*` tier alias picks the best available free model, and
+    a real free model id is honoured directly).
+    """
     payload: dict = {"messages": messages}
-    if thinking_disabled:
-        payload["thinking"] = {"type": "disabled"}
+    if model:
+        payload["model"] = model
     if tools is not None:
         payload["tools"] = tools
     if tool_choice is not None:
@@ -124,11 +128,18 @@ async def chat(messages: list[dict], thinking_disabled: bool = True, timeout: fl
     return res.json()
 
 
-async def chat_stream(messages: list[dict], thinking_disabled: bool = True, timeout: float = 120.0, tools: list | None = None, tool_choice: str | dict | None = None):
+async def chat_stream(
+    messages: list[dict],
+    thinking_disabled: bool = True,
+    timeout: float = 120.0,
+    tools: list | None = None,
+    tool_choice: str | dict | None = None,
+    model: str | None = None,
+):
     """Streaming completion — yields raw SSE `data:` payload strings."""
     payload: dict = {"messages": messages, "stream": True}
-    if thinking_disabled:
-        payload["thinking"] = {"type": "disabled"}
+    if model:
+        payload["model"] = model
     if tools is not None:
         payload["tools"] = tools
     if tool_choice is not None:

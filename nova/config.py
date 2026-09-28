@@ -120,7 +120,7 @@ PORT = int(os.environ.get("PORT", "3000"))  # Render injects PORT dynamically
 
 
 def engine_runtime() -> str | None:
-    """Locate a JS runtime able to host the z-ai engine sidecar."""
+    """Locate a JS runtime able to host the dependency-free engine sidecar."""
     from shutil import which
 
     for candidate in ("bun", "node"):

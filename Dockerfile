@@ -1,17 +1,16 @@
 # syntax=docker/dockerfile:1
 # ============================================================================ #
 # NovaRouter — 100% Python server (FastAPI + Jinja2 UI + SQLAlchemy), plus a
-# bun sidecar for the built-in NovaFree engine (z-ai-web-dev-sdk).
+# dependency-free bun sidecar for the built-in NovaFree engine, which routes
+# onto the free AI model set from ClawLabsAI/free-ai-models
+# (engine/free-models.json).
 # The server binds 0.0.0.0:$PORT (Render assigns PORT dynamically).
 # ============================================================================ #
 
 # --------------------------------------------------------------------------- #
-# Stage 1 — engine sidecar dependencies (z-ai SDK + bun binary for the runner)
+# Stage 1 — bun binary only (hosts the dependency-free engine sidecar)
 # --------------------------------------------------------------------------- #
-FROM oven/bun:1 AS engine-deps
-WORKDIR /engine
-COPY engine/package.json ./
-RUN bun install --production
+FROM oven/bun:1 AS bun-bin
 
 # --------------------------------------------------------------------------- #
 # Stage 2 — Python runtime + bun (engine sidecar host)
@@ -29,11 +28,10 @@ COPY requirements.txt ./
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # bun binary — hosts the NovaFree engine sidecar (127.0.0.1:$ENGINE_PORT)
-COPY --from=engine-deps /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=bun-bin /usr/local/bin/bun /usr/local/bin/bun
 
-# Engine sidecar (z-ai SDK)
-COPY engine/index.js /app/engine/index.js
-COPY --from=engine-deps /engine/node_modules /app/engine/node_modules
+# Engine sidecar — zero npm dependencies; the catalogue ships with the image
+COPY engine /app/engine
 
 # Python application: API + frontend module (Jinja2 templates + static assets)
 COPY main.py ./

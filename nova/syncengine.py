@@ -17,27 +17,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .discovery import discover_provider_fresh
+from .freemodels import nova_engine_models
 from .models import Model, Provider
 
 # Hard cap per provider — protects the DB from pathological upstream catalogues.
 MAX_MODELS_PER_PROVIDER = 500
 
-# Built-in NovaFree engine models. This is the REAL engine surface (served by
-# the z-ai SDK sidecar) — not a placeholder catalogue.
-NOVA_ENGINE_MODELS = [
-    {"modelId": "nova-air", "exposedId": "nova/air", "displayName": "Nova Air",
-     "ctx": 32768, "maxOut": 8192,
-     "caps": {"tools": True, "vision": True, "reasoning": True},
-     "description": "Built-in free engine. Balanced speed and quality, always available."},
-    {"modelId": "nova-mini", "exposedId": "nova/mini", "displayName": "Nova Mini",
-     "ctx": 16384, "maxOut": 4096,
-     "caps": {"tools": False, "vision": False, "reasoning": False},
-     "description": "Built-in free engine. Ultra-low latency for quick tasks."},
-    {"modelId": "nova-pro", "exposedId": "nova/pro", "displayName": "Nova Pro",
-     "ctx": 65536, "maxOut": 16384,
-     "caps": {"tools": True, "vision": True, "reasoning": True},
-     "description": "Built-in free engine. Deep reasoning with the largest context."},
-]
+# Built-in NovaFree engine catalogue: the `nova/*` tiers plus every free model
+# from ClawLabsAI/free-ai-models (engine/free-models.json). Resolved per call so
+# a refreshed snapshot is picked up without a restart.
+def NOVA_ENGINE_MODELS() -> list[dict]:
+    return nova_engine_models()
 
 
 def _default_capabilities(caps: dict | None = None) -> str:
@@ -76,9 +66,10 @@ async def sync_provider(db: Session, provider: dict, log=None) -> dict:
     # ── Built-in engine: catalogue is the engine's real surface, no network ──
     if provider["kind"] == "builtin":
         log("built-in NovaFree engine — refreshing the engine catalogue (no network)…")
+        catalogue = NOVA_ENGINE_MODELS()
         created = 0
         updated = 0
-        for entry in NOVA_ENGINE_MODELS:
+        for entry in catalogue:
             existing = db.scalars(
                 select(Model).where(
                     Model.providerId == provider["id"], Model.modelId == entry["modelId"]
@@ -104,7 +95,7 @@ async def sync_provider(db: Session, provider: dict, log=None) -> dict:
                 log(f"  + {entry['exposedId']} added ({entry['ctx']} ctx)")
         db.commit()
         log(f"engine catalogue up to date — {created} added, {updated} refreshed")
-        return {**base, "ok": True, "discovered": len(NOVA_ENGINE_MODELS),
+        return {**base, "ok": True, "discovered": len(catalogue),
                 "created": created, "updated": updated, "duration_ms": _ms(started)}
 
     # ── Everything else: live discovery against the real upstream /models endpoint ──

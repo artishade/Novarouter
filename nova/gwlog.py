@@ -39,7 +39,9 @@ def _get_conn():
         db_path = PROJECT_ROOT / "db" / "gateway_requests.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         _conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        _conn.execute(_SCHEMA)
+        # executescript — the schema is multiple statements and sqlite3.execute()
+        # only accepts one, which used to disable this log entirely.
+        _conn.executescript(_SCHEMA)
         _conn.commit()
         return _conn
     except Exception as err:

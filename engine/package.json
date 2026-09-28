@@ -1,9 +1,8 @@
 {
   "name": "nova-engine-sidecar",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
-  "dependencies": {
-    "z-ai-web-dev-sdk": "^0.0.18"
-  }
+  "description": "NovaFree engine sidecar — keyless free-ai-models router (no npm dependencies).",
+  "dependencies": {}
 }

@@ -52,7 +52,7 @@ docker compose up -d
 Open **http://localhost:3000** (or `http://localhost:$PORT` if you overrode it). Done.
 
 - The server binds `0.0.0.0:$PORT` — `PORT` is read from the environment (Render injects it dynamically; default 3000).
-- On first start the app creates the schema and bootstraps the real minimum: the built-in NovaFree engine (3 models) + gateway config. **No mock data is ever seeded.**
+- On first start the app creates the schema and bootstraps the real minimum: the built-in NovaFree engine (the `nova/mini`, `nova/air`, `nova/pro` tiers plus every free model from [ClawLabsAI/free-ai-models](https://github.com/ClawLabsAI/free-ai-models)) + gateway config. **No mock data is ever seeded.**
 - Data persists in the `nova-db` Docker volume.
 
 Prefer plain Docker?
@@ -93,12 +93,35 @@ From then on **deploys never touch your data**: bootstrapping is strictly additi
 git clone https://github.com/artishade/Novarouter.git
 cd Novarouter
 pip install -r requirements.txt
-cd engine && bun install --production && cd ..   # NovaFree engine sidecar deps
 cp .env.example .env
 python3 main.py             # http://localhost:3000 — UI + API in one process
 ```
 
 `python3 main.py` starts the FastAPI server on `0.0.0.0:$PORT`. It serves **everything**: the OpenAI-compatible gateway, the admin/agent JSON APIs, and the dashboard UI itself (Jinja2 templates rendered by the `ui/` Python package — HTMX for interactivity, no Node dev server, no proxy).
+
+---
+
+## 🆓 Free AI model base
+
+The built-in **NovaFree engine** needs no API key and no configuration. Its model catalogue is a snapshot of [**ClawLabsAI/free-ai-models**](https://github.com/ClawLabsAI/free-ai-models), bundled at `engine/free-models.json` and exposed through the gateway as real model ids (plus three convenience tiers):
+
+| Tier | Routes onto (best free model first) |
+| --- | --- |
+| `nova/pro` | Nemotron 3 Ultra, Inkling, Qwen3.8-27B, Pollinations |
+| `nova/air` | Qwen3.8-27B, Gemma-4-31B, Pollinations |
+| `nova/mini` | Pollinations `openai-fast`, Liquid LFM |
+
+Every free catalogue model is also callable directly by its real id (`qwen/qwen3.8-27b:free`, `google/gemma-4-31b-it:free`, …). Responses always report the model you asked for, with the real upstream free model in the `_nova` metadata (`upstream_model`, `provider`, `stage`).
+
+**Keyless by default** (Pollinations, OVHcloud). Optional keys unlock higher rate limits — set them in the dashboard or as environment variables:
+
+| Provider | Env var | Free tier |
+| --- | --- | --- |
+| OpenRouter | `OPENROUTER_API_KEY` | your own free key, ~20 req/min · 50 req/day |
+| ZeroLimitAI | `ZEROLIMIT_API_KEY` | free key |
+| OVHcloud AI Endpoints | `OVH_AI_TOKEN` | keyless, frequently rate-limited |
+
+Refresh the bundled snapshot from upstream with `POST /api/admin/models/sync` (the built-in provider is synced from the catalogue, no network calls), or regenerate `engine/free-models.json` from `data/models.json` in the source repository. The engine degrades honestly: if no free route is reachable the gateway falls back to your configured upstreams instead of fabricating a reply.
 
 ---
 
@@ -178,7 +201,8 @@ ui/                the Python frontend module — shell + 9 dashboard tabs,
                    server-rendered fragments consumed by HTMX (BFF over the JSON API)
 templates/         Jinja2 templates (base shell, tab fragments, partials)
 static/            nova.css, app.js (HTMX wiring, toasts, streaming chat JS), logo
-engine/            NovaFree engine sidecar (bun/node) — z-ai SDK bridge: chat stream, web search, page reader
+engine/            NovaFree engine sidecar (bun/node, zero npm deps) — routes onto the
+                   free-ai-models catalogue (free-models.json): chat stream, search, reader
 db/                SQLite database file (bootstrap at first boot)
 Dockerfile         python:3.12-slim runtime + bun sidecar (UI is pure Python — no node build)
 docker-compose.yml one-command deploy with persistent volume

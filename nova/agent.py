@@ -5,7 +5,7 @@ Loop: plan (LLM, strict JSON) → execute tool → persist AgentStep → repeat 
 failures are recorded as error steps and never abort the task; a cancelled
 status in the DB stops the loop on the next iteration.
 
-LLM calls go through nova.engine (the z-ai sidecar); every DB touch opens its
+LLM calls go through nova.engine (the free-model sidecar); every DB touch opens its
 own SessionLocal() session — never one session across the whole run. The runner
 is an async callable, so routers/agent_api.py can hand it to FastAPI
 BackgroundTasks and respond immediately.

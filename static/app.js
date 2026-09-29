@@ -35,13 +35,41 @@
     }
   }
 
+  /* Fragment cache — instant repeat navigation. Entries are short-lived
+   * (10s) so data stays fresh while killing the round-trip on back/forth
+   * clicks. Hover/pointerdown prefetch warms the next tab before the click. */
+  const fragCache = new Map();
+  const FRAG_TTL = 10000;
+  function cacheGet(tab) {
+    const hit = fragCache.get(tab);
+    if (!hit) return null;
+    if (Date.now() - hit.at > FRAG_TTL) { fragCache.delete(tab); return null; }
+    return hit.html;
+  }
+  function prefetch(tab) {
+    if (!tab || fragCache.has(tab) || !window.htmx) return;
+    fetch('/partials/tab/' + tab)
+      .then((r) => (r.ok ? r.text() : null))
+      .then((text) => { if (text) fragCache.set(tab, { html: text, at: Date.now() }); })
+      .catch(() => {});
+  }
+
   function nav(tab) {
     if (!tab) return;
     store.tab = tab;
     applySidebar();
     const target = document.getElementById('tab-content');
-    if (window.htmx && target) window.htmx.ajax('GET', '/partials/tab/' + tab, { target: '#tab-content', swap: 'innerHTML' });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (!window.htmx || !target) return;
+    const cached = cacheGet(tab);
+    if (cached) {
+      target.innerHTML = cached;
+      window.htmx.process(target);
+      if (window.lucide) window.lucide.createIcons();
+      applySidebar();
+    } else {
+      window.htmx.ajax('GET', '/partials/tab/' + tab, { target: '#tab-content', swap: 'innerHTML' });
+    }
+    window.scrollTo({ top: 0, behavior: 'auto' });
   }
 
   /* ----------------------------- Clocks ----------------------------- */
@@ -153,6 +181,17 @@
     const copyBtn = e.target.closest('[data-copy-selector]');
     if (copyBtn) { e.preventDefault(); copyFromSelector(copyBtn.dataset.copySelector); }
   });
+
+  /* Speed: prefetch a tab fragment as soon as the pointer heads for it
+   * (pointerdown fires ~100ms before click; hover warms it on desktop). */
+  document.addEventListener('pointerover', (e) => {
+    const btn = e.target.closest && e.target.closest('#sidebar .nav-item');
+    if (btn && btn.dataset.tab !== store.tab) prefetch(btn.dataset.tab);
+  }, { passive: true });
+  document.addEventListener('pointerdown', (e) => {
+    const btn = e.target.closest && e.target.closest('#sidebar .nav-item');
+    if (btn && btn.dataset.tab !== store.tab) prefetch(btn.dataset.tab);
+  }, { capture: true, passive: true });
 
   document.getElementById('sidebar-toggle')?.addEventListener('click', () => {
     store.expanded = !store.expanded;

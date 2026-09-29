@@ -73,12 +73,30 @@ body.sb-collapsed .nav-item { height: 2.5rem; justify-content: center; padding: 
 .heap-bar { transition: width 0.5s ease; }
 
 /* Simple fade/slide-in for swapped tab content (framer-motion parity) */
-#tab-content > * { animation: nova-tab-in 0.25s ease-out; }
+#tab-content > * { animation: nova-tab-in 0.16s ease-out; }
 @keyframes nova-tab-in { from { opacity: 0; transform: translateY(8px); } }
 
 /* Terminal caret */
 .nova-caret { animation: nova-blink 1.05s step-end infinite; }
 @keyframes nova-blink { 50% { opacity: 0; } }
+
+/* Live PTY session — ANSI SGR colors (class emitted by the mini renderer) */
+.ansi-30 { color: #475569; }
+.ansi-31 { color: #fb7185; }
+.ansi-32 { color: #34d399; }
+.ansi-33 { color: #fbbf24; }
+.ansi-34 { color: #60a5fa; }
+.ansi-35 { color: #c084fc; }
+.ansi-36 { color: #22d3ee; }
+.ansi-37 { color: #e2e8f0; }
+.ansi-90 { color: #64748b; }
+.ansi-91 { color: #fda4af; }
+.ansi-92 { color: #6ee7b7; }
+.ansi-93 { color: #fde047; }
+.ansi-94 { color: #93c5fd; }
+.ansi-95 { color: #e9d5ff; }
+.ansi-96 { color: #67e8f9; }
+.ansi-97 { color: #f8fafc; }
 
 /* Native dialog polish */
 dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }

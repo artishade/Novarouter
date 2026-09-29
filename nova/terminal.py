@@ -143,40 +143,33 @@ def builder_bash(cmd: str, timeout: int = 30):
 ALLOWED = {
     "ls", "pwd", "cat", "df", "free", "ps", "uname", "whoami", "uptime",
     "date", "echo", "node", "bun", "npm", "env", "which", "help", "clear",
-    "nova",
+    "nova", "cd",
     "mkdir", "touch", "write", "read", "edit", "bash", "python3", "pip", "bun", "npm",
 }
 
-HELP_TEXT = """NovaRouter sandbox — allowed commands:
+HELP_TEXT = """NovaRouter terminal — a REAL root shell with full freedom.
 
-  ls [-la]            list files in the workspace
-  pwd                 print working directory
-  cat <file>          print a file (nova.config.json, .env)
-  df -h               filesystem usage
-  free -m             memory usage
-  ps aux              process list
-  uname -a            kernel / architecture info
-  whoami              current sandbox user
-  uptime              host uptime + load averages
-  date                current date & time
-  echo <text>         print text
-  node -v             Node.js version
-  bun --version       Bun version
-  npm -v              npm version
-  env                 environment variables (filtered)
-  which <cmd>         locate a command
+Every command runs through /bin/bash on this machine as root: git, apt,
+curl, pip, pipes, redirects, env vars, background jobs — all real.
+
+Built-ins handled natively by the gateway:
+  cd <dir>            change directory (persisted across commands)
+  pwd / echo / date / uptime / whoami / env / which / uname
+  ls / cat / df / free / ps     real telemetry, TS-formatted output
+  node -v / bun --version / npm -v
   nova <subcommand>   gateway control — try 'nova help'
+  write/read/edit <path> …   quick file helpers (workspace-sandboxed)
   clear               clear the terminal
   help                this help
 
-Everything else (rm, sudo, curl, pipes, redirects, …) is blocked by the
-NovaRouter safety policy (exit 126). Unknown commands exit 127."""
+The only refusals are host-destroying commands (rm -rf /, fork bombs,
+mkfs, raw disk writes, shutdown/reboot) — exit 126. A command that runs
+longer than 90s is killed with exit 124 (use `nohup … &` for daemons)."""
 
 NOVA_HELP_TEXT = """nova — NovaRouter gateway control
 
   nova status         gateway snapshot — providers, models, latency, memory, gpu
   nova models [n]     top requested models in the last 48h (default 10)
-  nova boost <mb>     raise the Node V8 old-space heap limit (e.g. nova boost 4096)
   nova gpu            free GPU / compute provider pool
   nova gpu <id> on|off   attach / detach a compute provider (e.g. nova gpu kaggle on)
   nova gpu strategy <quota_aware|latency_first|max_vram>
@@ -306,6 +299,15 @@ def meminfo_kb() -> dict[str, int]:
     return out
 
 
+def swapinfo_kb() -> dict[str, int]:
+    """Real swap telemetry from /proc/meminfo (no configured fiction)."""
+    mi = meminfo_kb()
+    return {
+        "total": mi.get("SwapTotal", 0),
+        "free": mi.get("SwapFree", 0),
+    }
+
+
 def proc_status_kb() -> dict[str, int]:
     out: dict[str, int] = {}
     try:
@@ -378,7 +380,8 @@ def node_version_string() -> str:
 # --------------------------------------------------------------------------- #
 
 
-def free_table(swap_total: int) -> str:
+def free_table(swap_total: int | None = None) -> str:
+    """Real /proc/meminfo parity — swap comes from the OS, not a config key."""
     total = totalmem_mb()
     free_mb = freemem_mb()
     buff = _round_half_up(total * 0.18)
@@ -388,7 +391,13 @@ def free_table(swap_total: int) -> str:
     head = " " * 15 + "".join(w.rjust(12) for w in
                               ["total", "used", "free", "shared", "buff/cache", "available"])
     mem = "Mem:".ljust(15) + "".join(str(n).rjust(12) for n in [total, used, free_mb, shared, buff, avail])
-    swap = "Swap:".ljust(15) + "".join(str(n).rjust(12) for n in [swap_total, 0, max(0, swap_total)])
+    if swap_total is None:
+        si = swapinfo_kb()
+        swap_total = _round_half_up(si["total"] / 1024)
+        swap_used = max(0, swap_total - _round_half_up(si["free"] / 1024))
+    else:
+        swap_used = 0
+    swap = "Swap:".ljust(15) + "".join(str(n).rjust(12) for n in [swap_total, swap_used, max(0, swap_total - swap_used)])
     return "\n".join([head, mem, swap])
 
 
@@ -510,9 +519,10 @@ def ps_table() -> str:
     return "\n".join([header] + [r[1] for r in rows])
 
 
-def run_ls(args: list[str]) -> dict:
+def run_ls(args: list[str], cwd: str | None = None) -> dict:
     all_f = False
     long_f = False
+    target = cwd or SANDBOX_ROOT
     for a in args:
         if a.startswith("-"):
             if "a" in a:
@@ -520,9 +530,11 @@ def run_ls(args: list[str]) -> dict:
             if "l" in a:
                 long_f = True
         else:
-            return _err(2, f"ls: cannot access '{a}': No such file or directory")
+            target = a if os.path.isabs(a) else os.path.normpath(os.path.join(target, a))
+    if not os.path.isdir(target):
+        return _err(2, f"ls: cannot access '{target}': No such file or directory")
     try:
-        entries = sorted(os.scandir(SANDBOX_ROOT), key=lambda e: e.name)
+        entries = sorted(os.scandir(target), key=lambda e: e.name)
     except OSError:
         entries = []
     visible = [e for e in entries if all_f or not e.name.startswith(".")]
@@ -551,8 +563,8 @@ def run_ls(args: list[str]) -> dict:
     rows: list[str] = []
     total_blocks = 0
     if all_f:
-        st_root = os.stat(SANDBOX_ROOT)
-        st_parent = os.stat(os.path.dirname(SANDBOX_ROOT) or "/")
+        st_root = os.stat(target)
+        st_parent = os.stat(os.path.dirname(target) or "/")
         total_blocks += st_root.st_blocks // 2 + st_parent.st_blocks // 2
         u, g = owner_group(st_root)
         rows.append(f"drwxr-xr-x {st_root.st_nlink:>2} {u} {g} {4096:>6} {date_of(st_root)} .")
@@ -658,23 +670,26 @@ def run_cat(db: Session, args: list[str]) -> dict:
                 obj[r.key] = r.value
         return _ok(json.dumps(obj, indent=2))
     if f == ".env":
-        heap = _int_if(get_config_number(db, "v8_heap_mb", 2048))
-        swap = _int_if(get_config_number(db, "swap_mb", 2048))
-        gpu_enabled = get_config(db, "gpu_enabled")
-        strategy = get_config(db, "gpu_strategy")
+        # Real environment (masked) — not a fabricated sample file.
+        from .config import DATABASE_URL, PORT
+
         token = get_config(db, "admin_token")
         active_row = db.scalars(
             select(StorageProviderRow).where(StorageProviderRow.active.is_(True))
         ).first()
         token_mask = f"{token[:4]}••••••" if token else "••••••••"
+        db_show = DATABASE_URL
+        if "@" in db_show:  # mask postgres credentials
+            scheme, _, rest = db_show.partition("://")
+            _, _, host = rest.rpartition("@")
+            db_show = f"{scheme}://••••••@{host}"
+        gpu_enabled = get_config(db, "gpu_enabled")
+        strategy = get_config(db, "gpu_strategy")
         return _ok("\n".join([
-            "# NovaRouter gateway environment — secrets masked",
-            "NODE_ENV=production",
-            "PORT=3000",
-            "DATABASE_URL=file:./db/custom.db",
+            "# live gateway environment — secrets masked",
+            f"PORT={PORT}",
+            f"DATABASE_URL={db_show}",
             f"NOVA_ADMIN_TOKEN={token_mask}",
-            f"NOVA_V8_HEAP_MB={heap}",
-            f"NOVA_SWAP_MB={swap}",
             f"NOVA_GPU_ENABLED={gpu_enabled if gpu_enabled is not None else '1'}",
             f"NOVA_GPU_STRATEGY={strategy if strategy else 'quota_aware'}",
             f"NOVA_STORAGE_ACTIVE={active_row.id if active_row else 'local_disk'}",
@@ -706,8 +721,8 @@ def nova_status(db: Session) -> dict:
         .where(RequestLog.via == "cache", RequestLog.ts >= since)
     ) or 0
     started_raw = get_config(db, "gateway_started_at")
-    heap = _int_if(get_config_number(db, "v8_heap_mb", 2048))
-    swap = _int_if(get_config_number(db, "swap_mb", 2048))
+    si = swapinfo_kb()
+    swap_mb = _round_half_up(si["total"] / 1024)
     gpus = get_gpu_providers(db)
     gpu_enabled_raw = get_config(db, "gpu_enabled")
     try:
@@ -725,7 +740,8 @@ def nova_status(db: Session) -> dict:
     return _ok("\n".join([
         f"⚡ NovaRouter gateway — {provider_count} providers · {model_count} models · {route_count} fallback routes",
         f"   uptime: {fmt_uptime_short(int(uptime_ms))} · requests (24h): {reqs} · avg latency: {avg_lat}ms · cache hit rate: {cache_pct}%",
-        f"   memory: v8 heap {heap} MB · swap {swap} MB · gpu {'enabled' if gpu_enabled else 'disabled'} — {enabled_count}/{len(gpus)} providers enabled",
+        f"   memory: {totalmem_mb()} MB total · {freemem_mb()} MB available · swap {swap_mb} MB · "
+        f"gpu {'enabled' if gpu_enabled else 'disabled'} — {enabled_count}/{len(gpus)} providers enabled",
     ]))
 
 
@@ -765,19 +781,18 @@ def nova_models(db: Session, args: list[str]) -> dict:
 
 
 def nova_boost(db: Session, args: list[str]) -> dict:
-    try:
-        mb = int(str(args[0]).strip())
-    except (IndexError, TypeError, ValueError):
-        mb = None
-    if mb is None or mb < 128:
-        return _err(1, "nova: boost requires a heap size in MB (>= 128) — e.g. nova boost 4096")
-    capped = min(65536, mb)
-    old = _int_if(get_config_number(db, "v8_heap_mb", 2048))
-    set_config(db, "v8_heap_mb", str(capped))
-    set_config(db, "boost_applied_at", str(int(time.time() * 1000)))
+    """Real memory report — the Node V8 heap limit was runtime fiction in the
+    Python server (no Node process hosts the gateway), so `nova boost` now
+    reports the actual OS memory/swap instead of pretending to tune anything."""
+    si = swapinfo_kb()
     return _ok(
-        f"✓ V8 old-space limit set to {capped} MB (was {old} MB)\n"
-        f"  new terminal sessions spawn with: node --max-old-space-size={capped}"
+        "memory — live OS telemetry (no tuning knobs required):\n"
+        f"  RAM total     {totalmem_mb()} MB\n"
+        f"  RAM available {freemem_mb()} MB\n"
+        f"  swap total    {_round_half_up(si['total'] / 1024)} MB\n"
+        f"  swap free     {_round_half_up(si['free'] / 1024)} MB\n"
+        "  gateway process RSS " + str(_int_if(rss_kb() / 1024)) + " MB\n"
+        "(the Python gateway allocates dynamically — no V8 heap limit to set)"
     )
 
 
@@ -937,6 +952,75 @@ def run_nova(db: Session, args: list[str]) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Real shell passthrough — full freedom
+# --------------------------------------------------------------------------- #
+
+# Only genuinely catastrophic patterns stay blocked. Everything else — git,
+# apt, pipes, redirects, sudo, curl, whatever — runs for real: this is the
+# user's own self-hosted server and the terminal is theirs.
+CATASTROPHIC_RES = [
+    re.compile(r"rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)*(/|~|\$HOME)\s*$"),  # rm -rf / or ~
+    re.compile(r"rm\s+-[a-zA-Z]*r[a-zA-Z]*f|rm\s+-[a-zA-Z]*f[a-zA-Z]*r"),  # rm -rf anywhere → still allow common uses? no: only / root handled above
+    re.compile(r":\(\)\s*\{\s*:\|:&\s*\};:"),  # fork bomb
+    re.compile(r"mkfs\.(ext[234]|xfs|btrfs|vfat)"),  # filesystem wipe
+    re.compile(r"dd\s+.*of=/dev/(sd|nvme|hd)"),  # raw disk write
+    re.compile(r">\s*/dev/(sd|nvme|hd)[a-z]"),  # redirect overwrite of a disk
+    re.compile(r"shutdown|reboot|halt|poweroff|init\s+0|init\s+6"),  # host power
+    re.compile(r"chmod\s+-R\s+777\s+/(\s|$)"),
+]
+
+SHELL_TIMEOUT_S = 90
+SHELL_OUTPUT_CAP = 200_000
+
+
+def shell_env() -> dict:
+    """Environment for the real shell — full Linux root-user parity."""
+    env = dict(os.environ)
+    env.setdefault("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    env["TERM"] = env.get("TERM") or "xterm-256color"
+    env["HOME"] = env.get("HOME") or "/root"
+    env["USER"] = env.get("USER") or "root"
+    env["SHELL"] = env.get("SHELL") or "/bin/bash"
+    env["LANG"] = env.get("LANG") or "C.UTF-8"
+    # Surface the gateway identity to scripts.
+    env["NOVA_GATEWAY"] = "1"
+    return env
+
+
+def shell_catastrophic(cmd: str) -> str | None:
+    low = " ".join(cmd.lower().split())
+    for rx in CATASTROPHIC_RES:
+        m = rx.search(low)
+        if m:
+            return m.group(0)
+    return None
+
+
+def run_real_shell(cmd: str, cwd: str, timeout: float = SHELL_TIMEOUT_S) -> dict:
+    """Execute a command through the real system shell (/bin/bash).
+
+    This is the user's own server: they asked for full command freedom and the
+    process already runs as root inside their container. Output is capped and
+    a hard timeout prevents wedged commands from pinning the event loop.
+    """
+    try:
+        proc = subprocess.run(
+            ["/bin/bash", "-c", cmd],
+            cwd=cwd if os.path.isdir(cwd) else str(PROJECT_ROOT),
+            env=shell_env(),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return _err(124, f"timeout: the command ran longer than {int(timeout)}s and was killed")
+    except OSError as e:
+        return _err(126, f"shell: failed to spawn /bin/bash — {e}")
+    return {"code": proc.returncode, "stdout": proc.stdout or "", "stderr": proc.stderr or ""}
+
+
+# --------------------------------------------------------------------------- #
 # Persistence + executor
 # --------------------------------------------------------------------------- #
 
@@ -999,9 +1083,9 @@ def execute_command(db: Session, command: str, cwd: str | None = None) -> dict:
     """Port of executeCommand() → ExecResult wire shape."""
     started = time.time() * 1000
     raw = command.strip() if isinstance(command, str) else ""
-    resolved_cwd = "/workspace"
+    resolved_cwd = str(PROJECT_ROOT)  # the workspace IS the project directory
     try:
-        resolved_cwd = (cwd.strip() if cwd else "") or get_config(db, "terminal_cwd") or "/workspace"
+        resolved_cwd = (cwd.strip() if cwd else "") or get_config(db, "terminal_cwd") or str(PROJECT_ROOT)
     except Exception:
         pass
 
@@ -1023,23 +1107,46 @@ def execute_command(db: Session, command: str, cwd: str | None = None) -> dict:
 
     if not raw:
         return finish(_ok(""))
-    if len(raw) > 2000:
-        return finish(_err(126, "sandbox: command too long — NovaRouter safety policy"))
+    if len(raw) > 8000:
+        return finish(_err(126, "sandbox: command too long"))
 
-    for ch in DANGEROUS_CHARS:
-        if ch in raw:
-            return finish(_err(126, "sandbox: command blocked by NovaRouter safety policy"))
+    # Full-freedom shell: only catastrophic patterns are refused.
+    bad = shell_catastrophic(raw)
+    if bad:
+        return finish(_err(126, f"refused: '{bad}' would destroy the host — everything else is allowed"))
+
     tokens = tokenize(raw)
-    for t in tokens:
-        base = (t.rsplit("/", 1)[-1] if "/" in t else t).lower()
-        if base in DANGEROUS_WORDS:
-            return finish(_err(126, "sandbox: command blocked by NovaRouter safety policy"))
-
-    cmd = tokens[0]
+    cmd = tokens[0] if tokens else ""
     args = tokens[1:]
 
-    if cmd not in ALLOWED:
-        return finish(_err(127, f"bash: {cmd}: command not found — type 'help' for allowed commands"))
+    # cd — persists across commands (built-in, tracked by the gateway).
+    if cmd == "cd":
+        prev_cwd = ""
+        try:
+            prev_cwd = get_config(db, "terminal_prev_cwd") or ""
+        except Exception:
+            pass
+        target = args[0] if args else (os.environ.get("HOME") or "/root")
+        if target == "-":
+            if not prev_cwd or not os.path.isdir(prev_cwd):
+                return finish(_err(1, "cd: no previous directory"))
+            target, prev_cwd = prev_cwd, resolved_cwd
+        elif not os.path.isabs(target):
+            target = os.path.normpath(os.path.join(resolved_cwd, target))
+        if not os.path.isdir(target):
+            return finish(_err(1, f"cd: {target}: No such file or directory"))
+        try:
+            set_config(db, "terminal_prev_cwd", prev_cwd or resolved_cwd)
+            set_config(db, "terminal_cwd", target)
+        except Exception:
+            pass
+        return finish(_ok(""))
+
+    # Anything the simulated layer does not implement natively runs through
+    # the REAL shell — git, apt, curl, pipes, redirects, env vars, whatever.
+    if cmd not in ALLOWED or any(ch in raw for ch in DANGEROUS_CHARS) or cmd in DANGEROUS_WORDS:
+        out = run_real_shell(raw, resolved_cwd)
+        return finish(out)
 
     try:
         if cmd == "clear":
@@ -1051,7 +1158,14 @@ def execute_command(db: Session, command: str, cwd: str | None = None) -> dict:
         if cmd == "echo":
             return finish(_ok(" ".join(args)))
         if cmd == "whoami":
-            return finish(_ok(os.environ.get("USER") or os.environ.get("LOGNAME") or "nova"))
+            # The sandbox runs as the server's OS user; inside the container
+            # that is root. Report honestly rather than a fixed persona.
+            try:
+                import pwd as _pwd
+
+                return finish(_ok(_pwd.getpwuid(os.getuid()).pw_name))
+            except Exception:
+                return finish(_ok(os.environ.get("USER") or os.environ.get("LOGNAME") or "root"))
         if cmd == "date":
             now = datetime.now().astimezone()
             off = now.utcoffset()
@@ -1069,9 +1183,9 @@ def execute_command(db: Session, command: str, cwd: str | None = None) -> dict:
         if cmd == "uname":
             return finish(_ok(uname_line(args)))
         if cmd == "ls":
-            return finish(run_ls(args))
+            return finish(run_ls(args, resolved_cwd))
         if cmd == "free":
-            return finish(_ok(free_table(int(_int_if(get_config_number(db, "swap_mb", 2048))))))
+            return finish(_ok(free_table()))
         if cmd == "df":
             return finish(_ok(df_table()))
         if cmd == "ps":
@@ -1082,6 +1196,7 @@ def execute_command(db: Session, command: str, cwd: str | None = None) -> dict:
             return finish(run_version_cmd(cmd, args))
         if cmd == "nova":
             return finish(run_nova(db, args))
-        return finish(_err(127, f"bash: {cmd}: command not found — type 'help' for allowed commands"))
+        # Unknown-but-harmless command → real shell as well.
+        return finish(run_real_shell(raw, resolved_cwd))
     except Exception as e:  # noqa: BLE001 — parity with the TS catch-all
         return finish(_err(1, f"nova-exec: internal error — {e}"))

@@ -61,6 +61,11 @@ async def lifespan(_app: FastAPI):
         await _ui_api.close()
     except Exception:
         pass
+    try:
+        from nova import pty_session
+        pty_session.stop_all()
+    except Exception:
+        pass
     await nova_engine.stop_sidecar()
 
 

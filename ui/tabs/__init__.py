@@ -19,10 +19,11 @@ from ui.tabs import (  # noqa: F401  (side-effect free, each exports `router`)
     providers,
     routes,
     storage,
+    terminal,
 )
 
 router = APIRouter(tags=["ui:tabs"])
-for _module in (overview, console, providers, models, routes, keys, storage, analytics, logs):
+for _module in (overview, console, providers, models, routes, keys, storage, analytics, logs, terminal):
     router.include_router(_module.router)
 
 ui_router = APIRouter(tags=["ui"])

@@ -189,11 +189,11 @@
   };
   const HELP_MARKDOWN = '**Nova Console — one box, three modes**\n\n' +
     '- **Chat** — just ask. "What is a fallback chain?" Routed through the live gateway with automatic fallback.\n' +
-    '- **Terminal** — prefix with `$` (`$ df -h`) or use the slash shortcuts below. Runs in the safe sandbox executor.\n' +
+    '- **Terminal** — prefix with `$` (`$ git status`, `$ apt update`) — a real root shell with full command freedom. For the standalone terminal with `cd` and history, open the **Terminal** tab in the sidebar.\n' +
     '- **Agent** — prefix with `!` (`!find the best free GPU providers and compare them`) or just describe an actionable task; Nova delegates it to the autonomous agent and streams every step here.\n\n' +
     '**Slash commands**\n\n' +
     '- `/status` · `/models` · `/gpu` · `/storage` · `/keys` · `/agents` — gateway diagnostics\n' +
-    '- `/boost <mb>` — raise the V8 heap limit (e.g. `/boost 4096`)\n' +
+    '- `/boost` — live memory report (RAM, swap, gateway RSS)\n' +
     '- `/strategy <quota_aware|latency_first|max_vram>` — GPU scheduling strategy\n' +
     '- `/agent <goal>` — start an autonomous task\n' +
     '- `/clear` · `/help` — reset the console · this help';
@@ -624,7 +624,7 @@
     if (!cmd) {
       pushMsg({
         kind: 'terminal', id: uid(), command: 'help',
-        output: 'NovaRouter sandbox — type $ help for the command list.\nSlash shortcuts: /status /models /gpu /storage /keys /agents /boost <mb>',
+        output: 'NovaRouter terminal — a REAL root shell (git, apt, curl, pipes — everything).\nSlash shortcuts: /status /models /gpu /storage /keys /agents /boost (memory report)\nTip: the full Terminal tab lives in the sidebar — cd, history and all.',
         exitCode: 0, durationMs: 1, at: Date.now(),
       });
       return;
@@ -669,11 +669,7 @@
       return;
     }
     if (cmd === '/boost') {
-      if (!/^\d+$/.test(argStr)) {
-        pushMsg({ kind: 'system', id: uid(), text: 'Usage: /boost <mb> — e.g. /boost 4096 (minimum 128)', at: Date.now() });
-        return;
-      }
-      await runTerminal('nova boost ' + argStr);
+      await runTerminal('nova boost');
       return;
     }
     if (cmd === '/strategy') {

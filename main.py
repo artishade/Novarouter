@@ -54,6 +54,8 @@ async def lifespan(_app: FastAPI):
         log.warning("%s", EPHEMERAL_DB_WARNING)
         log.warning("=" * 74)
     await nova_engine.start_sidecar()
+    # Start periodic maintenance task (sync + disable dead) every 12h
+    asyncio.create_task(periodic_maintenance())
     log.info("NovaRouter up on 0.0.0.0:%s (Python UI + API)", PORT)
     yield
     try:

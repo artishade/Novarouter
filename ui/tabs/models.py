@@ -37,7 +37,7 @@ STATUS_STYLES: dict[str, dict[str, str]] = {
 
 # Sequential real probes take seconds each — the Health check sweep caps at this
 # many candidates (the TSX swept the whole visible list; noted as a deviation).
-HEALTH_CHECK_CAP = 24
+HEALTH_CHECK_CAP = 0  # 0 means no cap, check all models
 
 # Ping results (mirrors the TSX per-row state updates): model id → last probe.
 _ping_results: dict[int, dict] = {}

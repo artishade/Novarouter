@@ -75,38 +75,52 @@
   }
 
   async function nmHealthCheck(btn) {
-    var ids = (btn.dataset.ids || '').split(',').filter(Boolean);
-    if (!ids.length) { NovaUI.toast('No enabled models to check right now', 'info'); return; }
+    if (window.__nmHealthRunning) return;
+    window.__nmHealthRunning = true;
     btn.disabled = true; btn.classList.add('opacity-60');
     var spin = btn.querySelector('svg'); if (spin) spin.classList.add('nova-spin');
     var label = btn.querySelector('[data-hc-label]');
-    var ok = 0;
-    var done = 0;
-    /* Each probe now sends a real one-shot question (up to 15s), so run in
-     * small parallel batches to keep the sweep snappy but gentle. */
-    var BATCH = 3;
-    for (var start = 0; start < ids.length; start += BATCH) {
-      var batch = ids.slice(start, start + BATCH);
-      if (label) label.textContent = 'Checking ' + (done + 1) + '-' + Math.min(done + batch.length, ids.length) + '/' + ids.length + '…';
-      var results = await Promise.allSettled(batch.map(function (id) {
-        return fetch('/ui/models/ping?id=' + id, { method: 'POST' })
-          .then(function (res) { return res.json(); })
-          .catch(function () { return null; });
-      }));
-      for (var i = 0; i < batch.length; i++) {
-        done += 1;
-        var data = results[i] && results[i].status === 'fulfilled' ? results[i].value : null;
-        if (data && data.ok) ok += 1;
-        nmApplyPing(batch[i], data);
+    try {
+      if (label) label.textContent = 'Loading models…';
+      var response = await fetch('/ui/models/health-candidates');
+      var candidates = await response.json();
+      if (!response.ok || candidates.error) throw new Error(candidates.error || 'Could not load models');
+      var ids = candidates.ids || [];
+      if (!ids.length) { NovaUI.toast('No enabled models to check right now', 'info'); return; }
+      var ok = 0;
+      var done = 0;
+      var failures = 0;
+      if (label) label.textContent = 'Checking 0/' + ids.length + '…';
+      /* Bounded workers: no more than three live upstream probes, with a
+       * visible update after each result rather than only after each batch. */
+      var next = 0;
+      async function worker() {
+        while (next < ids.length) {
+          var id = ids[next++];
+          try {
+            var res = await fetch('/ui/models/ping?id=' + encodeURIComponent(id), { method: 'POST' });
+            var data = await res.json();
+            if (!res.ok || data.error) throw new Error(data.error || 'Ping failed');
+            if (data.ok) ok += 1;
+            nmApplyPing(id, data);
+          } catch (e) {
+            failures += 1;
+          }
+          done += 1;
+          if (label) label.textContent = 'Checking ' + done + '/' + ids.length + '…';
+        }
       }
+      await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker));
+      NovaUI.toast('Health check done — ' + ok + '/' + ids.length + ' responded' + (failures ? ' · ' + failures + ' probe(s) failed' : ''), ok === ids.length ? 'success' : 'info');
+      NovaUI.refresh();
+    } catch (e) {
+      NovaUI.toast('Health check could not start — ' + (e.message || 'unknown error'), 'error');
+    } finally {
+      btn.disabled = false; btn.classList.remove('opacity-60');
+      if (spin) spin.classList.remove('nova-spin');
+      if (label) label.textContent = 'Health check';
+      window.__nmHealthRunning = false;
     }
-    var total = Number(btn.dataset.total || 0);
-    var suffix = total > ids.length ? ' (checked first ' + ids.length + ' of ' + total + ')' : '';
-    NovaUI.toast('Health check done — ' + ok + '/' + ids.length + ' responded' + suffix, ok === ids.length ? 'success' : 'info');
-    btn.disabled = false; btn.classList.remove('opacity-60');
-    if (spin) spin.classList.remove('nova-spin');
-    if (label) label.textContent = 'Health check';
-    NovaUI.refresh();
   }
 
   /* card click → detail dialog, skipping interactive controls (TSX stopPropagation parity) */

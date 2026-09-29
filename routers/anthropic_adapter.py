@@ -28,6 +28,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
+from nova.provider_transport import anthropic_headers, anthropic_url, native_anthropic_body
 
 router = APIRouter()
 
@@ -324,29 +325,12 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
     if not base or base.startswith("internal://"):
         return None
 
-    body: dict = {"model": row.modelId, "max_tokens": max_tokens, "messages": []}
-    for m in openai_msgs:
-        if m["role"] == "system":
-            body["system"] = m["content"]
-        else:
-            body["messages"].append({"role": m["role"], "content": m["content"]})
-    if system_text and "system" not in body:
-        body["system"] = system_text
-    if temperature is not None:
-        body["temperature"] = temperature
-    # Pass tool definitions through natively (Claude Code agent loops need this)
-    if isinstance(payload.get("tools"), list) and payload["tools"]:
-        body["tools"] = payload["tools"]
-        tc = payload.get("tool_choice")
-        if isinstance(tc, dict):
-            body["tool_choice"] = tc
+    body = native_anthropic_body(payload, row.modelId)
 
     try:
         async with httpx.AsyncClient(timeout=gw.NONSTREAM_READ_TIMEOUT) as client:
             res = await client.post(
-                f"{base}/v1/messages",
-                headers={"x-api-key": key_info["apiKey"], "anthropic-version": "2023-06-01",
-                         "Content-Type": "application/json"},
+                anthropic_url(base), headers=anthropic_headers(key_info["apiKey"]),
                 json=body,
             )
         if res.status_code < 200 or res.status_code >= 300:
@@ -358,14 +342,14 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
     content = gw.strip_think_blocks("".join(
         str(b.get("text", "")) for b in data.get("content", []) if isinstance(b, dict) and b.get("type") == "text"
     ))
-    if not content:
-        return None
     usage = data.get("usage", {}) if isinstance(data.get("usage"), dict) else {}
     # Preserve native tool_use blocks (Claude Code agent loops need these)
     tool_blocks = [
         b for b in data.get("content", [])
         if isinstance(b, dict) and b.get("type") == "tool_use"
     ]
+    if not content and not tool_blocks:
+        return None
     stop_reason = data.get("stop_reason") or ("tool_use" if tool_blocks else "end_turn")
     return {
         "content": content,
@@ -535,28 +519,11 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
             key_info = await asyncio.to_thread(gw.select_upstream_key_sync, row.provider.id)
             base = row.provider.baseUrl.rstrip("/")
             if key_info and base and not base.startswith("internal://"):
-                body: dict = {"model": row.modelId, "max_tokens": max_tokens, "stream": True, "messages": []}
-                for m in openai_msgs:
-                    if m["role"] == "system":
-                        body["system"] = m["content"]
-                    else:
-                        body["messages"].append({"role": m["role"], "content": m["content"]})
-                if system_text and "system" not in body:
-                    body["system"] = system_text
-                if temperature is not None:
-                    body["temperature"] = temperature
-                # Native tool passthrough (Claude Code needs tool_use blocks back)
-                if isinstance(payload.get("tools"), list) and payload["tools"]:
-                    body["tools"] = payload["tools"]
-                    tc = payload.get("tool_choice")
-                    if isinstance(tc, dict):
-                        body["tool_choice"] = tc
+                body = native_anthropic_body(payload, row.modelId, stream=True)
                 client = gw.UPSTREAM_CLIENT  # shared pooled client — warm connections
                 try:
                     req = client.build_request(
-                        "POST", f"{base}/v1/messages",
-                        headers={"x-api-key": key_info["apiKey"], "anthropic-version": "2023-06-01",
-                                 "Content-Type": "application/json"},
+                        "POST", anthropic_url(base), headers=anthropic_headers(key_info["apiKey"]),
                         json=body)
                     res = await client.send(req, stream=True)
                 except httpx.HTTPError:

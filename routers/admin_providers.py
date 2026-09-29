@@ -17,6 +17,7 @@ import re
 import threading
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Body, Depends, Request
@@ -30,6 +31,7 @@ from nova.config import slugify
 from nova.database import SessionLocal, get_db
 from nova.models import Model as ModelRow, Provider, ProviderKey, ProviderSession, utcnow
 from nova.syncengine import sync_provider
+from nova.provider_transport import anthropic_headers, anthropic_url
 
 from ._common import as_num, as_str, epoch_ms, invalid_id, json_body, mask_key, not_found, parse_int
 
@@ -39,6 +41,24 @@ FETCH_TIMEOUT_S = 8.0
 FETCH_TIMEOUT_MS = 8000
 ENGINE_PING_TIMEOUT_S = 20.0
 KEYLESS_PROVIDERS = {"openrouter", "ollama"}
+PROVIDER_KINDS = {"openai", "anthropic", "gemini", "builtin"}
+
+
+def validate_base_url(url: str, kind: str) -> str | None:
+    """Require an API base URL, never an endpoint or a URL embedding credentials."""
+    if kind == "builtin":
+        return None if url == "internal://nova-engine" else "Invalid built-in engine URL"
+    try:
+        parts = urlsplit(url)
+        if (parts.scheme not in ("https", "http") or not parts.hostname or
+                parts.username is not None or parts.password is not None or
+                parts.query or parts.fragment or any(c.isspace() for c in url)):
+            return "Provide an HTTP(S) API base URL without credentials, query parameters or fragments"
+        if parts.path.rstrip("/").endswith(("/models", "/chat/completions", "/messages", "/embeddings")):
+            return "Provide the API base URL, not a specific endpoint"
+    except ValueError:
+        return "Invalid API base URL"
+    return None
 
 # --------------------------------------------------------------------------- #
 # Built-in provider catalogue — kept in sync with GET /api/admin/meta.
@@ -118,7 +138,7 @@ PRESETS: list[dict] = [
     {
         "key": "xai", "name": "xAI Grok", "kind": "openai",
         "base_url": "https://api.x.ai/v1", "prefix": "xai/", "key_hint": "xai-…",
-        "free_tier": "$25/month free credits while data sharing is enabled",
+        "free_tier": None,
         "docs_url": "https://docs.x.ai", "auth_url": "https://console.x.ai",
         "requires_signin": True, "color": "#e5e7eb", "priority": 50,
     },
@@ -142,6 +162,18 @@ PRESETS: list[dict] = [
         "free_tier": None,
         "docs_url": "https://platform.openai.com/docs", "auth_url": "https://platform.openai.com/api-keys",
         "requires_signin": True, "color": "#0ea36e", "priority": 90,
+    },
+    {
+        "key": "custom-gateway", "name": "Custom OpenAI-compatible gateway", "kind": "openai",
+        "base_url": "", "prefix": "gateway/", "key_hint": "Gateway API key",
+        "free_tier": None, "docs_url": None, "auth_url": None,
+        "requires_signin": False, "color": "#38bdf8", "priority": 95,
+    },
+    {
+        "key": "cloudflare-worker", "name": "Cloudflare Worker (OpenAI-compatible)", "kind": "openai",
+        "base_url": "", "prefix": "worker/", "key_hint": "Worker bearer token",
+        "free_tier": None, "docs_url": "https://developers.cloudflare.com/workers/", "auth_url": None,
+        "requires_signin": False, "color": "#f48120", "priority": 95,
     },
     {
         "key": "anthropic", "name": "Anthropic", "kind": "anthropic",
@@ -357,6 +389,12 @@ async def create_provider(req: Request):
         base_url = as_str(body.get("base_url"))
         if base_url is None:
             base_url = preset["base_url"] if preset else ""
+        if kind not in PROVIDER_KINDS:
+            return JSONResponse({"error": "Unsupported provider kind"}, status_code=400)
+        base_url = base_url.strip().rstrip("/")
+        url_error = validate_base_url(base_url, kind)
+        if url_error:
+            return JSONResponse({"error": url_error}, status_code=400)
         prefix = as_str(body.get("prefix"))
         if prefix is None:
             prefix = preset["prefix"] if preset else f"{slug}/"
@@ -461,7 +499,11 @@ def update_provider(id: str, body: dict = Body(default={}), db: Session = Depend
         if n is not None:
             provider.priority = int(round(n))
     if isinstance(body.get("base_url"), str):
-        provider.baseUrl = body["base_url"]
+        base_url = body["base_url"].strip().rstrip("/")
+        url_error = validate_base_url(base_url, provider.kind)
+        if url_error:
+            return JSONResponse({"error": url_error}, status_code=400)
+        provider.baseUrl = base_url
     if isinstance(body.get("prefix"), str):
         provider.prefix = body["prefix"]
     if isinstance(body.get("name"), str) and body["name"].strip() != "":
@@ -527,9 +569,8 @@ async def probe_upstream(provider_key: str, kind: str, base_url: str, api_key: s
     elif kind == "anthropic":
         if not api_key:
             raise ValueError("missing key")
-        url = _join_url(base_url, "v1/models?limit=50")
-        headers["x-api-key"] = api_key
-        headers["anthropic-version"] = "2023-06-01"
+        url = anthropic_url(base_url, "models?limit=50")
+        headers.update(anthropic_headers(api_key))
     elif provider_key == "openrouter" and api_key:
         # OpenRouter's /models catalogue is public and accepts any Bearer — /auth/key
         # actually validates the key against the account.
@@ -547,13 +588,11 @@ async def probe_upstream(provider_key: str, kind: str, base_url: str, api_key: s
             "latency_ms": int((time.monotonic() - started) * 1000), "models_found": 0,
             "detail": f"timed out after {FETCH_TIMEOUT_MS}ms",
         }
-    except Exception as err:  # noqa: BLE001 — network errors become probe results
-        msg = str(err)
+    except httpx.RequestError:
         latency = int((time.monotonic() - started) * 1000)
         return {
             "ok": False, "http_status": 0, "latency_ms": latency, "models_found": 0,
-            "detail": f"timed out after {FETCH_TIMEOUT_MS}ms"
-            if re.search(r"abort|timeout", msg, re.I) else msg[:160],
+            "detail": "upstream connection failed",
         }
 
     latency = int((time.monotonic() - started) * 1000)

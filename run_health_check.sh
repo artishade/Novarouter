@@ -1,8 +1,8 @@
 #!/bin/bash
 # NovaRouter Health Check Runner Script
-# Run: bash /root/Novarouter2/Novarouter/run_health_check.sh
+# Run: bash /path/to/Novarouter/run_health_check.sh --cron
 
-cd /root/Novarouter2/Novarouter
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
 
 echo "=========================================="
 echo "NovaRouter Health Check System"
@@ -18,7 +18,7 @@ if [ "$1" == "--cron" ] || [ "$1" == "-c" ]; then
     if [ $exit_code -eq 0 ]; then
         echo "[$(date)] Health check completed successfully"
     else
-        echo "[$(date)] Health check failed with exit code: $exit_code"
+        echo "[$(date)] Health check incomplete with exit code: $exit_code"
     fi
     
     exit $exit_code
@@ -36,5 +36,5 @@ else
     echo "  python3 health_check_and_toggle.py  # Interactive menu"
     echo "  python3 cron_health_check.py        # Automatic check with logs"
     echo ""
-    echo "Log file: /root/Novarouter2/Novarouter/health_check.log"
+    echo "Log file: $(pwd)/health_check.log"
 fi

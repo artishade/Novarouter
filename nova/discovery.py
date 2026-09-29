@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from .models import Model, Provider
+from .provider_transport import anthropic_headers, anthropic_url
 
 DISCOVERY_TTL_MS = 5 * 60 * 1000
 FETCH_TIMEOUT_S = 8.0
@@ -46,7 +48,7 @@ def _mark_free(provider_key: str, model_id: str, prompt: float | None, completio
         return True
     if model_id.endswith(":free"):
         return True
-    return (prompt or 0) == 0 and (completion or 0) == 0
+    return prompt is not None and completion is not None and prompt == 0 and completion == 0
 
 
 def _extract_list(data: Any) -> list[dict]:
@@ -66,8 +68,12 @@ def _join_url(base: str, path: str) -> str:
 def _from_openai_compatible(raw: dict, provider_key: str, provider_id: int, provider_name: str) -> dict:
     mid = str(raw.get("id") or raw.get("name") or raw.get("model") or "").strip()
     pricing = raw.get("pricing") if isinstance(raw.get("pricing"), dict) else {}
-    prompt = _to_number(pricing.get("prompt")) or _to_number((raw.get("pricing") or {}).get("input"))
-    completion = _to_number(pricing.get("completion")) or _to_number((raw.get("pricing") or {}).get("output"))
+    prompt = _to_number(pricing.get("prompt"))
+    completion = _to_number(pricing.get("completion"))
+    if prompt is None:
+        prompt = _to_number(pricing.get("input"))
+    if completion is None:
+        completion = _to_number(pricing.get("output"))
 
     def norm(price: float | None) -> float | None:
         if price is not None and 0 < price < 0.01:
@@ -92,12 +98,20 @@ def _from_openai_compatible(raw: dict, provider_key: str, provider_id: int, prov
 async def _fetch_json(url: str, headers: dict | None = None, log=None, log_url: str | None = None) -> Any:
     if log:
         log(f"GET {log_url or url}")
-    async with httpx.AsyncClient(timeout=FETCH_TIMEOUT_S) as client:
-        res = await client.get(url, headers={"Accept": "application/json", **(headers or {})})
-        if log:
-            log(f"  → HTTP {res.status_code} ({res.elapsed.total_seconds() * 1000:.0f}ms)")
-        res.raise_for_status()
-        return res.json()
+    try:
+        async with httpx.AsyncClient(timeout=FETCH_TIMEOUT_S) as client:
+            res = await client.get(url, headers={"Accept": "application/json", **(headers or {})})
+            if log:
+                log(f"  → HTTP {res.status_code} ({res.elapsed.total_seconds() * 1000:.0f}ms)")
+            res.raise_for_status()
+            return res.json()
+    except httpx.HTTPStatusError as err:
+        # HTTPX exceptions include the full URL (Gemini puts its key in the query).
+        raise ValueError(f"upstream returned HTTP {err.response.status_code}") from None
+    except httpx.TimeoutException:
+        raise ValueError("upstream request timed out") from None
+    except httpx.RequestError:
+        raise ValueError("upstream connection failed") from None
 
 
 async def _discover_openai_compatible(base, key, provider_key, provider_id, provider_name, log=None) -> list[dict]:
@@ -112,7 +126,7 @@ async def _discover_openai_compatible(base, key, provider_key, provider_id, prov
     data = await _fetch_json(_join_url(base, "models"), headers, log=log)
     models = [
         m
-        for m in (_from_openai_compatible(r, provider_key, provider_id, provider_name) for r in _extract_list(data))
+        for m in (_from_openai_compatible(r, provider_key, provider_id, provider_name) for r in _extract_list(data) if isinstance(r, dict))
         if m["id"]
     ]
     if log:
@@ -124,15 +138,16 @@ async def _discover_gemini(base, key, provider_id, provider_name, log=None) -> l
     if not key:
         raise ValueError("no API key configured")
     data = await _fetch_json(
-        _join_url(base, f"models?key={key}&pageSize=200"),
+        _join_url(base, f"models?key={quote(key, safe='')}&pageSize=200"),
         log=log,
         log_url=_join_url(base, "models?key=***&pageSize=200"),  # never log the key
     )
     out = []
     for raw in _extract_list(data):
+        if not isinstance(raw, dict):
+            continue
         full_name = str(raw.get("name", ""))
         mid = full_name.removeprefix("models/")
-        methods = raw.get("supportedGenerationMethods") if isinstance(raw.get("supportedGenerationMethods"), list) else []
         out.append({
             "id": mid,
             "object": "model",
@@ -144,7 +159,8 @@ async def _discover_gemini(base, key, provider_id, provider_name, log=None) -> l
             "max_output": _to_number(raw.get("outputTokenLimit")),
             "pricing_prompt": None,
             "pricing_completion": None,
-            "is_free": len(methods) == 0 or "generateContent" in methods,
+            # generateContent is a capability, not proof this model is free.
+            "is_free": False,
         })
     return [m for m in out if m["id"]]
 
@@ -153,14 +169,16 @@ async def _discover_anthropic(base, key, provider_id, provider_name, log=None) -
     if not key:
         raise ValueError("no API key configured")
     data = await _fetch_json(
-        _join_url(base, "v1/models?limit=100"),
-        {"x-api-key": key, "anthropic-version": "2023-06-01"},
+        anthropic_url(base, "models?limit=100"),
+        anthropic_headers(key),
         log=log,
     )
     if log:
         log("auth: x-api-key (masked)")
     out = []
     for raw in _extract_list(data):
+        if not isinstance(raw, dict):
+            continue
         mid = str(raw.get("id", "")).strip()
         out.append({
             "id": mid,
@@ -173,7 +191,7 @@ async def _discover_anthropic(base, key, provider_id, provider_name, log=None) -
             "max_output": None,
             "pricing_prompt": None,
             "pricing_completion": None,
-            "is_free": _mark_free("anthropic", mid, None, None),
+            "is_free": False,
         })
     return [m for m in out if m["id"]]
 
@@ -229,7 +247,7 @@ async def _discover_one(db: Session, p: Provider, api_key: str | None, log=None)
     try:
         if p.kind == "builtin":
             models = _discover_novafree_sync(db, p.id, p.name)
-        elif p.key == "gemini":
+        elif p.kind == "gemini":
             models = await _discover_gemini(p.baseUrl, api_key, p.id, p.name, log=log)
         elif p.kind == "anthropic":
             models = await _discover_anthropic(p.baseUrl, api_key, p.id, p.name, log=log)

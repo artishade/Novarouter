@@ -3,10 +3,10 @@
 ব্যক্তিগতভাবে তৈরি করা auto health check এবং model management system যেটি:
 
 ## Features
-✅ **Automatic Health Check**: সব enabled model-এর health check করে  
+✅ **Automatic Health Check**: সব enabled model-এর health check করে (প্রথম 24টিতে থামে না)
 ✅ **Auto Disable**: Dead/unreachable model গুলো automatically disable করে  
 ✅ **Re-check Option**: Disabled model গুলো আবার check করে re-enable করার option  
-✅ **Cron Job Support**: Scheduled automatic cleanup  
+✅ **Scheduled runner**: Existing scheduled invocation থেকে automatic cleanup
 ✅ **Interactive Menu**: User-friendly interface  
 ✅ **Logging**: Detailed logs with timestamps  
 
@@ -35,7 +35,13 @@ python3 /root/Novarouter2/Novarouter/cron_health_check.py
 - Dead model disable করে
 - Log file-এ summary save করে (`/root/Novarouter2/Novarouter/health_check.log`)
 
-## Installation for Scheduled Jobs
+## Scheduling and coverage
+
+`python3 cron_health_check.py` প্রতিবার **সব enabled model** probe করে, একসঙ্গে সর্বোচ্চ 3টি request পাঠায়, এবং শুধু সেই run-এ নিশ্চিত dead হওয়া model disable করে। Cooling/unknown বা ব্যর্থ probe-এর model disable হয় না; partial run non-zero exit দেয়। Dashboard-এর **Models → Health check**-ও পুরো catalogue-এর সব enabled model check করে, শুধু দৃশ্যমান page/filter নয়। Disabled model আবার চালু করতে আলাদাভাবে re-enable বা Ping করুন।
+
+এই repository কোনো daily scheduler install করে না। আপনার deployment-এ যে scheduler ইতিমধ্যে runner চালায়, সেটি **প্রতিদিন একবার** invoke হচ্ছে কি না যাচাই করুন। নিচের পুরনো 12-hour example-কে daily schedule ধরে নেবেন না।
+
+## Legacy examples (not installed automatically)
 
 ### Option A: Crontab (Every 12 hours)
 ```bash

@@ -127,6 +127,19 @@ Refresh the bundled snapshot from upstream with `POST /api/admin/models/sync` (t
 
 ## 🔌 Gateway API
 
+### Connect upstream providers
+
+In **Providers → Add Provider**, choose **Cloudflare Worker**, **Custom gateway API**, **xAI Grok**, or **Anthropic (native)**. A provider's **base URL points upstream**; it is not the NovaRouter client-facing `/v1` URL shown above. Paste an upstream API key during setup or add one later from the provider's **Keys** panel.
+
+| Choice | Protocol and base URL |
+| --- | --- |
+| Cloudflare Worker | OpenAI-compatible Worker that you deployed, e.g. `https://your-worker.your-subdomain.workers.dev/v1`. Configure its actual URL and token; the Worker must implement the requested API operations. |
+| Custom gateway API | OpenAI-compatible gateway root such as `https://gateway.example.com/v1`. Use its upstream URL, not NovaRouter's own URL (which would create a loop). |
+| xAI Grok | OpenAI-compatible `https://api.x.ai/v1` with an xAI API key. |
+| Anthropic (native) | Native Anthropic Messages API at `https://api.anthropic.com` with an Anthropic API key; **do not** append `/v1` or select an OpenAI-compatible proxy for this choice. |
+
+Enter the API **root**, not a full `/chat/completions`, `/messages`, or `/models` URL. Model discovery calls the upstream catalogue; some custom gateways or Workers do not provide `/models`. If discovery fails, the provider still exists: verify its URL/key and use **Models → Sync Catalogue** to retry. A missing key may also prevent discovery and requests. Provider protocol selection does not change the gateway's client-facing API.
+
 Point any OpenAI/Anthropic SDK at the hosted base URL:
 
 ```bash

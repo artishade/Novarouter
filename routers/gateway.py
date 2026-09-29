@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session, joinedload
 from nova import engine as nova_engine
 from nova.discovery import aggregate_discovery, discover_provider_models
 from nova.models import ClientKey, Model as ModelRow, ModelRoute, Provider, RequestLog
+from nova.provider_transport import anthropic_headers, anthropic_to_openai, anthropic_url, openai_to_anthropic
 
 log = logging.getLogger("nova.gateway")
 
@@ -341,7 +342,7 @@ class UpstreamFailure(Exception):
 
 async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: float | None, original_body: dict | None = None) -> dict | None:
     provider = row.provider
-    if not provider or not provider.enabled or provider.kind in ("builtin", "anthropic"):
+    if not provider or not provider.enabled or provider.kind in ("builtin", "gemini"):
         return None
     base = provider.baseUrl.rstrip("/")
     if not base or base.startswith("internal://"):
@@ -378,14 +379,23 @@ async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: flo
         return None
 
     try:
+        native = provider.kind == "anthropic"
         res = await NONSTREAM_CLIENT.post(
-            f"{base}/chat/completions",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
-            json=body,
+            anthropic_url(base) if native else f"{base}/chat/completions",
+            headers=anthropic_headers(key_info["apiKey"]) if native else
+                    {"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
+            json=openai_to_anthropic(row.modelId, messages, body) if native else body,
         )
         if res.status_code < 200 or res.status_code >= 300:
             return None
         payload = res.json()
+        if native:
+            normalized = anthropic_to_openai(payload)
+            if normalized is None:
+                return None
+            return {**normalized, "upstream_model": row.modelId,
+                    "upstream_exposed_id": row.exposedId, "provider_name": provider.name,
+                    "provider_id": provider.id, "via": "upstream-anthropic"}
         content = extract_upstream_content(payload)
         if content is None:
             return None
@@ -447,7 +457,7 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
     before anything is committed (connect errors / HTTP error status).
     """
     provider = row.provider
-    if not provider or not provider.enabled or provider.kind in ("builtin", "anthropic"):
+    if not provider or not provider.enabled or provider.kind in ("builtin", "gemini"):
         raise UpstreamFailure("provider not streamable")
     key_info = await asyncio.to_thread(select_upstream_key_sync, provider.id)
     if key_info is None:
@@ -456,13 +466,15 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
     if not base or base.startswith("internal://"):
         raise UpstreamFailure("no base url")
 
-    body = build_upstream_body(original_body, row.modelId, messages, stream=True) if original_body is not None else None
+    body = build_upstream_body(original_body, row.modelId, messages, stream=True) if original_body is not None else {"model": row.modelId, "messages": messages, "stream": True, **({"temperature": temperature} if temperature is not None else {})}
+    native = provider.kind == "anthropic"
     client = UPSTREAM_CLIENT
     try:
         req = client.build_request(
-            "POST", f"{base}/chat/completions",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
-            json=body if body is not None else {"model": row.modelId, "messages": messages, "stream": True, **({"temperature": temperature} if temperature is not None else {})},
+            "POST", anthropic_url(base) if native else f"{base}/chat/completions",
+            headers=anthropic_headers(key_info["apiKey"]) if native else
+                    {"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
+            json=openai_to_anthropic(row.modelId, messages, body, stream=True) if native else body,
         )
         res = await client.send(req, stream=True)
     except httpx.HTTPError as err:
@@ -473,6 +485,7 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
         raise UpstreamFailure(f"upstream returned HTTP {res.status_code}", status=res.status_code)
 
     async def relay() -> AsyncIterator[dict]:
+        tool_indices: dict[int, int] = {}
         try:
             async for line in res.aiter_lines():
                 if not line.startswith("data: "):
@@ -483,6 +496,27 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
                 try:
                     chunk = json.loads(data)
                 except Exception:
+                    continue
+                if native:
+                    event = chunk.get("type")
+                    if event == "content_block_start":
+                        block = chunk.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            index = len(tool_indices)
+                            tool_indices[chunk.get("index", index)] = index
+                            yield {"text": "", "finish_reason": None, "tool_calls": [{"index": index,
+                                "id": block.get("id"), "type": "function", "function": {"name": block.get("name"), "arguments": ""}}]}
+                    elif event == "content_block_delta":
+                        delta = chunk.get("delta") or {}
+                        if delta.get("type") == "text_delta" and delta.get("text"):
+                            yield {"text": delta["text"], "finish_reason": None, "tool_calls": None}
+                        elif delta.get("type") == "input_json_delta" and chunk.get("index") in tool_indices:
+                            yield {"text": "", "finish_reason": None, "tool_calls": [{"index": tool_indices[chunk["index"]],
+                                "function": {"arguments": delta.get("partial_json") or ""}}]}
+                    elif event == "message_delta":
+                        reason = (chunk.get("delta") or {}).get("stop_reason")
+                        if reason:
+                            yield {"text": "", "finish_reason": {"end_turn": "stop", "tool_use": "tool_calls", "max_tokens": "length"}.get(reason, reason), "tool_calls": None}
                     continue
                 choices = chunk.get("choices") or []
                 if not choices:

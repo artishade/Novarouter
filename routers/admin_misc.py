@@ -27,6 +27,7 @@ from nova.models import (
     RequestLog,
     SystemConfig,
 )
+from .admin_providers import PRESETS as PROVIDER_PRESETS
 
 router = APIRouter()
 
@@ -255,7 +256,7 @@ def meta(request: Request, db: Session = Depends(get_db)):
         "hedging": {"delay": num("hedge_delay", 2)},
         "cache": {"ttl": num("cache_ttl", 600), "max_entries": 1000},
         "limits": {"file_max_mb": 25, "batch_max_items": 50000},
-        "presets": PRESETS,
+        "presets": PROVIDER_PRESETS,
         "kinds": ["openai", "anthropic", "gemini", "builtin"],
         "statuses": ["healthy", "cooling", "dead", "unknown"],
         "admin_token": cfg.get("admin_token") or "nova-admin-token",

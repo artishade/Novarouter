@@ -68,7 +68,7 @@
       Sync {{ ns.p.name }}
     </button>
     {% endif %}
-    <button type="button" data-health-check data-ids="{{ health_ids | join(',') }}" data-total="{{ health_candidates }}"
+    <button type="button" data-health-check
       class="inline-flex h-9 items-center gap-1.5 rounded-md border border-emerald-800/70 px-2.5 text-xs text-emerald-300 transition-colors hover:bg-emerald-950/40">
       <i data-lucide="heart-pulse" class="size-3.5"></i>
       <span data-hc-label>Health check</span>

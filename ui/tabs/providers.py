@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 import time
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -51,6 +51,27 @@ def _to_int(v: Any) -> int | None:
 
 def _form_str(form: dict, key: str) -> str:
     return str(form.get(key) or "").strip()
+
+
+def _endpoint_error(kind: str, base_url: str) -> str | None:
+    """Validate upstream roots without restricting the other supported provider kinds."""
+    if kind not in ("openai", "anthropic"):
+        return None
+    if not base_url:
+        return "Enter the upstream base URL"
+    try:
+        url = urlsplit(base_url)
+        if (url.scheme not in ("http", "https") or not url.hostname
+                or url.username or url.password or url.query or url.fragment
+                or any(ch.isspace() for ch in base_url)):
+            return "Use an HTTP(S) base URL without credentials, query parameters or fragments"
+    except ValueError:
+        return "Enter a valid HTTP(S) upstream base URL"
+    if re.search(r"/(?:models|chat/completions|messages)/?$", url.path, re.I):
+        return "Enter the API root, not a /models, /messages or /chat/completions operation URL"
+    if kind == "anthropic" and re.search(r"/v1/?$", url.path, re.I):
+        return "Native Anthropic uses the origin without /v1 (https://api.anthropic.com)"
+    return None
 
 
 def _root_url(q: str = "", expand: int | None = None) -> str:
@@ -275,7 +296,13 @@ async def create_provider(request: Request) -> Response:
             return JSONResponse({"ok": False, "error": msg})
         return _form_error(msg)
 
-    payload: dict[str, Any] = {"name": name, "kind": _form_str(form, "kind") or "openai"}
+    kind = _form_str(form, "kind") or "openai"
+    validation_error = _endpoint_error(kind, _form_str(form, "base_url"))
+    if validation_error:
+        if logs_mode:
+            return JSONResponse({"ok": False, "error": validation_error})
+        return _form_error(validation_error)
+    payload: dict[str, Any] = {"name": name, "kind": kind}
     for field in ("base_url", "prefix", "auth_url", "free_tier", "docs_url"):
         value = _form_str(form, field)
         if value:

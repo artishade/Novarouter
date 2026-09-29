@@ -9,11 +9,39 @@
   <form id="np-add-form" autocomplete="off" class="p-5">
     <input type="hidden" name="kind" id="np-kind" value="openai" />
     <h3 id="np-add-title" class="text-base font-semibold text-slate-100">Add provider</h3>
-    <p id="np-add-desc" class="mt-0.5 text-xs text-slate-500">Pick a preset to prefill the endpoint, or start from a blank custom provider.</p>
+    <p id="np-add-desc" class="mt-0.5 text-xs text-slate-500">Choose an upstream protocol and endpoint. These are upstream providers, not client-facing gateway URLs.</p>
 
     {# ----------------------------- step 1: preset grid ----------------------------- #}
     <div id="np-step-1" class="mt-3">
       <div class="nova-scroll max-h-[380px] overflow-y-auto pr-1">
+        <p class="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-400">Popular connections</p>
+        <div class="mb-4 grid gap-2 sm:grid-cols-2">
+          <button type="button" class="np-preset rounded-lg border border-slate-700 bg-black/20 p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5"
+            data-custom="0" data-name="Cloudflare Worker (OpenAI-compatible)" data-kind="openai" data-prefix="worker/" data-priority="95" data-key-hint="Worker bearer token"
+            data-url-hint="https://your-worker.your-subdomain.workers.dev/v1" data-guidance="OpenAI-compatible Worker endpoint. Enter the deployed API root; NovaRouter appends /models and /chat/completions. Automatic discovery requires /models and an upstream key."
+            aria-label="Add Cloudflare Worker OpenAI-compatible endpoint">
+            <span class="block text-sm font-medium text-slate-200">Cloudflare Worker</span><span class="mt-1 block text-[11px] text-slate-500">Your deployed OpenAI-compatible Worker · custom URL</span>
+          </button>
+          <button type="button" class="np-preset rounded-lg border border-slate-700 bg-black/20 p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5"
+            data-custom="0" data-name="Custom OpenAI-compatible gateway" data-kind="openai" data-prefix="gateway/" data-priority="95" data-key-hint="Gateway API key"
+            data-url-hint="https://gateway.example.com/v1" data-guidance="OpenAI-compatible upstream gateway. Use its API root (often /v1), not the full /chat/completions path. Do not point this at NovaRouter itself."
+            aria-label="Add custom OpenAI-compatible gateway">
+            <span class="block text-sm font-medium text-slate-200">Custom gateway API</span><span class="mt-1 block text-[11px] text-slate-500">OpenAI-compatible upstream · custom URL</span>
+          </button>
+          <button type="button" class="np-preset rounded-lg border border-slate-700 bg-black/20 p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5"
+            data-custom="0" data-name="xAI Grok" data-kind="openai" data-base-url="https://api.x.ai/v1" data-prefix="xai/" data-priority="50" data-key-hint="xai-…"
+            data-auth-url="https://console.x.ai" data-docs-url="https://docs.x.ai" data-guidance="xAI uses OpenAI-compatible /v1 endpoints. Use an xAI API key, not an Anthropic key."
+            aria-label="Add xAI Grok">
+            <span class="block text-sm font-medium text-slate-200">xAI Grok</span><span class="mt-1 block text-[11px] text-slate-500">OpenAI-compatible · https://api.x.ai/v1</span>
+          </button>
+          <button type="button" class="np-preset rounded-lg border border-slate-700 bg-black/20 p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5"
+            data-custom="0" data-name="Anthropic" data-kind="anthropic" data-base-url="https://api.anthropic.com" data-prefix="anthropic/" data-priority="90" data-key-hint="sk-ant-…"
+            data-auth-url="https://console.anthropic.com/settings/keys" data-docs-url="https://docs.anthropic.com" data-guidance="Native Anthropic API (x-api-key and /v1/messages), not an OpenAI-compatible proxy. Base URL stops at api.anthropic.com — do not append /v1."
+            aria-label="Add native Anthropic API">
+            <span class="block text-sm font-medium text-slate-200">Anthropic (native)</span><span class="mt-1 block text-[11px] text-slate-500">Messages API · https://api.anthropic.com</span>
+          </button>
+        </div>
+        <p class="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-400">Other presets</p>
         <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
           <button type="button" class="np-preset rounded-lg border border-dashed border-slate-700 p-3 text-left transition hover:border-emerald-500/60 hover:bg-emerald-500/5"
             aria-label="Add a custom provider" data-custom="1" data-key-hint="sk-..." data-priority="50">
@@ -23,7 +51,7 @@
             </span>
             <span class="mt-2 block text-[11px] leading-snug text-slate-500">Any OpenAI-compatible endpoint</span>
           </button>
-          {% for preset in presets %}
+          {% for preset in presets if preset.key not in ['xai', 'anthropic', 'cloudflare-worker', 'custom-gateway'] %}
           <button type="button"
             class="np-preset rounded-lg border border-slate-800 bg-black/20 p-3 text-left transition hover:border-emerald-500/60 hover:bg-emerald-500/5"
             aria-label="Select preset {{ preset.name }}"
@@ -57,7 +85,7 @@
       <div class="grid gap-3 sm:grid-cols-2">
         <div class="space-y-1.5">
           <label for="np-name" class="text-xs text-slate-400">Name</label>
-          <input id="np-name" name="name" placeholder="Provider name"
+          <input id="np-name" name="name" placeholder="Provider name" required maxlength="120"
             class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
         </div>
         <div class="space-y-1.5">
@@ -67,10 +95,13 @@
         </div>
         <div class="space-y-1.5 sm:col-span-2">
           <label for="np-url" class="text-xs text-slate-400">Base URL</label>
-          <input id="np-url" name="base_url" placeholder="https://api.provider.com/v1"
+          <input id="np-url" name="base_url" type="url" placeholder="https://api.provider.com/v1" required inputmode="url" aria-describedby="np-url-help"
             class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+          <p id="np-url-help" class="text-[11px] text-slate-500">Use the upstream API root, not a full operation path.</p>
         </div>
       </div>
+
+      <p id="np-protocol" class="rounded-md border border-slate-800 bg-black/20 px-3 py-2 text-[11px] leading-relaxed text-slate-400" aria-live="polite"></p>
 
       <div class="space-y-2">
         <div class="flex items-center justify-between">
@@ -84,10 +115,10 @@
       </div>
 
       <div class="space-y-1.5">
-        <label for="np-keys" class="text-xs text-slate-400">API keys (optional)</label>
+        <label for="np-keys" class="text-xs text-slate-400">Upstream API keys (optional at creation)</label>
         <textarea id="np-keys" name="api_keys" rows="3" placeholder="One key per line&#10;sk-..."
           class="w-full rounded border border-slate-800 bg-black/30 p-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50"></textarea>
-        <p class="text-[11px] text-slate-500">Multiple keys enable round-robin rotation with weighted cooldowns.</p>
+        <p class="text-[11px] text-slate-500">A key is usually needed for discovery and requests. Add keys later from the provider card if needed. Multiple keys rotate with cooldowns.</p>
       </div>
 
       <div class="grid gap-3 sm:grid-cols-2">
@@ -118,7 +149,7 @@
       </div>
       <pre id="np-sync-log" aria-live="polite"
         class="nova-scroll max-h-[300px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-slate-800 bg-black/50 p-3 font-mono text-[11px] leading-relaxed text-emerald-200/90"></pre>
-      <p class="mt-1.5 text-[11px] text-slate-500">Each line is a real request against the provider's upstream catalogue. You can close this dialog — the discovery keeps running server-side.</p>
+      <p class="mt-1.5 text-[11px] text-slate-500">The provider is already saved. Discovery may fail if /models is unavailable or the key is missing; use Models → Sync Catalogue after fixing the endpoint or key. You may close this dialog while discovery runs.</p>
     </div>
 
     <div id="np-add-feedback" class="mt-2" aria-live="polite"></div>
@@ -202,7 +233,7 @@
       ? 'Discovering the live model catalogue from the upstream endpoint — progress below.'
       : two
         ? 'Confirm the endpoint details, set routing priority and optionally paste API keys.'
-        : 'Pick a preset to prefill the endpoint, or start from a blank custom provider.';
+        : 'Choose an upstream protocol and endpoint. These are upstream providers, not client-facing gateway URLs.';
     var fb = $('np-add-feedback'); if (fb) fb.innerHTML = '';
   }
 
@@ -216,6 +247,16 @@
     set('np-auth', btn.dataset.authUrl || '');
     set('np-free', btn.dataset.freeTier || '');
     set('np-docs', btn.dataset.docsUrl || '');
+    var url = $('np-url');
+    if (url) {
+      url.placeholder = btn.dataset.urlHint || (btn.dataset.kind === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.provider.com/v1');
+      url.required = (btn.dataset.kind || 'openai') !== 'builtin';
+      url.type = url.required ? 'url' : 'text';
+    }
+    var guide = $('np-protocol');
+    if (guide) guide.textContent = btn.dataset.guidance || (btn.dataset.kind === 'anthropic'
+      ? 'Native Anthropic Messages API: enter the origin without /v1. It is not an OpenAI-compatible endpoint.'
+      : 'OpenAI-compatible API: enter the root URL, usually ending in /v1. NovaRouter appends /models and /chat/completions.');
     var pr = btn.dataset.priority || '50';
     set('np-priority', pr);
     var pv = $('np-priority-val'); if (pv) pv.textContent = pr;
@@ -230,13 +271,47 @@
     if (st) { st.textContent = 'running…'; st.className = 'ml-auto font-mono text-[11px] text-emerald-300'; }
   }
 
+  function npFeedback(message) {
+    var fb = $('np-add-feedback');
+    if (!fb) return;
+    fb.replaceChildren();
+    var p = document.createElement('p');
+    p.className = 'rounded-md border border-rose-900/60 bg-rose-950/40 px-2.5 py-1.5 text-[11px] text-rose-300';
+    p.textContent = message;
+    fb.appendChild(p);
+  }
+
+  function npValidateEndpoint(form) {
+    var kind = form.elements.kind.value;
+    if (kind !== 'openai' && kind !== 'anthropic') return '';
+    var raw = form.elements.base_url.value.trim();
+    if (!raw) return 'Enter the upstream base URL.';
+    var url;
+    try { url = new URL(raw); } catch (e) { return 'Enter a valid HTTP(S) upstream base URL.'; }
+    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password || url.search || url.hash) {
+      return 'Use an HTTP(S) base URL without credentials, query parameters or fragments.';
+    }
+    if (/(?:\/models|\/chat\/completions|\/messages)\/?$/i.test(url.pathname)) {
+      return 'Enter the API root, not a /models, /messages or /chat/completions operation URL.';
+    }
+    if (kind === 'anthropic' && /\/v1\/?$/i.test(url.pathname)) {
+      return 'Native Anthropic uses the origin without /v1 (https://api.anthropic.com).';
+    }
+    return '';
+  }
+
   function npStreamSync(data) {
     var logEl = $('np-sync-log');
     var st = $('np-sync-status');
     npResetLog();
     npStep(3);
     var es;
-    try { es = new EventSource(data.stream); } catch (e) { npStep(2); return; }
+    try { es = new EventSource(data.stream); } catch (e) {
+      if (st) { st.textContent = 'unavailable'; st.className = 'ml-auto font-mono text-[11px] text-amber-300'; }
+      if (logEl) logEl.textContent = 'Provider saved, but the discovery stream could not start. Check Models → Sync Catalogue later.';
+      NovaUI.toast('Provider saved; discovery status unavailable. Check Models → Sync Catalogue.', 'info');
+      NovaUI.refresh(); window.__npCreating = false; return;
+    }
     es.onmessage = function (ev) {
       var line;
       try { line = JSON.parse(ev.data); } catch (e) { return; }
@@ -260,14 +335,16 @@
       if (d.ok) {
         NovaUI.toast('Provider added — ' + (d.summary || 'models discovered'), 'success');
       } else {
-        NovaUI.toast('Model discovery failed — ' + (d.summary || 'see the log for details') + '. You can retry with Sync Catalogue.', 'error');
+        NovaUI.toast('Provider saved; model discovery failed — ' + (d.summary || 'see the log') + '. Retry in Models → Sync Catalogue.', 'info');
       }
       NovaUI.refresh();
       window.__npCreating = false;
     });
     es.onerror = function () {
       es.close();
-      if (st) st.textContent = 'stream ended';
+      if (st) { st.textContent = 'status unavailable'; st.className = 'ml-auto font-mono text-[11px] text-amber-300'; }
+      if (logEl) logEl.textContent += 'Stream interrupted. Provider was saved; discovery status is unknown. Check Models → Sync Catalogue.\n';
+      NovaUI.toast('Provider saved; discovery status unavailable. Check Models → Sync Catalogue.', 'info');
       NovaUI.refresh();
       window.__npCreating = false;
     };
@@ -281,32 +358,36 @@
     var submit = $('np-submit');
     var fb = $('np-add-feedback');
     if (fb) fb.innerHTML = '';
+    var validation = npValidateEndpoint(form);
+    if (validation) { npFeedback(validation); return; }
     if (submit) { submit.disabled = true; submit.classList.add('opacity-60'); submit.textContent = 'Checking…'; }
     window.__npCreating = true;
     try {
       var res = await fetch('/ui/providers/create?logs=1', { method: 'POST', body: new FormData(form) });
       var ct = res.headers.get('content-type') || '';
       if (ct.indexOf('application/json') === -1) {
-        var txt = await res.text();
-        if (fb) { fb.innerHTML = txt; if (window.htmx) window.htmx.process(fb); }
+        npFeedback('Provider creation response was unexpected. Check the provider list before trying again.');
         window.__npCreating = false;
         return;
       }
       var data = await res.json();
       if (!data.ok) {
-        if (fb) {
-          var p = document.createElement('p');
-          p.className = 'rounded-md border border-rose-900/60 bg-rose-950/40 px-2.5 py-1.5 text-[11px] text-rose-300';
-          p.textContent = data.error || 'Provider could not be created';
-          fb.appendChild(p);
-        }
+        npFeedback(data.error || 'Provider could not be created');
         NovaUI.toast(data.error || 'Provider could not be created', 'error');
         window.__npCreating = false;
         return;
       }
-      npStreamSync(data);
+      if (data.stream) npStreamSync(data);
+      else {
+        npStep(3);
+        var status = $('np-sync-status'); if (status) status.textContent = 'status unavailable';
+        var log = $('np-sync-log'); if (log) log.textContent = 'Provider saved, but no discovery stream was provided. Check Models → Sync Catalogue.';
+        NovaUI.toast('Provider saved; discovery status unavailable.', 'info');
+        NovaUI.refresh(); window.__npCreating = false;
+      }
     } catch (err) {
-      NovaUI.toast('Create failed — network error', 'error');
+      npFeedback('Request interrupted. Check the provider list before trying again; creation may have succeeded.');
+      NovaUI.toast('Creation status unknown — check the provider list before retrying.', 'info');
       window.__npCreating = false;
     } finally {
       if (submit) { submit.disabled = false; submit.classList.remove('opacity-60'); submit.textContent = 'Create provider'; }
@@ -392,6 +473,7 @@
       var form = $('np-add-form');
       if (form) form.reset();
       var pv = $('np-priority-val'); if (pv) pv.textContent = '50';
+      var u = $('np-url'); if (u) { u.type = 'url'; u.required = true; }
       var fb = $('np-add-feedback'); if (fb) fb.innerHTML = '';
       npResetLog();
       npStep(1);

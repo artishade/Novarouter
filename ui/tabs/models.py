@@ -14,7 +14,6 @@ Actions (HTMX mutations → html(..., toast=..., refresh=True)):
 """
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -35,13 +34,7 @@ STATUS_STYLES: dict[str, dict[str, str]] = {
     "unknown": {"dot": "bg-slate-500", "chip": "border-slate-700 bg-slate-900/60 text-slate-400"},
 }
 
-# Sequential real probes take seconds each — the Health check sweep caps at this
-# many candidates (the TSX swept the whole visible list; noted as a deviation).
-HEALTH_CHECK_CAP = 0  # 0 means no cap, check all models
-
-# Ping results (mirrors the TSX per-row state updates): model id → last probe.
-_ping_results: dict[int, dict] = {}
-
+HEALTH_PAGE_SIZE = 200
 
 # --------------------------------------------------------------------------- #
 # Small helpers
@@ -94,17 +87,9 @@ def _api_params(f: dict) -> dict:
 
 
 def _decorate(rows: list[dict]) -> list[dict]:
-    """Status chip classes + cached ping overrides (mirrors TSX per-row updates)."""
+    """Status chip classes from persisted health checks."""
     for r in rows:
         st = str(r.get("status") or "unknown")
-        ping = _ping_results.get(r.get("id"))
-        if ping:
-            r["status"] = ping.get("status") or st
-            r["latency_ms"] = ping.get("latency_ms", r.get("latency_ms"))
-            r["http_status"] = ping.get("http_status", r.get("http_status"))
-            r["detail"] = ping.get("detail") or r.get("detail")
-            r["checked_at"] = int(time.time() * 1000)
-            st = str(r.get("status") or "unknown")
         style = STATUS_STYLES.get(st, STATUS_STYLES["unknown"])
         r["chip"] = style["chip"]
         r["dot"] = style["dot"]
@@ -140,9 +125,6 @@ async def _models_ctx(request: Request) -> dict:
     except Exception:  # noqa: BLE001
         stats = None
 
-    candidates = [m for m in rows if m.get("enabled") and m.get("status") != "dead"]
-    health_ids = [m["id"] for m in candidates[:HEALTH_CHECK_CAP]]
-
     active_filters = int(f["provider_id"] != "all") + int(f["status"] != "all") + \
         int(f["capability"] != "all") + int(f["free"])
     has_filters = active_filters > 0 or bool(f["q"])
@@ -160,9 +142,40 @@ async def _models_ctx(request: Request) -> dict:
         "free": f["free"],
         "active_filters": active_filters,
         "has_filters": has_filters,
-        "health_ids": health_ids,
-        "health_candidates": len(candidates),
     }
+
+
+async def _health_candidate_ids() -> list[int]:
+    """Page through the full catalogue, independent of visible search/filters.
+
+    Include enabled dead models so a later successful probe can recover them;
+    disabled models require an explicit individual Ping or re-enable action.
+    """
+    ids: list[int] = []
+    seen: set[int] = set()
+    offset = 0
+    expected_total: int | None = None
+    while True:
+        page = await api.get("/api/admin/models", params={"limit": HEALTH_PAGE_SIZE, "offset": offset})
+        rows = page.get("rows") or []
+        total = int(page.get("total") or 0)
+        if expected_total is None:
+            expected_total = total
+        elif total != expected_total:
+            raise ValueError("Model catalogue changed during pagination; retry health check")
+        if not rows:
+            if offset < total:
+                raise ValueError("Model catalogue changed during pagination; retry health check")
+            break
+        for model in rows:
+            mid = _to_int(model.get("id"))
+            if model.get("enabled") and mid is not None and mid not in seen:
+                ids.append(mid)
+                seen.add(mid)
+        offset += len(rows)
+        if offset >= total:
+            break
+    return ids
 
 
 async def _meta_base_url() -> str:
@@ -272,8 +285,19 @@ async def ping_model(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": e.message})
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"ok": False, "error": f"Ping failed ({e.__class__.__name__})"})
-    _ping_results[mid] = res
     return JSONResponse(res)
+
+
+@router.get("/ui/models/health-candidates")
+async def health_candidates() -> JSONResponse:
+    """A fresh, complete sweep target list, not just the currently visible cards."""
+    try:
+        ids = await _health_candidate_ids()
+    except ApiError as e:
+        return JSONResponse({"error": e.message}, status_code=502)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"Failed to load health candidates ({e})"}, status_code=502)
+    return JSONResponse({"ids": ids, "total": len(ids)})
 
 
 @router.post("/ui/models/disable-unreachable")

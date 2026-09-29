@@ -35,6 +35,7 @@ COPY engine /app/engine
 
 # Python application: API + frontend module (Jinja2 templates + static assets)
 COPY main.py ./
+COPY maintenance.py ./
 COPY nova ./nova
 COPY routers ./routers
 COPY ui ./ui

@@ -26,7 +26,7 @@ from fastapi.routing import APIRouter
 from fastapi.staticfiles import StaticFiles
 
 from nova import engine as nova_engine
-from .maintenance import periodic_maintenance
+from maintenance import periodic_maintenance
 from nova.bootstrap import run_bootstrap
 from nova.config import CORS_ALLOW_ORIGINS, IS_POSTGRES, PORT, PROJECT_ROOT
 from nova.database import ensure_sqlite_dir, ping
@@ -55,8 +55,6 @@ async def lifespan(_app: FastAPI):
         log.warning("%s", EPHEMERAL_DB_WARNING)
         log.warning("=" * 74)
     await nova_engine.start_sidecar()
-    # Start periodic maintenance task (sync + disable dead) every 12h
-    asyncio.create_task(periodic_maintenance())
     # Start periodic maintenance task (sync + disable dead) every 12h
     asyncio.create_task(periodic_maintenance())
     log.info("NovaRouter up on 0.0.0.0:%s (Python UI + API)", PORT)

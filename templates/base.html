@@ -45,12 +45,10 @@
 </head>
 <body class="sb-expanded bg-[#080c14] font-sans text-slate-200 antialiased">
   <div id="shell" class="flex min-h-screen">
-    {# ----------------------------- Sidebar ----------------------------- #}
-    {% set groups = [
+    {# ----------------------------- Sidebar ----------------------------- #}      {% set groups = [
       ('Operate', [
         ('overview', 'Overview', 'layout-dashboard', 'Gateway health at a glance'),
-        ('console', 'Nova Console', 'sparkles', 'Chat, commands and autonomous agent in one box'),
-        ('terminal', 'Terminal', 'terminal-square', 'Full sandbox terminal with a sidebar chat'),
+        ('terminal', 'Nova Console', 'square-terminal', 'Cloud workspace — opens the Root@Build terminal + console in a new tab'),
       ]),
       ('Gateway', [
         ('providers', 'Providers', 'server', 'Upstream accounts, keys and sign-in'),

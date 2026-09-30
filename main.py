@@ -54,6 +54,23 @@ async def lifespan(_app: FastAPI):
         log.warning("EPHEMERAL DATABASE — no Postgres DATABASE_URL configured.")
         log.warning("%s", EPHEMERAL_DB_WARNING)
         log.warning("=" * 74)
+    # Permanent cloud terminal: the Root@Build shell always exists and the
+    # agent toolbox + cloud build targets are always registered — background
+    # agent tasks can run at any time without any UI action.
+    try:
+        from nova.build_registry import ensure_build_providers, register_builtin_tools
+        from nova.database import SessionLocal
+
+        with SessionLocal() as _db:
+            ensure_build_providers(_db)
+            register_builtin_tools(_db)
+    except Exception as err:  # never block boot on registry bookkeeping
+        log.warning("build registry warmup skipped: %s", err)
+    try:
+        from nova import pty_session
+        pty_session.ensure_default()
+    except Exception as err:
+        log.warning("default cloud shell warmup skipped: %s", err)
     await nova_engine.start_sidecar()
     # Start periodic maintenance task (sync + disable dead) every 12h
     asyncio.create_task(periodic_maintenance())
@@ -213,6 +230,7 @@ from routers import (  # noqa: E402
     admin_storage,
     admin_terminal,
     agent_api,
+    build_api,
     gateway,
 )
 
@@ -227,12 +245,17 @@ admin_router.include_router(admin_compute.router, prefix="/compute", tags=["comp
 admin_router.include_router(admin_storage.router, prefix="/storage", tags=["storage"])
 admin_router.include_router(admin_misc.router, tags=["misc"])
 
+# Permanent cloud build config (Root@Build terminal) — providers, tool registry.
+build_router = APIRouter(prefix="/api/build")
+build_router.include_router(build_api.router, tags=["build"])
+
 agent_router = APIRouter(prefix="/api/agent")
 agent_router.include_router(agent_api.router, tags=["agent"])
 
 app.include_router(gateway.router, prefix="/v1", tags=["gateway"])
 app.include_router(gateway.router, prefix="/api/v1", include_in_schema=False, tags=["gateway"])
 app.include_router(admin_router)
+app.include_router(build_router)
 app.include_router(agent_router)
 
 # --------------------------------------------------------------------------- #

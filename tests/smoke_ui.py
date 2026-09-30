@@ -28,8 +28,8 @@ def check(cond: bool, label: str, detail: str = "") -> None:
 
 TAB_CHECKS = {
     "overview": ["tab-overview", "NovaFree Engine", "Provider Health"],
-    "console": ["console-root", "console-input", "Nova Console"],
-    "terminal": ["tab-terminal", "term-input", "term-side", "Sandbox Terminal"],
+    "console": ["console-root", "console-input", "Nova Console"],  # legacy console tab still renders
+    "terminal": ["tab-terminal", "term-view", "Root@Build", "Nova Console", "ws-config"],
     "providers": ["providers-root"],
     "models": ["models-root"],
     "routes": ["rt-root"],
@@ -64,8 +64,23 @@ async def main() -> int:
             res = await client.get("/")
             html = res.text
             check(res.status_code == 200, "shell renders", str(res.status_code))
-            check('data-tab="terminal"' in html, "sidebar has the Terminal entry")
-            check("app.js?v=4" in html, "shell loads the updated app.js")
+            check('data-tab="terminal"' in html, "sidebar has the merged console entry")
+            check("app.js?v=5" in html, "shell loads the updated app.js")
+
+            # Standalone cloud workspace page (opened in a new browser tab).
+            res = await client.get("/terminal")
+            page = res.text
+            check(res.status_code == 200, "/terminal renders", str(res.status_code))
+            for needle in ("Root@Build", "Nova Console", "term-view", "ws-config"):
+                check(needle in page, f"/terminal: contains {needle!r}")
+
+            # Permanent cloud build config.
+            res = await client.get("/api/build/info")
+            data = res.json()
+            ids = {p.get("id") for p in data.get("providers", [])}
+            check(res.status_code == 200 and {"cloudflare_r2", "google_cloud_storage", "aws_s3"} <= ids,
+                  "build targets include R2 / GCS / S3", str(sorted(ids)))
+            check(bool(data.get("tools")), "agent tools permanently registered", str(data.get("tools"))[:120])
 
             for tab, needles in TAB_CHECKS.items():
                 res = await client.get(f"/partials/tab/{tab}")

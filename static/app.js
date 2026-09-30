@@ -85,6 +85,12 @@
 
   function nav(tab) {
     if (!tab || !document.querySelector(`#sidebar .nav-item[data-tab="${tab}"]`)) return;
+    /* The merged Nova Console entry is a standalone cloud workspace page —
+     * it opens in its own browser tab instead of swapping the dashboard. */
+    if (tab === 'terminal') {
+      window.open('/terminal', '_blank', 'noopener');
+      return;
+    }
     if (tab === store.tab) return;
     navigationVersion += 1;
     navigationPending = true;

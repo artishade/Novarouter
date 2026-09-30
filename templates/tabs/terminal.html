@@ -1,33 +1,90 @@
-{# Terminal tab — multi-session terminal (one real shell per tab) + assistant sidebar. #}
+{# Terminal workspace fragment — console (left) + Root@Build shell (right).
+   Rendered both as the embedded dashboard fragment (/partials/tab/terminal)
+   and, with the outer page, at /terminal. Session/PTY wiring lives in
+   static/terminal_workspace.js (shared by both). #}
 <div id="tab-terminal" class="flex h-[calc(100vh-8.5rem)] min-h-[560px] flex-col gap-3 xl:flex-row">
 
-  {# ============================= main pane ============================= #}
+  {# ========================= Nova Console (left) ========================= #}
+  <aside id="ws-console" class="flex w-full shrink-0 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#0a0f1c] xl:w-[380px]">
+    <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/70 px-3 py-2">
+      <div class="flex min-w-0 items-center gap-2.5">
+        <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10">
+          <i data-lucide="sparkles" class="size-4 text-sky-400"></i>
+        </span>
+        <div class="min-w-0">
+          <h2 class="truncate text-sm font-semibold leading-tight text-slate-100">Nova Console</h2>
+          <p class="truncate text-[10px] leading-tight text-slate-500">chat · $ commands · ! agent tasks</p>
+        </div>
+      </div>
+      <button id="term-side-toggle" type="button" title="Collapse the console panel" aria-label="Collapse the console panel"
+        class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300">
+        <i data-lucide="panel-left-close" class="size-4"></i>
+      </button>
+    </div>
+
+    <div id="term-side-body" class="flex min-h-0 flex-1 flex-col">
+      <div id="term-side-stream" class="flex-1 space-y-3 overflow-y-auto px-3 py-3" aria-live="polite">
+        <div class="rounded-xl border border-slate-800 bg-[#0d1322] px-3 py-2.5 text-[12px] leading-relaxed text-slate-400">
+          Ask a question, or start a line with a prefix:
+          <div class="mt-1.5 space-y-1 font-mono text-[11px]">
+            <div><span class="text-sky-300">$</span> <span class="text-slate-500">run a shell command</span></div>
+            <div><span class="text-purple-300">!</span> <span class="text-slate-500">hand a task to the autonomous agent</span></div>
+            <div><span class="text-amber-300">/</span> <span class="text-slate-500">shortcut — status, models, keys</span></div>
+          </div>
+        </div>
+        {% if tools %}
+        <div class="rounded-xl border border-slate-800 bg-[#0d1322] p-3">
+          <div class="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
+            <i data-lucide="wrench" class="size-3"></i>
+            Permanently registered tools
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            {% for t in tools %}
+            <span class="inline-flex items-center gap-1.5 rounded-md border border-slate-800 bg-black/30 px-2 py-1 text-[10px] text-slate-400" title="{{ t.description }}">
+              <i data-lucide="{{ t.icon | default('wrench') }}" class="size-3 text-emerald-400"></i>{{ t.name }}
+            </span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      <div class="shrink-0 border-t border-slate-800 bg-[#0d1322]/50 p-2.5">
+        <textarea id="term-side-input" rows="2" aria-label="Message to the assistant"
+          placeholder="Ask anything, or type $ for a command"
+          class="max-h-28 w-full resize-none border-0 bg-transparent px-1 text-[12px] text-slate-100 placeholder:text-slate-600 focus:outline-none"></textarea>
+        <div class="mt-1 flex items-center justify-between gap-2">
+          <span id="term-side-mode" class="truncate font-mono text-[10px] text-slate-600">chat</span>
+          <button id="term-side-send" type="button" aria-label="Send message"
+            class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-sky-500/90 px-3 text-[11px] font-medium text-slate-950 transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50">
+            <i data-lucide="send" class="size-3.5"></i>Send
+          </button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  {# ===================== Root@Build terminal (right) ===================== #}
   <section class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#070b13]">
 
-    {# ------------------------------ header ------------------------------ #}
     <header class="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-slate-800 bg-[#0d1322]/70 px-3 py-2">
       <div class="flex min-w-0 items-center gap-2.5">
         <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
           <i data-lucide="square-terminal" class="size-4 text-emerald-400"></i>
         </span>
         <div class="min-w-0">
-          <h2 class="truncate text-sm font-semibold leading-tight text-slate-100">Terminal</h2>
+          <h2 class="truncate text-sm font-semibold leading-tight text-slate-100">~ Root@Build</h2>
           <p class="truncate font-mono text-[10px] leading-tight text-slate-500">
-            {{ system.user or 'root' }}@{{ system.hostname or 'gateway' }}
-            {% if system.is_root %}<span class="ml-1 rounded border border-rose-500/30 bg-rose-500/10 px-1 text-rose-300">root</span>{% endif %}
-            · {{ system.platform or 'linux' }} {{ system.arch or '' }}
+            Debian Linux · root access · permanent cloud shell
           </p>
         </div>
+        <span class="hidden rounded border border-rose-500/30 bg-rose-500/10 px-1 font-mono text-[10px] text-rose-300 sm:inline">root</span>
       </div>
 
       <div class="flex shrink-0 items-center gap-1.5">
-        <span class="hidden items-center gap-3 rounded-md border border-slate-800 bg-[#070b13] px-2.5 py-1 font-mono text-[10px] text-slate-500 md:flex">
-          <span title="Memory">{{ memory.total_mb or '—' }} MB RAM</span>
-          <span class="text-slate-700">·</span>
-          <span title="Load">{{ system.cpus or 1 }} cores</span>
-          <span class="text-slate-700">·</span>
-          <span title="Swap">{{ memory.swap_total_mb or 0 }} MB swap</span>
-        </span>
+        <button id="term-settings" type="button" title="Cloud build targets &amp; tools"
+          class="inline-flex h-7 items-center gap-1.5 rounded-md border border-slate-800 px-2.5 text-[11px] font-medium text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">
+          <i data-lucide="settings-2" class="size-3.5"></i>Config
+        </button>
         <button id="term-font-down" type="button" title="Smaller text" aria-label="Decrease font size"
           class="inline-flex size-7 items-center justify-center rounded-md border border-slate-800 text-slate-500 transition-colors hover:border-slate-700 hover:text-slate-300">
           <span class="font-mono text-[10px]">A−</span>
@@ -52,18 +109,17 @@
       </div>
     </header>
 
-    {# --------------------------- session tab bar --------------------------- #}
+    {# session tabs #}
     <div class="flex shrink-0 items-center gap-2 border-b border-slate-800/70 bg-[#090e1a] px-2 py-1.5">
       <div id="term-tabs" class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto py-0.5"
         role="tablist" aria-label="Terminal sessions"></div>
-      <button id="term-new" type="button"
-        title="Open a new interactive shell session"
+      <button id="term-new" type="button" title="Open a new interactive shell session"
         class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 text-[11px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20">
         <i data-lucide="plus" class="size-3.5"></i>New session
       </button>
     </div>
 
-    {# ----------------------------- viewport ----------------------------- #}
+    {# viewport #}
     <div id="term-view" class="relative min-h-0 flex-1 overflow-hidden bg-[#070b13]">
       <div id="term-fallback" hidden
         class="h-full overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-[12px] leading-relaxed text-slate-300"></div>
@@ -74,24 +130,11 @@
       </div>
     </div>
 
-    {# --------------------------- command bar --------------------------- #}
-    <div id="term-bar" class="flex shrink-0 items-center gap-2 border-t border-slate-800 bg-[#0b1220] px-3 py-2">
-      <span class="shrink-0 font-mono text-[12px] text-emerald-400">$</span>
-      <input id="term-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
-        aria-label="Command input"
-        placeholder="nova status · free -h · git status · python3 script.py"
-        class="min-w-0 flex-1 border-0 bg-transparent font-mono text-[12px] text-slate-100 placeholder:text-slate-600 focus:outline-none" />
-      <button id="term-send" type="button" aria-label="Run command"
-        class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 text-[11px] font-medium text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50">
-        <i data-lucide="corner-down-left" class="size-3.5"></i>Run
-      </button>
-    </div>
-
-    {# ---------------------------- status bar ---------------------------- #}
+    {# status bar #}
     <footer class="flex shrink-0 items-center justify-between gap-3 border-t border-slate-800 bg-[#0d1322]/70 px-3 py-1.5 font-mono text-[10px] text-slate-500">
       <div class="flex min-w-0 items-center gap-2">
-        <span id="term-mode" class="inline-flex items-center gap-1.5 rounded border border-slate-700 px-1.5 py-0.5 text-slate-400">Command mode</span>
-        <span id="term-cwd" class="truncate" title="Working directory">—</span>
+        <span id="term-mode" class="inline-flex items-center gap-1.5 rounded border border-slate-700 px-1.5 py-0.5 text-slate-400">Interactive shell</span>
+        <span id="term-cwd" class="truncate" title="Working directory">~</span>
       </div>
       <div class="flex shrink-0 items-center gap-3">
         <span id="term-size">—</span>
@@ -100,676 +143,35 @@
     </footer>
   </section>
 
-  {# ============================ assistant sidebar ============================ #}
-  <aside id="term-side" class="flex w-full shrink-0 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#0a0f1c] xl:w-[360px]">
-    <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/70 px-3 py-2">
-      <div class="flex min-w-0 items-center gap-2.5">
-        <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10">
-          <i data-lucide="sparkles" class="size-4 text-sky-400"></i>
+  {# ================= Config drawer (build targets) ================= #}
+  <div id="ws-config" hidden
+    class="fixed inset-y-0 right-0 z-50 flex w-[min(94vw,460px)] flex-col overflow-hidden border-l border-slate-800 bg-[#0a0f1c] shadow-2xl">
+    <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/80 px-3 py-2">
+      <div class="flex min-w-0 items-center gap-2">
+        <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
+          <i data-lucide="settings-2" class="size-4 text-emerald-400"></i>
         </span>
         <div class="min-w-0">
-          <h2 class="truncate text-sm font-semibold leading-tight text-slate-100">Assistant</h2>
-          <p class="truncate text-[10px] leading-tight text-slate-500">Chat, run commands, launch agents</p>
+          <div class="truncate text-sm font-semibold text-slate-100">Cloud build config</div>
+          <div class="truncate text-[10px] text-slate-500">Storage targets + tools — saved here, used everywhere</div>
         </div>
       </div>
-      <button id="term-side-toggle" type="button" title="Collapse the assistant panel" aria-label="Collapse the assistant panel"
+      <button id="ws-config-close" type="button" title="Close settings" aria-label="Close settings"
         class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300">
-        <i data-lucide="panel-right-close" class="size-4"></i>
+        <i data-lucide="x" class="size-4"></i>
       </button>
     </div>
-
-    <div id="term-side-body" class="flex min-h-0 flex-1 flex-col">
-      <div id="term-side-stream" class="flex-1 space-y-3 overflow-y-auto px-3 py-3" aria-live="polite">
-        <div class="rounded-xl border border-slate-800 bg-[#0d1322] px-3 py-2.5 text-[12px] leading-relaxed text-slate-400">
-          Ask a question, or start a line with a prefix:
-          <div class="mt-1.5 space-y-1 font-mono text-[11px]">
-            <div><span class="text-sky-300">$</span> <span class="text-slate-500">run a shell command</span></div>
-            <div><span class="text-purple-300">!</span> <span class="text-slate-500">hand a task to the autonomous agent</span></div>
-            <div><span class="text-amber-300">/</span> <span class="text-slate-500">shortcut — status, models, gpu, keys</span></div>
-          </div>
-        </div>
-      </div>
-      <div class="shrink-0 border-t border-slate-800 bg-[#0d1322]/50 p-2.5">
-        <textarea id="term-side-input" rows="2" aria-label="Message to the assistant"
-          placeholder="Ask anything, or type $ for a command"
-          class="max-h-28 w-full resize-none border-0 bg-transparent px-1 text-[12px] text-slate-100 placeholder:text-slate-600 focus:outline-none"></textarea>
-        <div class="mt-1 flex items-center justify-between gap-2">
-          <span id="term-side-mode" class="truncate font-mono text-[10px] text-slate-600">chat</span>
-          <button id="term-side-send" type="button" aria-label="Send message"
-            class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-sky-500/90 px-3 text-[11px] font-medium text-slate-950 transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50">
-            <i data-lucide="send" class="size-3.5"></i>Send
-          </button>
-        </div>
-      </div>
-    </div>
-  </aside>
+    <div id="ws-config-body" class="flex-1 overflow-y-auto p-3" hx-get="/ui/terminal/providers" hx-trigger="load" hx-swap="innerHTML"></div>
+  </div>
 </div>
 
+<script src="/static/terminal_workspace.js?v=1" defer></script>
 <script>
-(() => {
-  'use strict';
-  const root = document.getElementById('tab-terminal');
-  if (!root) return;
-
-  const SEED = { sessions: {{ sessions | tojson }}, history: {{ history | tojson }}, system: {{ system | tojson }} };
-  const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const icons = () => { if (window.lucide) window.lucide.createIcons(); };
-  const toast = (msg, type) => { if (window.NovaUI) NovaUI.toast(msg, type || 'info'); };
-  const shortCwd = (p) => {
-    const home = '/root';
-    const s = String(p || '');
-    return s === home ? '~' : (s.startsWith(home + '/') ? '~' + s.slice(home.length) : s);
-  };
-
-  /* ====================================================================== */
-  /* Viewport — xterm.js when available, plain text otherwise               */
-  /* ====================================================================== */
-  const view = document.getElementById('term-view');
-  const fallback = document.getElementById('term-fallback');
-  const notice = document.getElementById('term-notice-text');
-  const noticeBox = document.getElementById('term-notice');
-  const XTERM = window.Terminal && window.FitAddon;
-
-  let term = null;
-  let fit = null;
-
-  if (XTERM) {
-    term = new window.Terminal({
-      fontFamily: "'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: Number(localStorage.getItem('nova.term.fontsize') || 12.5),
-      lineHeight: 1.25,
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      scrollback: 10000,
-      allowTransparency: true,
-      convertEol: false,
-      theme: {
-        background: '#070b13', foreground: '#cbd5e1', cursor: '#34d399', cursorAccent: '#070b13',
-        selectionBackground: 'rgba(30,41,59,0.85)',
-        black: '#0f172a', red: '#fb7185', green: '#34d399', yellow: '#fbbf24',
-        blue: '#60a5fa', magenta: '#c084fc', cyan: '#22d3ee', white: '#e2e8f0',
-        brightBlack: '#64748b', brightRed: '#fda4af', brightGreen: '#6ee7b7', brightYellow: '#fde047',
-        brightBlue: '#93c5fd', brightMagenta: '#e9d5ff', brightCyan: '#67e8f9', brightWhite: '#f8fafc',
-      },
-    });
-    fit = new window.FitAddon.FitAddon();
-    term.loadAddon(fit);
-    term.open(view);
-    term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== 'keydown') return true;
-      const acc = ev.ctrlKey || ev.metaKey;
-      if (acc && ev.shiftKey && ev.key.toLowerCase() === 'c') { copyOutput(); return false; }
-      if (acc && ev.key.toLowerCase() === 'l') { term.clear(); return false; }
-      /* In command mode the toolbar below owns typing, so the grid must not
-         swallow printable keys. */
-      if (state.active === CMD && !acc && !ev.altKey && ev.key.length === 1) return false;
-      return true;
-    });
-    term.onData((data) => send(data));
-    view.addEventListener('mousedown', () => {
-      if (state.active === CMD && input) setTimeout(() => input.focus(), 0);
-    });
-  } else {
-    fallback.hidden = false;
-    notice.textContent = 'The terminal emulator could not load, so interactive shell sessions are unavailable. One-shot commands still work below.';
-    noticeBox.hidden = false;
-    document.getElementById('term-new').hidden = true;
-  }
-
-  const write = (data) => {
-    if (term) term.write(data);
-    else if (data) fallback.textContent += String(data).replace(/\r\n/g, '\n');
-  };
-  const dim = (s) => '\x1b[38;5;244m' + s + '\x1b[0m';
-  const bold = (s) => '\x1b[1m' + s + '\x1b[0m';
-  const green = (s) => '\x1b[32m' + s + '\x1b[0m';
-
-  function noticeText(text) {
-    notice.textContent = text;
-    noticeBox.hidden = !text;
-  }
-
-  function copyOutput() {
-    if (!term) return;
-    const text = term.getSelection();
-    if (text) { if (window.NovaUI) NovaUI.copy(text, 'Terminal output copied'); return; }
-    const buffer = term.buffer.active;
-    const lines = [];
-    for (let i = 0; i < buffer.length; i++) lines.push(buffer.getLine(i).translateToString(true));
-    if (window.NovaUI) NovaUI.copy(lines.join('\n').trim(), 'Terminal output copied');
-  }
-
-  /* ====================================================================== */
-  /* Session state — mirrors TerminalManager.snapshot()                    */
-  /* ====================================================================== */
-  const state = { sessions: SEED.sessions.sessions || [], active: SEED.sessions.active || null, es: null, busy: false };
-  const tabsEl = document.getElementById('term-tabs');
-  const barEl = document.getElementById('term-bar');
-  const input = document.getElementById('term-input');
-  const sendBtn = document.getElementById('term-send');
-  const modeEl = document.getElementById('term-mode');
-  const cwdEl = document.getElementById('term-cwd');
-  const sizeEl = document.getElementById('term-size');
-  const countEl = document.getElementById('term-count');
-  const CMD = '__command__';
-
-  const session = (id) => state.sessions.find((s) => s.id === id) || null;
-
-  function renderTabs() {
-    const tabs = [];
-    tabs.push(
-      '<div class="term-tab ' + (state.active === CMD ? 'is-active' : '') + ' flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[11px]" role="presentation">' +
-        '<button type="button" role="tab" data-mode="command" aria-selected="' + (state.active === CMD) + '" ' +
-          'class="flex items-center gap-1.5 font-medium"><i data-lucide="square-pen" class="size-3"></i>Command mode</button>' +
-      '</div>'
-    );
-    state.sessions.forEach((s) => {
-      const active = state.active === s.id;
-      tabs.push(
-        '<div class="term-tab group ' + (active ? 'is-active' : '') + ' flex h-7 max-w-[210px] shrink-0 items-center gap-1 rounded-md pl-2 pr-1 text-[11px]" role="presentation">' +
-          '<button type="button" role="tab" data-session="' + esc(s.id) + '" title="' + esc(s.cwd) + '" aria-selected="' + active + '" ' +
-            'class="flex min-w-0 items-center gap-1.5 text-left">' +
-            '<span class="size-1.5 shrink-0 rounded-full ' + (s.closed ? 'bg-slate-600' : 'bg-emerald-400 term-pulse') + '"></span>' +
-            '<span class="truncate font-medium">' + esc(s.label) + '</span>' +
-            '<span class="hidden truncate font-mono text-[10px] text-slate-600 md:inline">' + esc(shortCwd(s.cwd)) + '</span>' +
-          '</button>' +
-          '<button type="button" class="term-tab-close ml-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded text-slate-500" ' +
-            'data-close="' + esc(s.id) + '" aria-label="Close session ' + esc(s.label) + '" title="Close session">' +
-            '<i data-lucide="x" class="size-3"></i></button>' +
-        '</div>'
-      );
-    });
-    tabsEl.innerHTML = tabs.join('');
-
-    countEl.textContent = state.sessions.length + (state.sessions.length === 1 ? ' session' : ' sessions');
-    const live = state.active && state.active !== CMD ? session(state.active) : null;
-    modeEl.textContent = live ? 'Interactive shell' : 'Command mode';
-    modeEl.className = 'inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 ' +
-      (live ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-slate-700 text-slate-400');
-    cwdEl.textContent = live ? shortCwd(live.cwd) : SEED.system.user ? SEED.system.user + '@' + SEED.system.hostname : '—';
-    cwdEl.title = live ? live.cwd : '';
-    sizeEl.textContent = live ? live.cols + ' × ' + live.rows : '';
-    barEl.classList.toggle('hidden', !!live);
-    if (live && live.closed) modeEl.textContent = 'Session ended';
-    icons();
-  }
-
-  async function refreshState() {
-    try {
-      const res = await fetch('/api/admin/terminal/pty/sessions');
-      if (!res.ok) return;
-      const data = await res.json();
-      state.sessions = data.sessions || [];
-      if (state.active !== CMD && !session(state.active)) state.active = CMD;
-      renderTabs();
-    } catch (e) { /* transient */ }
-  }
-
-  /* ----------------------------- viewport ----------------------------- */
-
-  function clearScreen() {
-    if (term) term.clear();
-    else if (fallback) fallback.textContent = '';
-  }
-
-  function seedCommandMode() {
-    const s = SEED.system;
-    write('\r\n' + bold('\x1b[38;5;79mNovaRouter terminal') + dim('  ·  ' + (s.user || 'root') + '@' + (s.hostname || 'gateway') +
-      '  ·  ' + (s.platform || 'linux') + ' ' + (s.arch || '') + '\r\n'));
-    write(dim('Real shell on the gateway — git, apt, ssh, vim and pipes all work.\r\n'));
-    write(dim('Type a command below to run it, or open a session tab for a full interactive TTY.\r\n\r\n'));
-    const rows = SEED.history.slice(-12);
-    if (!rows.length) return;
-    write(dim('— recent commands ' + '—'.repeat(28) + '\r\n'));
-    rows.forEach((row) => {
-      write(green('$ ') + dim(String(row.command || '')) + '\r\n');
-      if (row.output) write(dim('  ' + String(row.output).replace(/\r?\n/g, '\r\n  ').slice(0, 1200)) + '\r\n');
-    });
-    write('\r\n');
-  }
-
-  function detach() {
-    if (state.es) { try { state.es.close(); } catch (e) {} state.es = null; }
-  }
-
-  function send(data) {
-    const live = state.active !== CMD ? session(state.active) : null;
-    if (!live || live.closed) return;
-    fetch('/api/admin/terminal/pty/input', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session: live.id, data }),
-    }).catch(() => {});
-  }
-
-  function attach(id) {
-    if (state.active === id && state.es) { if (term) term.focus(); return; }
-    detach();
-    state.active = id;
-    renderTabs();
-    const live = session(id);
-    if (!live) { enterCommandMode(); return; }
-    noticeText('');
-    clearScreen();
-    resize();
-    const es = new EventSource('/api/admin/terminal/pty/stream?session=' + encodeURIComponent(id));
-    state.es = es;
-    es.onmessage = (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch (e) { return; }
-      if (msg.o) write(msg.o);
-      if (msg.cwd) {
-        const s = session(id);
-        if (s) { s.cwd = msg.cwd; s.label = msg.label || s.label; renderTabs(); }
-      }
-      if (msg.exit !== undefined || msg.done) {
-        detach();
-        write(dim('\r\n[process exited with code ' + (msg.exit === undefined ? 0 : msg.exit) + ']\r\n'));
-        refreshState();
-        enterCommandMode();
-      }
-    };
-    es.onerror = () => {
-      const s = session(id);
-      if (s && s.closed) { detach(); refreshState(); }
-    };
-    if (term) term.focus();
-  }
-
-  function enterCommandMode() {
-    if (state.active === CMD && !state.es) { if (input) input.focus(); return; }
-    detach();
-    state.active = CMD;
-    renderTabs();
-    if (input) setTimeout(() => input.focus(), 30);
-  }
-
-  /* ---------------------- one-shot command execution ---------------------- */
-
-  async function runCommand(cmd) {
-    if (state.busy) return;
-    state.busy = true;
-    if (sendBtn) sendBtn.disabled = true;
-    write(green('$ ') + cmd + '\r\n');
-    if (cmd === 'clear' || cmd === 'reset') {
-      clearScreen();
-      state.busy = false;
-      if (sendBtn) sendBtn.disabled = false;
-      return;
-    }
-    try {
-      const res = await fetch('/ui/terminal/exec', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: cmd }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error((data && data.error) || 'HTTP ' + res.status);
-      if (data.output) write(String(data.output).replace(/\r?\n/g, '\r\n') + '\r\n');
-      if (data.hint) write('\x1b[33m' + data.hint + '\x1b[0m\r\n');
-      if (typeof data.code === 'number' && data.code !== 0) write(dim('exit code ' + data.code) + '\r\n');
-      if (window.NovaUI && /^(nova\s+(boost|gpu)|clear)/.test(cmd)) NovaUI.refresh();
-    } catch (err) {
-      write('\x1b[31m' + ((err && err.message) || 'The command could not be run') + '\x1b[0m\r\n');
-    }
-    state.busy = false;
-    if (sendBtn) sendBtn.disabled = false;
-    if (input) input.focus();
-  }
-
-  const history = [];
-  let historyIdx = -1;
-  function submit() {
-    const cmd = (input ? input.value : '').trim();
-    if (!cmd || state.busy) return;
-    if (input) input.value = '';
-    if (cmd !== 'clear' && cmd !== 'reset') { history.push(cmd); if (history.length > 100) history.shift(); }
-    historyIdx = -1;
-    runCommand(cmd);
-  }
-
-  if (input) {
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); submit(); }
-      else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        historyIdx = historyIdx < 0 ? history.length - 1 : Math.max(0, historyIdx - 1);
-        input.value = history[historyIdx] || '';
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        if (historyIdx < 0) return;
-        historyIdx += 1;
-        input.value = historyIdx >= history.length ? '' : (history[historyIdx] || '');
-        if (historyIdx >= history.length) historyIdx = -1;
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
-        e.preventDefault();
-        clearScreen();
-      }
-    });
-  }
-  if (sendBtn) sendBtn.addEventListener('click', submit);
-
-  /* ---------------------------- session actions ---------------------------- */
-
-  async function createSession() {
-    const btn = document.getElementById('term-new');
-    if (btn) btn.disabled = true;
-    try {
-      const res = await fetch('/api/admin/terminal/pty/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cols: 120, rows: 32 }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error((data && data.error) || 'HTTP ' + res.status);
-      state.sessions = state.sessions.filter((s) => s.closed);
-      state.sessions.push(data.info);
-      attach(data.session);
-      toast('Shell session started', 'success');
-    } catch (err) {
-      toast((err && err.message) || 'Could not start a shell session', 'error');
-    }
-    if (btn) btn.disabled = false;
-  }
-
-  async function closeSession(id) {
-    const s = session(id);
-    try {
-      await fetch('/api/admin/terminal/pty/stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: id }),
-      });
-    } catch (e) { /* the reaper cleans up regardless */ }
-    if (state.active === id) enterCommandMode();
-    state.sessions = state.sessions.filter((x) => x.id !== id);
-    renderTabs();
-    if (s) toast('Closed "' + s.label + '"');
-  }
-
-  async function renameSession(id) {
-    const s = session(id);
-    if (!s) return;
-    const label = window.prompt('Name this session', s.label);
-    if (label === null) return;
-    try {
-      const res = await fetch('/api/admin/terminal/pty/rename', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: id, label }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error((data && data.error) || 'HTTP ' + res.status);
-      s.label = data.info.label;
-      s.cwd = data.info.cwd;
-      renderTabs();
-    } catch (err) {
-      toast((err && err.message) || 'Could not rename the session', 'error');
-    }
-  }
-
-  tabsEl.addEventListener('click', (e) => {
-    const close = e.target.closest('[data-close]');
-    if (close) { e.stopPropagation(); closeSession(close.dataset.close); return; }
-    const tab = e.target.closest('[data-session]');
-    if (tab) { attach(tab.dataset.session); return; }
-    if (e.target.closest('[data-mode="command"]')) enterCommandMode();
-  });
-  tabsEl.addEventListener('dblclick', (e) => {
-    const tab = e.target.closest('[data-session]');
-    if (tab) renameSession(tab.dataset.session);
-  });
-
-  document.getElementById('term-new').addEventListener('click', createSession);
-  document.getElementById('term-clear').addEventListener('click', clearScreen);
-  document.getElementById('term-copy').addEventListener('click', copyOutput);
-
-  const setFont = (delta) => {
-    if (!term) return;
-    const size = Math.min(18, Math.max(10, term.options.fontSize + delta));
-    term.options.fontSize = size;
-    try { localStorage.setItem('nova.term.fontsize', String(size)); } catch (e) {}
-    resize();
-  };
-  document.getElementById('term-font-up').addEventListener('click', () => setFont(0.5));
-  document.getElementById('term-font-down').addEventListener('click', () => setFont(-0.5));
-
-  /* ------------------------------- sizing ------------------------------- */
-
-  let resizeTimer = null;
-  function resize() {
-    if (!fit || !term) return;
-    if (!view.offsetParent) return;          // hidden tab — dimensions are 0
-    try { fit.fit(); } catch (e) { return; }
-    const live = state.active !== CMD ? session(state.active) : null;
-    if (!live || live.closed) return;
-    if (live.cols === term.cols && live.rows === term.rows) return;
-    live.cols = term.cols;
-    live.rows = term.rows;
-    sizeEl.textContent = live.cols + ' × ' + live.rows;
-    fetch('/api/admin/terminal/pty/resize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session: live.id, cols: term.cols, rows: term.rows }),
-    }).catch(() => {});
-  }
-  const queueResize = () => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(resize, 120);
-  };
-  if (window.ResizeObserver) new ResizeObserver(queueResize).observe(view);
-  window.addEventListener('resize', queueResize);
-
-  /* ====================================================================== */
-  /* Assistant sidebar                                                      */
-  /* ====================================================================== */
-  const side = document.getElementById('term-side');
-  const sideBody = document.getElementById('term-side-body');
-  const sideStream = document.getElementById('term-side-stream');
-  const sideInput = document.getElementById('term-side-input');
-  const sideSend = document.getElementById('term-side-send');
-  const sideMode = document.getElementById('term-side-mode');
-  const sideHist = [];
-  let chatBusy = false;
-
-  const MODES = [[/^\$/, 'command', 'text-sky-300'], [/^\//, 'shortcut', 'text-amber-300'], [/^!/, 'agent', 'text-purple-300']];
-
-  function bubble(cls, html) {
-    const el = document.createElement('div');
-    el.className = cls;
-    el.innerHTML = html;
-    sideStream.appendChild(el);
-    sideStream.scrollTop = sideStream.scrollHeight;
-    icons();
-    return el;
-  }
-
-  function route(text) {
-    if (/^\$/.test(text)) return { kind: 'terminal', arg: text.slice(1).trim() };
-    if (/^\/(status|models|gpu|storage|keys|agents|boost|help)\b/.test(text)) return { kind: 'shortcut', arg: text };
-    if (/^!/.test(text)) return { kind: 'agent', arg: text.slice(1).trim() };
-    return { kind: 'chat', arg: text };
-  }
-
-  async function sideCommand(cmd) {
-    const res = await fetch('/ui/terminal/exec', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command: cmd }),
-    });
-    const data = await res.json().catch(() => ({}));
-    bubble('rounded-xl border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-[11px] text-slate-300',
-      '<div class="text-emerald-400">$ ' + esc(cmd) + '</div><pre class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap">' +
-      esc(data.output || data.error || '(no output)') + '</pre>');
-    refreshState();
-  }
-
-  async function sideAgent(goal) {
-    bubble('rounded-xl border border-purple-500/30 bg-purple-500/10 px-3 py-2 text-[12px] text-purple-200',
-      '<span class="inline-flex items-center gap-1.5"><i data-lucide="loader-2" class="size-3 animate-spin"></i>Agent started: ' + esc(goal) + '</span>');
-    try {
-      const res = await fetch('/api/agent/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal, max_steps: 8 }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error((data && data.error) || 'HTTP ' + res.status);
-      for (let i = 0; i < 90; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const poll = await fetch('/api/agent/tasks/' + encodeURIComponent(data.id));
-        if (!poll.ok) continue;
-        const task = await poll.json();
-        const running = task.status === 'queued' || task.status === 'running';
-        const steps = (task.steps || []).map((s) =>
-          '<li class="truncate"><span class="' + (s.status === 'error' ? 'text-rose-300' : 'text-emerald-300') + '">•</span> ' +
-          esc(s.title || s.action) + '</li>').join('');
-        bubble('rounded-xl border border-slate-800 bg-[#0d1322] px-3 py-2 text-[11px]',
-          '<div class="mb-1 font-semibold uppercase tracking-wider text-emerald-400">Agent · ' + esc(task.status) + '</div>' +
-          (steps ? '<ol class="space-y-1 text-slate-400">' + steps + '</ol>' : '') +
-          (running ? '<div class="mt-1 text-slate-500">working…</div>' : '') +
-          (!running && task.summary ? '<div class="md-body mt-2 border-t border-slate-800 pt-2 text-slate-300">' +
-            esc(task.summary).slice(0, 600) + '</div>' : ''));
-        if (!running) { if (window.NovaUI) NovaUI.refresh(); return; }
-      }
-    } catch (err) {
-      bubble('rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200',
-        'The agent could not finish: ' + esc((err && err.message) || 'unknown error'));
-    }
-  }
-
-  async function sideChat(text, context) {
-    const holder = bubble('rounded-xl border border-slate-800 bg-[#0d1322] px-3 py-2 text-[12px] text-slate-200',
-      '<div class="md-body whitespace-pre-wrap"><span class="nova-caret text-emerald-400">▌</span></div>');
-    const body = holder.querySelector('.md-body');
-    try {
-      const res = await fetch('/api/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'auto', stream: true, messages: context.concat([{ role: 'user', content: text }]) }),
-      });
-      if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      let content = '';
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        buf += decoder.decode(chunk.value, { stream: true });
-        let nl;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const raw = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!raw.startsWith('data:')) continue;
-          const payload = raw.slice(5).trim();
-          if (payload === '[DONE]') continue;
-          try {
-            const obj = JSON.parse(payload);
-            const choice = obj.choices && obj.choices[0];
-            const piece = (choice && ((choice.delta && choice.delta.content) || (choice.message && choice.message.content))) || '';
-            if (!piece) continue;
-            content += piece;
-            body.innerHTML = '<span class="whitespace-pre-wrap break-words">' + esc(content) +
-              '</span><span class="nova-caret text-emerald-400">▌</span>';
-            sideStream.scrollTop = sideStream.scrollHeight;
-          } catch (e) { /* partial frame */ }
-        }
-      }
-      body.innerHTML = '<span class="whitespace-pre-wrap break-words">' + esc(content || '(empty response)') + '</span>';
-    } catch (err) {
-      body.innerHTML = '<span class="text-rose-300">' + esc((err && err.message) || 'The request failed') + '</span>';
-    }
-  }
-
-  async function sideSendNow() {
-    const text = (sideInput ? sideInput.value : '').trim();
-    if (!text || chatBusy) return;
-    if (sideInput) sideInput.value = '';
-    chatBusy = true;
-    if (sideSend) sideSend.disabled = true;
-    bubble('ml-auto max-w-[85%] rounded-2xl rounded-tr-md border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[12px] text-slate-100',
-      '<p class="whitespace-pre-wrap break-words">' + esc(text) + '</p>');
-    sideHist.push({ role: 'user', content: text });
-    if (sideHist.length > 16) sideHist.splice(0, sideHist.length - 16);
-
-    const target = route(text);
-    const context = sideHist.slice(-8).map((m) => ({ role: m.role, content: String(m.content).slice(0, 700) }));
-    try {
-      if (target.kind === 'terminal') await sideCommand(target.arg);
-      else if (target.kind === 'shortcut') {
-        if (target.arg === '/help') {
-          bubble('rounded-xl border border-slate-800 bg-[#0d1322] px-3 py-2 text-[11px] text-slate-300',
-            'Shortcuts: <span class="font-mono text-slate-400">/status</span> <span class="font-mono text-slate-400">/models</span> ' +
-            '<span class="font-mono text-slate-400">/gpu</span> <span class="font-mono text-slate-400">/keys</span> ' +
-            '<span class="font-mono text-slate-400">/storage</span> <span class="font-mono text-slate-400">/agents</span> — or just ask a question.');
-        } else await sideCommand('nova ' + target.arg.replace(/^\//, ''));
-      } else if (target.kind === 'agent') await sideAgent(target.arg);
-      else {
-        await sideChat(text, context);
-        sideHist.push({ role: 'assistant', content: 'done' });
-      }
-    } catch (err) {
-      bubble('rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200',
-        esc((err && err.message) || 'Something went wrong'));
-    }
-    chatBusy = false;
-    if (sideSend) sideSend.disabled = false;
-    if (sideInput) sideInput.focus();
-  }
-
-  if (sideInput) {
-    sideInput.addEventListener('input', () => {
-      const text = sideInput.value.trim();
-      if (!sideMode) return;
-      if (!text) { sideMode.textContent = 'chat'; sideMode.className = 'font-mono text-[10px] text-slate-600'; return; }
-      const match = MODES.find(([re]) => re.test(text));
-      sideMode.textContent = match ? match[1] : 'chat';
-      sideMode.className = 'truncate font-mono text-[10px] ' + (match ? match[2] : 'text-slate-600');
-    });
-    sideInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sideSendNow(); }
-    });
-  }
-  if (sideSend) sideSend.addEventListener('click', sideSendNow);
-
-  const sideToggle = document.getElementById('term-side-toggle');
-  if (sideToggle && side && sideBody) {
-    sideToggle.addEventListener('click', () => {
-      const collapsed = sideBody.classList.toggle('hidden');
-      side.classList.toggle('xl:w-[360px]', !collapsed);
-      side.classList.toggle('xl:w-[52px]', collapsed);
-      sideToggle.classList.toggle('rotate-180', collapsed);
-      sideToggle.title = collapsed ? 'Expand the assistant panel' : 'Collapse the assistant panel';
-      setTimeout(queueResize, 60);
-    });
-  }
-
-  /* ------------------------------ lifecycle ------------------------------ */
-
-  function cleanup() {
-    detach();
-    clearTimeout(resizeTimer);
-    if (term) { try { term.dispose(); } catch (e) {} term = null; }
-    if (window.ResizeObserver) window.removeEventListener('resize', queueResize);
-  }
-  const content = document.getElementById('tab-content');
-  if (content) {
-    content.addEventListener('htmx:beforeSwap', () => { if (root.isConnected) cleanup(); });
-    content.addEventListener('htmx:beforeCleanup', cleanup);
-  }
-
-  /* --------------------------------- init --------------------------------- */
-  renderTabs();
-  if (state.active && session(state.active) && !session(state.active).closed) {
-    attach(state.active);
-  } else {
-    state.active = CMD;
-    renderTabs();
-    seedCommandMode();
-    if (input) setTimeout(() => input.focus(), 60);
-  }
-  setTimeout(resize, 120);
-  icons();
-})();
+  (function () {
+    const drawer = document.getElementById('ws-config');
+    const open = document.getElementById('term-settings');
+    const close = document.getElementById('ws-config-close');
+    if (open && drawer) open.addEventListener('click', () => { drawer.hidden = false; if (window.lucide) window.lucide.createIcons(); });
+    if (close && drawer) close.addEventListener('click', () => { drawer.hidden = true; });
+  })();
 </script>

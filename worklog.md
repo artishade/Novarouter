@@ -1,5 +1,11 @@
 # NovaRouter Next.js Rebuild — Shared Worklog
 
+> ⚠️ **HISTORICAL DOCUMENT (do not follow).** This log describes a Next.js 16
+> rebuild that was used as an intermediate design step. **The current app is the
+> Python/FastAPI codebase** — see `AGENTS.md` and `agent-ctx/project-map.md` for
+> the real structure. Kept only as an API-shape and feature reference.
+> Maintain agent memory in `AGENTS.md` + `agent-ctx/*.md`, not here.
+
 Project: Rebuild https://github.com/artishade/Novarouter (AI API gateway + dashboard) as a Next.js 16 app with:
 - Realistic seeded data (replacing mock data)
 - Bug-free, user-friendly, interactive UI/UX
@@ -639,3 +645,19 @@ Work Log:
 
 Stage Summary:
 - The sandbox can now build and test the project from a clean state: dependencies install from the preview/test scripts, `bun run test` is green, and the managed preview reaches a green readiness check on the real dashboard. Root causes fixed rather than worked around: stale-process orphans, the sidecar/HTTP port collision, and the preview advertising the private sidecar's port.
+
+Task ID: 9 (Merged Console + Terminal cloud workspace)
+Agent: Buffy (Freebuff)
+Task: Merge the Terminal tab and Nova Console into one entry that opens a standalone workspace page in a new browser tab (console panel left, terminal right, like the reference screenshot); make the terminal a permanent full cloud Linux/Debian root shell branded `~ Root@Build`; permanently register every agent tool so background tasks can always run; add extendable cloud config (Cloudflare R2, Google Cloud Storage, AWS S3, …) editable from the web UI.
+
+Work Log:
+- Standalone page `GET /terminal` (ui/tabs/terminal.py + templates/terminal_page.html): own minimal chrome, console panel left (chat / `$cmd` / `!goal` / `/shortcut`, agent steps streamed live, permanently-registered toolbox chips), `~ Root@Build` xterm.js terminal right, session tabs, config drawer. The dashboard sidebar's merged "Nova Console" entry opens it via `window.open('/terminal', '_blank')` (static/app.js nav hook) — the old separate console/terminal nav entries are gone; `/partials/tab/terminal` still renders the same workspace embedded (compat). Workspace client logic shared by both shells in static/terminal_workspace.js.
+- Permanent cloud shell (nova/pty_session.py): the branded prompt `~ Root@Build:<cwd>#` is guaranteed via a per-session bash rcfile (beats the image's own /root/.bashrc) plus env PS1/PROMPT_COMMAND; identity env pinned (HOME=/root, USER/LOGNAME=root, HOSTNAME=build.nova); a one-time MOTD (marker-file guarded, PROMPT_COMMAND-printed so every attaching client sees it) states Debian/root/permanent and the always-installed tooling (git, curl, python3, pip, node, bun, npm). `ensure_default()` recreates the default `Root@Build` session whenever none is live (called at boot in main.py lifespan) — the terminal is never empty.
+- Permanent agent tool registration: nova/build_registry.py seeds the cloud build-target catalogue (Cloudflare R2, Google Cloud Storage, AWS S3, Backblaze B2, Azure Blob, S3-compatible custom — each with typed credential fields incl. secret flags and docs links) idempotently at every boot (`ensure_build_providers`), and `register_builtin_tools` records the toolbox under the `agent_builtin_tools_registered` config key so background agent tasks always have web_search, read_url, terminal, gateway_stats, storage_scan, discover_models, write/read/edit_file, mkdir, bash_exec, finish — nothing to enable from the UI, ever.
+- Config API: routers/build_api.py mounted at `/api/build` — GET /info (identity, tools with descriptions from nova.agent.TOOLS_DOC, providers with saved secrets masked, engine runtime, PTY snapshot), POST /providers (upsert preset config or add a custom S3-compatible target; masked placeholders `…`/`••••` resubmitted from an untouched edit form are dropped so real secrets survive), POST /tools/register (re-run the registration).
+- Web-UI settings: the workspace config drawer (partials/terminal_providers.html + terminal_provider_form.html) lists every target with status/configured state, opens add/edit forms (secret inputs pre-filled masked with a "leave blank to keep" hint), saves via HTMX POST /ui/terminal/settings → /api/build/providers, re-registers tools, and the panel reloads after every action. Verified end-to-end: save R2 config → status connected, secrets masked `AKIA…xxxx`; masked resubmit keeps the real secret; custom target added; GCS saved through the HTMX form path.
+- CI/tests updated: ci.yml boot job now also asserts `/terminal` renders `Root@Build` and `/api/build/info` contains the R2/GCS/S3 presets + registered tools; tests/smoke_ui.py covers /terminal, /api/build/info and the merged nav entry; app.js version bumped (v5 already served) — nav test unchanged since the terminal branch returns before any htmx call.
+- Verified: sh ./scripts/test.sh → lint ok, 19/19 Python, 4/4 JS; tests/smoke_ui.py all green; live boot on :3222 — PTY stream shows the `~ Root@Build:/home/daytona/codebase# ` prompt + MOTD, `whoami`→root, second session created+resized, /api/build/info round-trips, managed preview restarted green (/, /terminal, /api/build/info, sessions snapshot all correct through the public URL).
+
+Stage Summary:
+- One "Nova Console" sidebar entry now opens a full-page cloud workspace in a new browser tab: Nova Console chat left, a permanent `~ Root@Build` Debian root terminal right, with every agent tool permanently registered for background tasks and cloud build targets (Cloudflare R2 / GCS / AWS S3 / B2 / Azure / custom S3) addable and editable from the web UI.

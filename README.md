@@ -218,21 +218,40 @@ Everything lives in one chatbox — input is routed automatically:
 
 ---
 
-## ⬛ Terminal
+## ⬛ Terminal — the `~ Root@Build` cloud workspace
 
-The Terminal tab runs a real shell on the gateway host and manages it as a
-set of independent sessions, the same way a native terminal app does.
+The sidebar's **Nova Console** entry opens the merged cloud workspace at
+**`/terminal` in a new browser tab**: the Nova Console chat panel on the left
+(chat, `$ commands`, `! agent tasks`, `/ shortcuts`) and the cloud terminal on
+the right — one screen, like a native terminal app with an assistant beside it.
 
-- **Command mode** (first tab) — one-shot commands run through the executor and are saved to history.
-- **Session tabs** — each **New session** spawns its own `bash` on a pseudo-terminal, so `ssh`, `git clone`, `sudo` and `vim` all behave normally. Up to 8 run at once; switch, rename (double-click a tab) or close them freely.
-- **Live state** — the shell reports its working directory (OSC 7), so a tab follows your `cd` and the tab label tracks the current folder until you name it yourself.
-- **Real rendering** — output is drawn with xterm.js: full ANSI colour, selection, `Ctrl+Shift+C` copy, and window resize is forwarded to the PTY.
-- Idle sessions are reaped after 30 minutes and everything is torn down on shutdown.
+- **Permanent cloud shell** — every session is a real `bash` on a
+  pseudo-terminal with **root access on Debian Linux**, branded
+  `~ Root@Build:<cwd>#`. A default `Root@Build` session is recreated
+  automatically whenever none is live, so the terminal is never empty.
+- **Permanently registered tools** — git, curl, python3, pip, node, bun and
+  npm stay available for you *and* for background agent tasks; the agent
+  toolbox (web search, page reader, shell, file tools, storage scan, model
+  discovery) is registered at every boot and needs no UI setup.
+- **Session tabs** — each **New session** spawns its own shell, so `ssh`,
+  `git clone`, `sudo` and `vim` all behave normally. Up to 8 run at once;
+  switch, rename (double-click a tab) or close them freely.
+- **Live state** — the shell reports its working directory (OSC 7), so a tab
+  follows your `cd`; output is drawn with xterm.js (full ANSI colour,
+  selection, `Ctrl+Shift+C` copy, resize forwarded to the PTY).
+- **Cloud build config** — the **Config** button opens the settings drawer:
+  add or edit storage targets (**Cloudflare R2, Google Cloud Storage,
+  AWS S3, Backblaze B2, Azure Blob**, or any custom S3-compatible endpoint)
+  and review the permanently registered tools. Everything is saved from the
+  web UI; secrets are stored server-side and always shown masked.
 
 ```bash
 curl -s localhost:3000/api/admin/terminal/pty/sessions          # state snapshot
 curl -s -XPOST localhost:3000/api/admin/terminal/pty/sessions -d '{"cols":120,"rows":32}'
 curl -sN localhost:3000/api/admin/terminal/pty/stream?session=<id>   # output + cd + exit events
+curl -s localhost:3000/api/build/info                # cloud identity, tools, build targets
+curl -s -XPOST localhost:3000/api/build/providers \
+  -d '{"id":"cloudflare_r2","config":{"bucket_name":"my-bucket","access_key":"…","secret_key":"…"}}'
 ```
 
 ---
@@ -244,7 +263,8 @@ main.py            FastAPI entrypoint — 0.0.0.0:$PORT, CORS, /health, API rout
 nova/              config, SQLAlchemy models (Prisma-layout compatible), bootstrap,
                    engine sidecar client, live discovery, model sync, terminal sandbox,
                    agent runtime, storage lib
-routers/           gateway (/v1), admin CRUD, admin misc, terminal, compute, storage, agent APIs
+routers/           gateway (/v1), admin CRUD, admin misc, terminal, compute, storage, agent,
+                   build APIs (permanent cloud terminal config)
 ui/                the Python frontend module — shell + 9 dashboard tabs,
                    server-rendered fragments consumed by HTMX (BFF over the JSON API)
 templates/         Jinja2 templates (base shell, tab fragments, partials)

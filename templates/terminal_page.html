@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NovaRouter — Cloud Shell &amp; Console · Root@Build</title>
+  <meta name="description" content="NovaRouter cloud workspace — Root@Build Debian terminal with the Nova Console beside it." />
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    html { background: #060a12; color: #e2e8f0; }
+    body { margin: 0; font-family: Geist, ui-sans-serif, system-ui, sans-serif; }
+  </style>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Geist', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['Geist Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.525.0/dist/umd/lucide.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+  <link rel="stylesheet" href="/static/nova.css" />
+  <script src="/static/app.js?v=5" defer></script>
+</head>
+<body class="bg-[#060a12] font-sans text-slate-200 antialiased">
+  {# Slim top bar — the page is meant to fill a whole browser tab. #}
+  <div class="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-slate-800 bg-[#0a0f1c] px-3">
+    <div class="flex min-w-0 items-center gap-2.5">
+      <div class="flex size-7 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 font-mono text-sm font-bold text-emerald-400">N</div>
+      <div class="min-w-0">
+        <div class="truncate text-xs font-semibold leading-tight text-slate-100">Cloud Workspace</div>
+        <div class="truncate font-mono text-[10px] leading-tight text-slate-500">~ Root@Build · Debian · permanent root shell</div>
+      </div>
+    </div>
+    <div class="flex shrink-0 items-center gap-1.5">
+      <button type="button" onclick="window.open('/terminal', '_blank')" title="Open this workspace in another tab"
+        class="inline-flex size-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300">
+        <i data-lucide="external-link" class="size-3.5"></i>
+      </button>
+      <a href="/" title="Back to the dashboard"
+        class="inline-flex size-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300">
+        <i data-lucide="layout-dashboard" class="size-3.5"></i>
+      </a>
+    </div>
+  </div>
+
+  {# The workspace — console panel (left) + terminal (right). #}
+  <div id="tab-terminal" class="flex h-[calc(100vh-2.75rem)] min-h-[540px] flex-col gap-3 p-3 xl:flex-row">
+
+    {# ========================= Nova Console (left) ========================= #}
+    <aside id="ws-console" class="flex w-full shrink-0 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#0a0f1c] xl:w-[420px]">
+      <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/70 px-3 py-2">
+        <div class="flex min-w-0 items-center gap-2.5">
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10">
+            <i data-lucide="sparkles" class="size-4 text-sky-400"></i>
+          </span>
+          <div class="min-w-0">
+            <h2 class="truncate text-sm font-semibold leading-tight text-slate-100">Nova Console</h2>
+            <p class="truncate text-[10px] leading-tight text-slate-500">chat · $ commands · ! agent tasks</p>
+          </div>
+        </div>
+        <button id="term-side-toggle" type="button" title="Collapse the console panel" aria-label="Collapse the console panel"
+          class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300">
+          <i data-lucide="panel-left-close" class="size-4"></i>
+        </button>
+      </div>
+
+      <div id="term-side-body" class="flex min-h-0 flex-1 flex-col">
+        <div id="term-side-stream" class="flex-1 space-y-3 overflow-y-auto px-3 py-3" aria-live="polite">
+          <div class="rounded-xl border border-slate-800 bg-[#0d1322] px-3 py-2.5 text-[12px] leading-relaxed text-slate-400">
+            Ask a question, or start a line with a prefix:
+            <div class="mt-1.5 space-y-1 font-mono text-[11px]">
+              <div><span class="text-sky-300">$</span> <span class="text-slate-500">run a shell command</span></div>
+              <div><span class="text-purple-300">!</span> <span class="text-slate-500">hand a task to the autonomous agent</span></div>
+              <div><span class="text-amber-300">/</span> <span class="text-slate-500">shortcut — status, models, keys</span></div>
+            </div>
+          </div>
+          {% if tools %}
+          <div class="rounded-xl border border-slate-800 bg-[#0d1322] p-3">
+            <div class="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
+              <i data-lucide="wrench" class="size-3"></i>
+              Permanently registered tools
+            </div>
+            <div class="flex flex-wrap gap-1.5">
+              {% for t in tools %}
+              <span class="inline-flex items-center gap-1.5 rounded-md border border-slate-800 bg-black/30 px-2 py-1 text-[10px] text-slate-400" title="{{ t.description }}">
+                <i data-lucide="{{ t.icon | default('wrench') }}" class="size-3 text-emerald-400"></i>{{ t.name }}
+              </span>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+        </div>
+        <div class="shrink-0 border-t border-slate-800 bg-[#0d1322]/50 p-2.5">
+          <textarea id="term-side-input" rows="2" aria-label="Message to the assistant"
+            placeholder="Ask anything, or type $ for a command"
+            class="max-h-28 w-full resize-none border-0 bg-transparent px-1 text-[12px] text-slate-100 placeholder:text-slate-600 focus:outline-none"></textarea>
+          <div class="mt-1 flex items-center justify-between gap-2">
+            <span id="term-side-mode" class="truncate font-mono text-[10px] text-slate-600">chat</span>
+            <button id="term-side-send" type="button" aria-label="Send message"
+              class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-sky-500/90 px-3 text-[11px] font-medium text-slate-950 transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50">
+              <i data-lucide="send" class="size-3.5"></i>Send
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    {# ===================== Root@Build terminal (right) ===================== #}
+    <section class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#070b13]">
+
+      <header class="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-slate-800 bg-[#0d1322]/70 px-3 py-2">
+        <div class="flex min-w-0 items-center gap-2.5">
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
+            <i data-lucide="square-terminal" class="size-4 text-emerald-400"></i>
+          </span>
+          <div class="min-w-0">
+            <h2 class="truncate text-sm font-semibold leading-tight text-slate-100">~ Root@Build</h2>
+            <p class="truncate font-mono text-[10px] leading-tight text-slate-500">
+              Debian Linux · root access · permanent cloud shell
+            </p>
+          </div>
+          <span class="hidden rounded border border-rose-500/30 bg-rose-500/10 px-1 font-mono text-[10px] text-rose-300 sm:inline">root</span>
+        </div>
+
+        <div class="flex shrink-0 items-center gap-1.5">
+          <button id="term-settings" type="button" title="Cloud build targets &amp; tools"
+            class="inline-flex h-7 items-center gap-1.5 rounded-md border border-slate-800 px-2.5 text-[11px] font-medium text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">
+            <i data-lucide="settings-2" class="size-3.5"></i>Config
+          </button>
+          <button id="term-font-down" type="button" title="Smaller text" aria-label="Decrease font size"
+            class="inline-flex size-7 items-center justify-center rounded-md border border-slate-800 text-slate-500 transition-colors hover:border-slate-700 hover:text-slate-300">
+            <span class="font-mono text-[10px]">A−</span>
+          </button>
+          <button id="term-font-up" type="button" title="Larger text" aria-label="Increase font size"
+            class="inline-flex size-7 items-center justify-center rounded-md border border-slate-800 text-slate-500 transition-colors hover:border-slate-700 hover:text-slate-300">
+            <span class="font-mono text-xs">A+</span>
+          </button>
+          <button id="term-copy" type="button" title="Copy the visible terminal output" aria-label="Copy terminal output"
+            class="inline-flex size-7 items-center justify-center rounded-md border border-slate-800 text-slate-500 transition-colors hover:border-emerald-500/40 hover:text-emerald-400">
+            <i data-lucide="copy" class="size-3.5"></i>
+          </button>
+          <button id="term-clear" type="button" title="Clear this screen" aria-label="Clear screen"
+            class="inline-flex size-7 items-center justify-center rounded-md border border-slate-800 text-slate-500 transition-colors hover:border-slate-700 hover:text-slate-300">
+            <i data-lucide="eraser" class="size-3.5"></i>
+          </button>
+          <button id="term-wipe" type="button" title="Delete the saved command history"
+            class="inline-flex size-7 items-center justify-center rounded-md border border-slate-800 text-slate-500 transition-colors hover:border-rose-500/40 hover:text-rose-300"
+            hx-post="/ui/terminal/clear" hx-swap="none" hx-confirm="Delete all saved terminal history?">
+            <i data-lucide="trash-2" class="size-3.5"></i>
+          </button>
+        </div>
+      </header>
+
+      {# session tabs #}
+      <div class="flex shrink-0 items-center gap-2 border-b border-slate-800/70 bg-[#090e1a] px-2 py-1.5">
+        <div id="term-tabs" class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto py-0.5"
+          role="tablist" aria-label="Terminal sessions"></div>
+        <button id="term-new" type="button" title="Open a new interactive shell session"
+          class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 text-[11px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20">
+          <i data-lucide="plus" class="size-3.5"></i>New session
+        </button>
+      </div>
+
+      {# viewport #}
+      <div id="term-view" class="relative min-h-0 flex-1 overflow-hidden bg-[#070b13]">
+        <div id="term-fallback" hidden
+          class="h-full overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-[12px] leading-relaxed text-slate-300"></div>
+        <div id="term-notice" hidden
+          class="absolute inset-x-0 top-0 z-10 flex items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+          <i data-lucide="info" class="mt-0.5 size-3.5 shrink-0"></i>
+          <span id="term-notice-text"></span>
+        </div>
+      </div>
+
+      {# status bar — mirrors the screenshot footer #}
+      <footer class="flex shrink-0 items-center justify-between gap-3 border-t border-slate-800 bg-[#0d1322]/70 px-3 py-1.5 font-mono text-[10px] text-slate-500">
+        <div class="flex min-w-0 items-center gap-2">
+          <span id="term-mode" class="inline-flex items-center gap-1.5 rounded border border-slate-700 px-1.5 py-0.5 text-slate-400">Interactive shell</span>
+          <span id="term-cwd" class="truncate" title="Working directory">~</span>
+        </div>
+        <div class="flex shrink-0 items-center gap-3">
+          <span id="term-size">—</span>
+          <span id="term-count">0 sessions</span>
+        </div>
+      </footer>
+    </section>
+
+    {# ================= Config drawer (build targets) ================= #}
+    <div id="ws-config" hidden
+      class="fixed inset-y-0 right-0 z-50 flex w-[min(94vw,460px)] flex-col overflow-hidden border-l border-slate-800 bg-[#0a0f1c] shadow-2xl">
+      <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/80 px-3 py-2">
+        <div class="flex min-w-0 items-center gap-2">
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
+            <i data-lucide="settings-2" class="size-4 text-emerald-400"></i>
+          </span>
+          <div class="min-w-0">
+            <div class="truncate text-sm font-semibold text-slate-100">Cloud build config</div>
+            <div class="truncate text-[10px] text-slate-500">Storage targets + tools — saved from here, used everywhere</div>
+          </div>
+        </div>
+        <button id="ws-config-close" type="button" title="Close settings" aria-label="Close settings"
+          class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300">
+          <i data-lucide="x" class="size-4"></i>
+        </button>
+      </div>
+      <div id="ws-config-body" class="flex-1 overflow-y-auto p-3" hx-get="/ui/terminal/providers" hx-trigger="load" hx-swap="innerHTML"></div>
+    </div>
+  </div>
+
+  {# Toast stack #}
+  <div id="toaster" class="pointer-events-none fixed bottom-4 right-4 z-[70] flex w-[min(92vw,360px)] flex-col gap-2" aria-live="polite"></div>
+
+  <script src="/static/terminal_workspace.js?v=1" defer></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      if (window.lucide) window.lucide.createIcons();
+      const drawer = document.getElementById('ws-config');
+      const open = document.getElementById('term-settings');
+      const close = document.getElementById('ws-config-close');
+      if (open && drawer) open.addEventListener('click', () => { drawer.hidden = false; if (window.lucide) window.lucide.createIcons(); });
+      if (close && drawer) close.addEventListener('click', () => { drawer.hidden = true; });
+      document.addEventListener('htmx:afterSwap', () => { if (window.lucide) window.lucide.createIcons(); });
+    });
+  </script>
+</body>
+</html>

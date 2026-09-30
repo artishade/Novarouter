@@ -56,6 +56,13 @@ jobs:
           curl -fsS http://127.0.0.1:3111/ | grep -q 'NovaRouter'
           curl -fsS http://127.0.0.1:3111/partials/tab/terminal | grep -q 'term-tabs'
 
+          # The standalone cloud workspace page (opens in a new browser tab).
+          curl -fsS http://127.0.0.1:3111/terminal | grep -q 'Root@Build'
+
+          # Permanent cloud build config: presets + tool registry.
+          curl -fsS http://127.0.0.1:3111/api/build/info -o build.json
+          python3 -c "import json; b = json.load(open('build.json')); ids = {p['id'] for p in b['providers']}; assert {'cloudflare_r2', 'google_cloud_storage', 'aws_s3'} <= ids, ids; assert b['tools'], b; print('build config ok:', len(b['providers']), 'targets,', len(b['tools']), 'tools')"
+
           # The terminal session API answers with a real shell session.
           curl -fsS -X POST http://127.0.0.1:3111/api/admin/terminal/pty/sessions \
             -H 'Content-Type: application/json' -d '{}' -o session.json

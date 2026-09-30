@@ -1,0 +1,94 @@
+{# Add / edit form for one cloud build target (rendered into the drawer). #}
+<div class="space-y-4">
+  <button type="button" hx-get="/ui/terminal/providers" hx-target="#ws-config-body" hx-swap="innerHTML"
+    class="inline-flex items-center gap-1.5 text-[11px] text-slate-500 transition-colors hover:text-slate-300">
+    <i data-lucide="arrow-left" class="size-3"></i>Back to targets
+  </button>
+
+  {% if preset and preset.id %}
+  <form hx-post="/ui/terminal/settings" hx-target="#ws-config-body" hx-swap="innerHTML" class="space-y-3">
+    <input type="hidden" name="provider" value="{{ preset.id }}" />
+    <div class="flex items-center gap-2.5">
+      <span class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
+        <i data-lucide="{{ preset.icon or 'cloud' }}" class="size-4"></i>
+      </span>
+      <div class="min-w-0">
+        <div class="truncate text-sm font-semibold text-slate-100">{{ preset.name }}</div>
+        <div class="truncate font-mono text-[10px] text-slate-500">{{ preset.type }} · {{ preset.status or 'pending' }}</div>
+      </div>
+    </div>
+    {% if preset.docs_url %}
+    <a href="{{ preset.docs_url }}" target="_blank" rel="noreferrer"
+      class="inline-flex items-center gap-1.5 text-[11px] text-emerald-400 transition hover:text-emerald-300">
+      <i data-lucide="external-link" class="size-3"></i>How to get these credentials
+    </a>
+    {% endif %}
+
+    <div class="space-y-3">
+      {% for f in preset.fields %}
+      <div class="space-y-1.5">
+        <label for="bf-{{ f.name }}" class="text-xs text-slate-400">
+          {{ f.label }}{% if f.required %}<span class="text-emerald-400"> *</span>{% endif %}
+        </label>
+        <input id="bf-{{ f.name }}" name="{{ f.name }}" type="{{ 'password' if f.secret else 'text' }}"
+          placeholder="{{ f.placeholder or '' }}" value="{{ f.value or '' }}"
+          autocomplete="off" spellcheck="false"
+          class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+        {% if f.secret and f.value %}
+        <p class="text-[10px] text-slate-600">Saved value is hidden — type a new one to replace it, or leave blank to keep it.</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <button type="submit"
+      class="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md bg-emerald-500 px-4 text-sm font-medium text-slate-950 transition-colors hover:bg-emerald-400">
+      <i data-lucide="save" class="size-4"></i>Save config
+    </button>
+  </form>
+
+  {% else %}
+  {# ---- custom target form ---- #}
+  <form hx-post="/ui/terminal/settings" hx-target="#ws-config-body" hx-swap="innerHTML" class="space-y-3">
+    <input type="hidden" name="provider" value="__new__" />
+    <div class="flex items-center gap-2.5">
+      <span class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
+        <i data-lucide="plus" class="size-4"></i>
+      </span>
+      <div class="min-w-0">
+        <div class="truncate text-sm font-semibold text-slate-100">New build target</div>
+        <div class="truncate font-mono text-[10px] text-slate-500">S3-compatible endpoint</div>
+      </div>
+    </div>
+
+    <div class="space-y-1.5">
+      <label for="bf-name" class="text-xs text-slate-400">Name <span class="text-emerald-400">*</span></label>
+      <input id="bf-name" name="name" type="text" placeholder="MinIO staging" required autocomplete="off" spellcheck="false"
+        class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+    </div>
+    <div class="space-y-1.5">
+      <label for="bf-type" class="text-xs text-slate-400">Type</label>
+      <select id="bf-type" name="type"
+        class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 text-xs text-slate-100 outline-none focus:border-emerald-500/50">
+        <option value="s3_compatible">s3_compatible</option>
+        <option value="webdav">webdav</option>
+        <option value="custom">custom</option>
+      </select>
+    </div>
+    {% for f in [('endpoint', 'Endpoint URL', 'https://s3.example.com'), ('bucket_name', 'Bucket', 'my-bucket'),
+                 ('access_key', 'Access key ID', ''), ('secret_key', 'Secret access key', ''), ('region', 'Region', 'us-east-1')] %}
+    <div class="space-y-1.5">
+      <label for="bf-{{ f[0] }}" class="text-xs text-slate-400">{{ f[1] }}</label>
+      <input id="bf-{{ f[0] }}" name="{{ f[0] }}" type="{{ 'password' if 'key' in f[0] else 'text' }}"
+        placeholder="{{ f[2] }}" autocomplete="off" spellcheck="false"
+        class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+    </div>
+    {% endfor %}
+
+    <button type="submit"
+      class="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md bg-emerald-500 px-4 text-sm font-medium text-slate-950 transition-colors hover:bg-emerald-400">
+      <i data-lucide="save" class="size-4"></i>Add target
+    </button>
+  </form>
+  {% endif %}
+</div>

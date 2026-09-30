@@ -62,6 +62,23 @@ ALLOWED_ACTIONS = {
     "finish",
 }
 
+# Human-readable toolbox description — surfaced by routers/build_api.py so
+# the web UI can show what is permanently registered for background tasks.
+TOOLS_DOC = {
+    "web_search": "Search the live web for up-to-date information",
+    "read_url": "Read and extract any web page",
+    "terminal": "Run diagnostics in the Root@Build cloud shell",
+    "gateway_stats": "Inspect live gateway stats, models and routes",
+    "storage_scan": "Scan configured cloud storage targets (R2 / GCS / S3 / …)",
+    "discover_models": "Discover live models available from every configured provider via /v1/models",
+    "write_file": "Create or overwrite a workspace file (<path> ||| <content>)",
+    "read_file": "Read a workspace file",
+    "edit_file": "Edit a workspace file (<path> ||| <old> ||| <new>)",
+    "mkdir": "Create a directory",
+    "bash_exec": "Run a real shell command in the cloud workspace",
+    "finish": "End the task with a final summary",
+}
+
 AGENT_SYSTEM_PROMPT = """You are Nova Agent, an autonomous research & operations agent inside the NovaRouter AI gateway.
 
 You work toward the user's goal one step at a time using these tools:

@@ -80,23 +80,27 @@ body.sb-collapsed .nav-item { height: 2.5rem; justify-content: center; padding: 
 .nova-caret { animation: nova-blink 1.05s step-end infinite; }
 @keyframes nova-blink { 50% { opacity: 0; } }
 
-/* Live PTY session — ANSI SGR colors (class emitted by the mini renderer) */
-.ansi-30 { color: #475569; }
-.ansi-31 { color: #fb7185; }
-.ansi-32 { color: #34d399; }
-.ansi-33 { color: #fbbf24; }
-.ansi-34 { color: #60a5fa; }
-.ansi-35 { color: #c084fc; }
-.ansi-36 { color: #22d3ee; }
-.ansi-37 { color: #e2e8f0; }
-.ansi-90 { color: #64748b; }
-.ansi-91 { color: #fda4af; }
-.ansi-92 { color: #6ee7b7; }
-.ansi-93 { color: #fde047; }
-.ansi-94 { color: #93c5fd; }
-.ansi-95 { color: #e9d5ff; }
-.ansi-96 { color: #67e8f9; }
-.ansi-97 { color: #f8fafc; }
+/* Busy dot on the tab bar while a command is in flight */
+.term-pulse { animation: nova-pulse 1.4s ease-in-out infinite; }
+@keyframes nova-pulse { 50% { opacity: 0.35; } }
+
+/* ---------------- Terminal (xterm.js) ---------------- */
+#term-view .xterm { height: 100%; padding: 0.25rem 0.25rem 0.5rem; }
+#term-view .xterm-viewport { background: transparent !important; scrollbar-color: #1e293b transparent; }
+#term-view .xterm-viewport::-webkit-scrollbar { width: 8px; }
+#term-view .xterm-viewport::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 8px; }
+#term-view .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #334155; }
+#term-view .xterm-screen { background: transparent; }
+
+/* Session tabs */
+.term-tab { transition: background-color 0.12s ease, color 0.12s ease; }
+.term-tab.is-active { background: #0d1322; color: #e2e8f0; box-shadow: inset 0 -2px 0 0 #34d399; }
+.term-tab:not(.is-active) { color: #64748b; }
+.term-tab:not(.is-active):hover { background: #0b1220; color: #94a3b8; }
+.term-tab-close { opacity: 0; transition: opacity 0.12s ease, background-color 0.12s ease; }
+.term-tab:hover .term-tab-close,
+.term-tab.is-active .term-tab-close { opacity: 1; }
+.term-tab-close:hover { background: rgb(244 63 94 / 0.18); color: #fda4af; }
 
 /* Native dialog polish */
 dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }

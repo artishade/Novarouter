@@ -4,6 +4,10 @@
   "private": true,
   "description": "NovaRouter — AI gateway (FastAPI + Jinja2 UI). `bun run dev` starts the Python server; bun itself hosts only the NovaFree engine sidecar.",
   "scripts": {
+    "preview": "sh ./scripts/preview.sh",
+    "install:py": "python3 -m pip install --no-cache-dir --disable-pip-version-check -r requirements.txt",
+    "test": "sh ./scripts/test.sh",
+    "test:python": "python3 -m unittest discover -s tests -p 'test_*.py'",
     "dev": "python3 main.py 2>&1 | tee dev.log",
     "dev:python": "python3 main.py",
     "start": "python3 main.py 2>&1 | tee server.log",

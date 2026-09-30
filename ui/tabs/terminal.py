@@ -1,10 +1,10 @@
-"""Terminal tab — full-screen sandbox terminal with a sidebar chatbox.
+"""Terminal tab — multi-session terminal with a sidebar assistant.
 
-Layout (user request): the live terminal owns the main pane and can be used
-standalone; a collapsible right sidebar chatbox routes chat + `$ commands` +
+Layout: the terminal owns the main pane (session tabs, real shells, one-shot
+commands) and a collapsible right sidebar routes chat + `$ commands` +
 `! agent tasks` through the same Nova Console logic.
 
-  GET  /partials/tab/terminal   → the full fragment (server-rendered history)
+  GET  /partials/tab/terminal   → the full fragment (history + live sessions)
   POST /ui/terminal/exec        → JSON sandbox exec (delegates to console BFF)
   POST /ui/terminal/clear       → wipes terminal history (BFF → /terminal/clear)
 """
@@ -33,12 +33,14 @@ async def terminal_tab() -> HTMLResponse:
     history: list[dict] = []
     system: dict = {}
     memory: dict = {}
+    sessions: dict = {"sessions": [], "active": None, "max_sessions": 8}
     try:
         payload = await api.get("/api/admin/terminal/history")
         if isinstance(payload, dict):
             history = payload.get("history") or []
             system = payload.get("system") or {}
             memory = payload.get("memory_config") or {}
+            sessions = payload.get("sessions") or sessions
     except (ApiError, Exception):
         history, system, memory = [], {}, {}
     return html(
@@ -47,6 +49,9 @@ async def terminal_tab() -> HTMLResponse:
             history=history[-40:],
             system=system,
             memory=memory,
+            sessions=sessions,
+            sessions_list=sessions.get("sessions") or [],
+            active_session=sessions.get("active"),
         )
     )
 
@@ -76,4 +81,4 @@ async def terminal_clear() -> HTMLResponse:
         await api.post("/api/admin/terminal/clear")
     except (ApiError, Exception):
         pass
-    return html("", toast={"message": "Terminal history cleared", "type": "success"}, refresh=True)
+    return html("", toast={"message": "Command history cleared", "type": "success"}, refresh=True)

@@ -99,6 +99,22 @@ python3 main.py             # http://localhost:3000 — UI + API in one process
 
 `python3 main.py` starts the FastAPI server on `0.0.0.0:$PORT`. It serves **everything**: the OpenAI-compatible gateway, the admin/agent JSON APIs, and the dashboard UI itself (Jinja2 templates rendered by the `ui/` Python package — HTMX for interactivity, no Node dev server, no proxy).
 
+### Scripts
+
+`bun` is only a task runner here — the app itself is pure Python, and the scripts work with `npm run` too.
+
+| Command | What it does |
+| --- | --- |
+| `bun run install:py` | Install `requirements.txt` (the only dependency step the project needs) |
+| `bun run preview` | Install dependencies if needed, then start the server on `0.0.0.0:$PORT` |
+| `bun run test` | Byte-compile, then the Python suite (`tests/test_*.py`) and the dashboard JS suite |
+| `bun run dev` / `bun run start` | Start the server and tee the log to `dev.log` / `server.log` |
+| `bun run lint` | `compileall` syntax check |
+
+`scripts/preview.sh` is the entrypoint used by hosted previews (Freebuff Cloud): it installs the Python dependencies, reaps a gateway left behind by an earlier run, and binds `0.0.0.0:$PORT`. Because those hosts install dependencies with a Node-only toolchain, the Python install has to live in the run step rather than in an install hook.
+
+> **Sandbox preview:** the preview also sets `NOVA_ENGINE_DISABLED=1`. The built-in engine sidecar is a private loopback service, and hosted preview port detection advertises a loopback listener in preference to the public port — with the sidecar running, the preview URL resolves to the sidecar instead of the dashboard. Turning it off in the sandbox keeps the preview URL on the dashboard; the gateway then degrades to your configured upstreams, exactly as it does anywhere the sidecar cannot run. Production (Docker/Render) is unaffected.
+
 ---
 
 ## 🆓 Free AI model base
@@ -199,6 +215,25 @@ Everything lives in one chatbox — input is routed automatically:
 | `/boost 256`, `/models`, `/gpu`, `/storage`, `/help` | Slash shortcuts for terminal-side config |
 | `! Audit the storage providers and report failures` | Delegates to the autonomous agent — watch steps stream live until the task completes |
 | Natural language task | Detected as a task → auto-delegates to the agent |
+
+---
+
+## ⬛ Terminal
+
+The Terminal tab runs a real shell on the gateway host and manages it as a
+set of independent sessions, the same way a native terminal app does.
+
+- **Command mode** (first tab) — one-shot commands run through the executor and are saved to history.
+- **Session tabs** — each **New session** spawns its own `bash` on a pseudo-terminal, so `ssh`, `git clone`, `sudo` and `vim` all behave normally. Up to 8 run at once; switch, rename (double-click a tab) or close them freely.
+- **Live state** — the shell reports its working directory (OSC 7), so a tab follows your `cd` and the tab label tracks the current folder until you name it yourself.
+- **Real rendering** — output is drawn with xterm.js: full ANSI colour, selection, `Ctrl+Shift+C` copy, and window resize is forwarded to the PTY.
+- Idle sessions are reaped after 30 minutes and everything is torn down on shutdown.
+
+```bash
+curl -s localhost:3000/api/admin/terminal/pty/sessions          # state snapshot
+curl -s -XPOST localhost:3000/api/admin/terminal/pty/sessions -d '{"cols":120,"rows":32}'
+curl -sN localhost:3000/api/admin/terminal/pty/stream?session=<id>   # output + cd + exit events
+```
 
 ---
 

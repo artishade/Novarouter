@@ -12,6 +12,8 @@ import asyncio
 import logging
 import os
 import shutil
+import signal
+import socket
 import subprocess
 
 import httpx
@@ -31,16 +33,69 @@ class EngineUnavailable(RuntimeError):
     pass
 
 
+def _port_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def _free_port(preferred: int) -> int:
+    """First free port at or after `preferred`.
+
+    The sidecar port is derived from $PORT, but a sandbox restart can leave the
+    previous run's sidecar (or another listener) holding it — binding blindly
+    would silently disable the builtin engine.
+    """
+    for port in range(preferred, preferred + 20):
+        if _port_free(port):
+            return port
+    return preferred
+
+
+def _kill_stale_sidecars() -> None:
+    """Stop sidecars left behind by a previous run of this project.
+
+    A hard-killed gateway cannot run its shutdown hook, so its bun/node child
+    survives, keeps the port and makes the new sidecar fail to bind.
+    """
+    try:
+        listing = subprocess.run(  # noqa: S603 — fixed argv, read-only
+            ["ps", "-eo", "pid,args"], capture_output=True, text=True, timeout=5, check=False
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return
+    me = os.getpid()
+    for line in listing.splitlines()[1:]:
+        pid_text, _, args = line.strip().partition(" ")
+        if not pid_text.isdigit() or str(ENGINE_SCRIPT) not in args:
+            continue
+        pid = int(pid_text)
+        if pid == me:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            log.info("engine sidecar: stopped stale process %s from a previous run", pid)
+        except OSError:
+            continue
+
+
 async def start_sidecar() -> bool:
     """Spawn the engine sidecar; returns True when it reports healthy.
 
     The engine is config-free (free-ai-models based), so the only requirements
     are a JS runtime and the engine files — no credentials or config files.
     """
-    global _sidecar_proc
+    global _sidecar_proc, ENGINE_SIDECAR_PORT, ENGINE_SIDECAR_URL
     async with _sidecar_lock:
         if await health_check(timeout=1.0):
             return True
+        if os.environ.get("NOVA_ENGINE_DISABLED") in ("1", "true", "yes"):
+            log.warning("engine sidecar: disabled by NOVA_ENGINE_DISABLED — builtin engine off")
+            return False
         runtime = shutil.which("bun") or shutil.which("node")
         if runtime is None:
             log.warning("engine sidecar: no bun/node runtime found — builtin engine disabled")
@@ -48,6 +103,10 @@ async def start_sidecar() -> bool:
         if not ENGINE_SCRIPT.exists():
             log.warning("engine sidecar: %s missing — builtin engine disabled", ENGINE_SCRIPT)
             return False
+        _kill_stale_sidecars()
+        await asyncio.sleep(0.3)
+        ENGINE_SIDECAR_PORT = _free_port(ENGINE_SIDECAR_PORT)
+        ENGINE_SIDECAR_URL = f"http://127.0.0.1:{ENGINE_SIDECAR_PORT}"
         env = {**os.environ, "ENGINE_PORT": str(ENGINE_SIDECAR_PORT)}
         _sidecar_proc = subprocess.Popen(  # noqa: S603 — fixed argv
             [runtime, str(ENGINE_SCRIPT)],

@@ -162,6 +162,10 @@ Built-ins handled natively by the gateway:
   clear               clear the terminal
   help                this help
 
+Command mode runs one command at a time. Open a session tab in the
+Terminal view when a command needs to prompt you (ssh, git credentials,
+sudo) or a full screen (vim, less, top) — each session is its own shell.
+
 The only refusals are host-destroying commands (rm -rf /, fork bombs,
 mkfs, raw disk writes, shutdown/reboot) — exit 126. A command that runs
 longer than 90s is killed with exit 124 (use `nohup … &` for daemons)."""

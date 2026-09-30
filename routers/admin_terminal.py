@@ -4,13 +4,16 @@
   src/app/api/admin/terminal/clear/route.ts       → POST /clear
   src/app/api/admin/terminal/boost-ram/route.ts   → POST /boost-ram
 
-Plus the real interactive terminal (nova/pty_session.py):
-  POST /pty/start    → spawn a persistent PTY shell session
-  GET  /pty/stream   → SSE: live output (backlog + incremental)
+Plus the real interactive terminal (nova/pty_session.py). Every route below
+goes through the single `pty_session.manager`, which owns all session state:
+  GET  /pty/sessions → full state snapshot (sessions + focused one)
+  POST /pty/sessions → open a session and focus it
+  POST /pty/activate → switch the focused session
+  POST /pty/rename   → name a session tab
+  GET  /pty/stream   → SSE: output, working-directory and exit events
   POST /pty/input    → keystrokes (\r, \u0003, arrows …)
   POST /pty/resize   → cols/rows
-  POST /pty/stop     → terminate the session
-  GET  /pty/status    → session list
+  POST /pty/stop     → close a session
 """
 from __future__ import annotations
 
@@ -21,7 +24,6 @@ import os
 import platform
 import socket
 import time
-import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
@@ -31,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from nova import pty_session
 from nova import terminal as sandbox
+from nova.config import PROJECT_ROOT
 from nova.database import get_db
 from nova.kv import get_config, get_config_number, get_gpu_providers, set_config
 from nova.models import TerminalCommand
@@ -132,7 +135,7 @@ def history(db: Session = Depends(get_db)):
     si = sandbox.swapinfo_kb()
 
     return {
-        "cwd": cwd_raw or "/workspace",
+        "cwd": cwd_raw or str(PROJECT_ROOT),
         "history": history,
         "system": {
             "platform": platform.system().lower(),
@@ -167,6 +170,8 @@ def history(db: Session = Depends(get_db)):
             "enabled_count": sum(1 for p in gpus if p["enabled"]),
             "connected": sum(1 for p in gpus if p["connected"]),
         },
+        # Live session state, so the tab bar renders without a client fetch.
+        "sessions": pty_session.manager.snapshot(),
     }
 
 
@@ -175,53 +180,105 @@ def history(db: Session = Depends(get_db)):
 # --------------------------------------------------------------------------- #
 
 
-@router.post("/pty/start")
-async def pty_start(request: Request):
+@router.get("/pty/sessions")
+def pty_sessions():
+    """One snapshot of every session — the client renders tabs from this."""
+    return pty_session.manager.snapshot()
+
+
+@router.post("/pty/sessions")
+async def pty_create(request: Request):
     try:
         body = await request.json()
     except Exception:
         body = {}
     body = body if isinstance(body, dict) else {}
-    session_id = f"pty-{uuid.uuid4().hex[:12]}"
     cwd = body.get("cwd") if isinstance(body.get("cwd"), str) else ""
+    label = body.get("label") if isinstance(body.get("label"), str) else ""
     cols = body.get("cols") if isinstance(body.get("cols"), int) else 120
     rows = body.get("rows") if isinstance(body.get("rows"), int) else 32
     try:
-        sess = pty_session.create_session(session_id, cwd=cwd, cols=cols, rows=rows)
+        sess = pty_session.manager.create(cwd=cwd, cols=cols, rows=rows, label=label)
+    except pty_session.SessionLimitReached as err:
+        return JSONResponse({"error": str(err)}, status_code=409)
     except OSError as err:
-        return JSONResponse({"error": f"failed to spawn shell: {err}"}, status_code=500)
-    return {"ok": True, "session": sess.id, "info": sess.info()}
+        return JSONResponse({"error": f"Could not start a shell: {err}"}, status_code=500)
+    return {"ok": True, "session": sess.id, "info": sess.info(active=True)}
+
+
+@router.post("/pty/activate")
+async def pty_activate(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    session = body.get("session") if isinstance(body, dict) else None
+    sess = pty_session.manager.activate(session) if isinstance(session, str) else None
+    if sess is None:
+        return JSONResponse({"error": "That session is no longer running"}, status_code=404)
+    return {"ok": True, "info": sess.info(active=True)}
+
+
+@router.post("/pty/rename")
+async def pty_rename(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    session = body.get("session") if isinstance(body, dict) else None
+    label = body.get("label") if isinstance(body, dict) else None
+    if not isinstance(session, str) or not isinstance(label, str):
+        return JSONResponse({"error": "session and label are required"}, status_code=400)
+    sess = pty_session.manager.rename(session, label)
+    if sess is None:
+        return JSONResponse({"error": "That session is no longer running"}, status_code=404)
+    return {"ok": True, "info": sess.info(active=sess.id == pty_session.manager.active_id)}
 
 
 @router.get("/pty/stream")
 async def pty_stream(request: Request, session: str, offset: int = 0):
-    sess = pty_session.get_session(session)
+    sess = pty_session.manager.get(session)
     if sess is None:
-        return JSONResponse({"error": "no such session"}, status_code=404)
+        return JSONResponse({"error": "That session is no longer running"}, status_code=404)
 
     async def gen():
-        # Portable SSE: poll the session's shared scrollback buffer for
-        # incremental output. (The PTY reader thread keeps filling it; no
-        # dependence on server-specific response internals.)
+        # Portable SSE: the PTY reader thread keeps filling the shared
+        # scrollback; this loop hands out everything after the client cursor
+        # and announces state changes (cd, exit) as discrete events.
         cursor = max(0, int(offset))
-        backlog, size = sess.snapshot(cursor)
-        if backlog:
-            yield f"data: {json.dumps({'o': backlog.decode('utf-8', 'replace')})}\n\n"
-            cursor = size
-        yield f"data: {json.dumps({'session': sess.id, 'cols': sess.cols, 'rows': sess.rows})}\n\n"
+        last_cwd = sess.cwd
+        backlog, cursor = sess.snapshot(cursor)
+        yield "data: " + json.dumps({
+            "session": sess.id,
+            "label": sess.label,
+            "cwd": last_cwd,
+            "cols": sess.cols,
+            "rows": sess.rows,
+            "o": backlog.decode("utf-8", "replace"),
+        }) + "\n\n"
 
         try:
             while not sess.closed:
                 if await request.is_disconnected():
                     break
+                event: dict = {}
                 data, size = sess.snapshot(cursor)
                 if data:
                     cursor = size
-                    yield f"data: {json.dumps({'o': data.decode('utf-8', 'replace')})}\n\n"
+                    event["o"] = data.decode("utf-8", "replace")
+                if sess.cwd != last_cwd:
+                    last_cwd = sess.cwd
+                    event["cwd"] = last_cwd
+                    event["label"] = sess.label
+                if event:
+                    yield "data: " + json.dumps(event) + "\n\n"
                 else:
                     await asyncio.sleep(0.08)
-                    yield f": keep-alive\n\n"
-            yield f"data: {json.dumps({'done': True})}\n\n"
+                    yield ": keep-alive\n\n"
+            yield "data: " + json.dumps({
+                "exit": sess.exit_code if sess.exit_code is not None else 0,
+                "done": True,
+            }) + "\n\n"
         finally:
             return
 
@@ -242,9 +299,9 @@ async def pty_input(request: Request):
     data = body.get("data") if isinstance(body, dict) else None
     if not isinstance(session, str) or not isinstance(data, str):
         return JSONResponse({"error": "session and data are required"}, status_code=400)
-    sess = pty_session.get_session(session)
+    sess = pty_session.manager.get(session)
     if sess is None or sess.closed:
-        return JSONResponse({"error": "no such session"}, status_code=404)
+        return JSONResponse({"error": "That session is no longer running"}, status_code=404)
     try:
         sess.write(data)
     except RuntimeError as err:
@@ -259,9 +316,9 @@ async def pty_resize(request: Request):
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
     session = body.get("session") if isinstance(body, dict) else None
-    sess = pty_session.get_session(session) if isinstance(session, str) else None
+    sess = pty_session.manager.get(session) if isinstance(session, str) else None
     if sess is None or sess.closed:
-        return JSONResponse({"error": "no such session"}, status_code=404)
+        return JSONResponse({"error": "That session is no longer running"}, status_code=404)
     sess.resize(body.get("cols") if isinstance(body.get("cols"), int) else sess.cols,
                 body.get("rows") if isinstance(body.get("rows"), int) else sess.rows)
     return {"ok": True, "cols": sess.cols, "rows": sess.rows}
@@ -274,14 +331,9 @@ async def pty_stop(request: Request):
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
     session = body.get("session") if isinstance(body, dict) else None
-    if not isinstance(session, str) or not pty_session.stop_session(session):
-        return JSONResponse({"error": "no such session"}, status_code=404)
-    return {"ok": True}
-
-
-@router.get("/pty/status")
-def pty_status():
-    return {"sessions": pty_session.list_sessions()}
+    if not isinstance(session, str) or not pty_session.manager.close(session):
+        return JSONResponse({"error": "That session is no longer running"}, status_code=404)
+    return {"ok": True, "state": pty_session.manager.snapshot()}
 
 
 # --------------------------------------------------------------------------- #

@@ -106,7 +106,13 @@ IS_POSTGRES = DATABASE_URL.startswith("postgresql")
 # Runtime tuning (V8-heap equivalents are kept as gateway config keys)
 # --------------------------------------------------------------------------- #
 
-ENGINE_SIDECAR_PORT = int(os.environ.get("NOVA_ENGINE_PORT", "3099"))
+PORT = int(os.environ.get("PORT", "3000"))  # Render/Freebuff inject PORT dynamically
+
+# The engine sidecar must never share the HTTP port. Freebuff Cloud points its
+# preview proxy at that single port, so a second listener there makes the proxy
+# answer with the sidecar's 404 instead of the dashboard. 3099 stays the default
+# everywhere else (Docker, Render); it only steps aside when the app is on it.
+ENGINE_SIDECAR_PORT = int(os.environ.get("NOVA_ENGINE_PORT") or (3099 if PORT != 3099 else 3100))
 ENGINE_SIDECAR_URL = f"http://127.0.0.1:{ENGINE_SIDECAR_PORT}"
 
 # CORS (requirement #4): browser clients may call the API directly.
@@ -115,9 +121,6 @@ CORS_ALLOW_ORIGINS = [
     for o in os.environ.get("CORS_ALLOW_ORIGINS", "*").split(",")
     if o.strip()
 ]
-
-PORT = int(os.environ.get("PORT", "3000"))  # Render injects PORT dynamically
-
 
 def engine_runtime() -> str | None:
     """Locate a JS runtime able to host the dependency-free engine sidecar."""

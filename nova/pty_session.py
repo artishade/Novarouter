@@ -1,52 +1,87 @@
 """Persistent PTY shell sessions — a REAL interactive terminal.
 
+Architecture mirrors the OperitTerminalCore terminal module: a single
+`TerminalManager` owns every piece of terminal state and exposes it as one
+reactive snapshot, instead of letting each caller track sessions on its own.
+
+  Session management   create / switch / rename / close independent shells
+  Command execution    raw keystrokes into a real TTY (`pty.fork()`)
+  State management     session id, label, cwd, size, uptime, exit state —
+                       one snapshot (`TerminalManager.snapshot()`), streamed
+                       to clients over SSE
+  Event notification   output, working-directory changes and shell exit are
+                       emitted as discrete events, not just appended bytes
+
 Each session spawns the system shell (`/bin/bash`, fallback `sh`) on a
-pseudo-terminal via `pty.fork()`. The shell is a genuine child process with a
-TTY, so programs that need one behave exactly as on a local machine:
-`ssh` prompts for host keys, `git clone` prompts for credentials,
-`sudo` asks for a password, `vim` full-screens — everything works.
+pseudo-terminal, so programs that need a TTY behave exactly as on a local
+machine: `ssh` prompts for host keys, `git clone` asks for credentials,
+`sudo` requests a password, `vim` renders full-screen.
 
-Threading model: a daemon thread reads the master fd continuously and appends
-decoded bytes to a bounded scrollback buffer. Browser clients attach via SSE
-(`GET /api/admin/terminal/pty/stream?session=…`) which streams everything from
-`attach_offset` onward, and send keystrokes via
-`POST /api/admin/terminal/pty/input {session, data}`.
+The shell reports its working directory through OSC 7 (emitted from
+`PROMPT_COMMAND`), which the reader thread parses — so `cd` inside a session
+is reflected in the session list without the browser guessing it.
 
-All sessions live in one global registry and are cleaned up on app shutdown.
+Idle sessions are reaped; everything is torn down on app shutdown.
 """
 from __future__ import annotations
 
 import fcntl
 import os
 import pty
+import re
 import select
 import shlex
 import signal
 import struct
-import subprocess
 import threading
 import time
+from urllib.parse import unquote
 
 from .config import PROJECT_ROOT
 
 SESSION_TTL_S = 30 * 60          # idle reaper
 SCROLLBACK_BYTES = 512 * 1024    # per-session history kept for late attachers
 READ_CHUNK = 4096
+MAX_SESSIONS = 8                 # hard cap — every session is a real process
+
+# OSC 7 — "current working directory" report. Emitted by the shell before
+# every prompt, parsed here so the session list always shows a real path.
+_OSC7_RE = re.compile(rb"\x1b\]7;file://[^\x07\x1b]*(\x07|\x1b\\)")
+_OSC7_PREFIX_LEN = len(b"\x1b]7;file://")
+_OSC7_TAIL = 256      # bytes kept across reads so a split OSC 7 still parses
+
+# The prompt the session shell shows. `\[\]` keeps the OSC 7 sequence from
+# counting toward the prompt width.
+_PROMPT = r"\[\033[32m\]\u@\h\[\033[0m\]:\[\033[34m\]\w\[\033[0m\]\$ "
+_OSC7_PROMPT_COMMAND = r"""printf '\033]7;file://%s%s\007' "$(hostname)" "$PWD" """
 
 
-class PtySession:
-    def __init__(self, session_id: str, cwd: str, cols: int = 120, rows: int = 32):
+def _default_label(cwd: str) -> str:
+    """Tabs read better as `ui` than as `/srv/nova/ui`."""
+    name = os.path.basename(os.path.normpath(cwd or ""))
+    return name or "root"
+
+
+class TerminalSession:
+    """One independent shell: its own PTY, scrollback, cwd and lifecycle."""
+
+    def __init__(self, session_id: str, cwd: str = "", cols: int = 120, rows: int = 32,
+                 label: str = ""):
         self.id = session_id
         self.created_at = time.time()
-        self.last_activity = time.time()
+        self.last_activity = self.created_at
         self.lock = threading.Lock()
         self.buffer = bytearray()
-        self.subscribers: set[int] = set()  # wfileno of SSE response objects
+        self.total = 0                  # bytes ever produced (trim-safe cursor)
         self.closed = False
-        self.cwd = cwd if os.path.isdir(cwd) else str(PROJECT_ROOT)
+        self.exit_code: int | None = None
+        self.named = bool(label)        # True once the user renamed the tab
+        self.cwd = cwd if cwd and os.path.isdir(cwd) else str(PROJECT_ROOT)
+        self.label = label.strip() or _default_label(self.cwd)
         self.cols = max(20, min(500, int(cols or 120)))
         self.rows = max(5, min(200, int(rows or 32)))
 
+        self._osc_tail = b""
         self.pid, self.master = pty.fork()
         if self.pid == 0:  # child — exec the shell
             try:
@@ -56,6 +91,8 @@ class PtySession:
             os.environ["TERM"] = os.environ.get("TERM") or "xterm-256color"
             os.environ.setdefault("HOME", "/root")
             os.environ.setdefault("USER", "root")
+            os.environ["PS1"] = _PROMPT
+            os.environ["PROMPT_COMMAND"] = _OSC7_PROMPT_COMMAND
             os.environ["NOVA_GATEWAY"] = "1"
             for shell in ("/bin/bash", "/bin/sh"):
                 try:
@@ -73,22 +110,45 @@ class PtySession:
         self.reader.start()
 
     # ------------------------------------------------------------------ #
-    # IO
+    # Output stream
     # ------------------------------------------------------------------ #
 
     def _append(self, data: bytes) -> None:
         with self.lock:
             self.buffer.extend(data)
+            self.total += len(data)
             if len(self.buffer) > SCROLLBACK_BYTES:
                 del self.buffer[: len(self.buffer) - SCROLLBACK_BYTES]
-            targets = list(self.subscribers)
 
-        for wfileno in targets:
-            try:
-                os.write(wfileno, data)
-            except OSError:
-                with self.lock:
-                    self.subscribers.discard(wfileno)
+    def _track_cwd(self, data: bytes) -> None:
+        """Parse OSC 7 so the session list reflects real `cd` navigation."""
+        window = self._osc_tail + data
+        # The shell reports before every prompt, so a chunk can carry several
+        # reports (and the retained tail may end mid-sequence). Take the last
+        # complete one and resume from just after it.
+        last = None
+        for match in _OSC7_RE.finditer(window):
+            last = match
+        self._osc_tail = window[last.end():] if last else window[-_OSC7_TAIL:]
+        if last is None:
+            return
+        try:
+            # Drop the `\x1b]7;file://` prefix and the BEL / ST terminator,
+            # then the host part — OSC 7 is `file://<host><absolute path>`.
+            rest = last.group(0)[_OSC7_PREFIX_LEN:].rstrip(b"\x07")
+            rest = rest.rsplit(b"\x1b\\", 1)[0]
+            if not rest.startswith(b"/"):
+                parts = rest.split(b"/", 1)
+                rest = b"/" + parts[1] if len(parts) == 2 else b"/"
+            resolved = unquote(rest.decode("utf-8", "replace"))
+        except Exception:
+            return
+        if resolved and os.path.isdir(resolved):
+            with self.lock:
+                if resolved != self.cwd:
+                    self.cwd = resolved
+                    if not self.named:
+                        self.label = _default_label(resolved)
 
     def _read_loop(self) -> None:
         while not self.closed:
@@ -109,20 +169,34 @@ class PtySession:
             if not data:
                 break
             self.last_activity = time.time()
+            self._track_cwd(data)
             self._append(data)
+        self._append(f"\r\n\x1b[90m[session {self.label} ended]\x1b[0m\r\n".encode())
+        self.exit_code = self._reap_exit_code()
         self.closed = True
-        # Let subscribers know the stream ended.
-        self._append(b"\r\n\x1b[90m[session ended]\x1b[0m\r\n")
 
     def _exited(self) -> bool:
         try:
-            pid, status = os.waitpid(self.pid, os.WNOHANG)
+            pid, _ = os.waitpid(self.pid, os.WNOHANG)
         except ChildProcessError:
             return True
         return pid == self.pid
 
+    def _reap_exit_code(self) -> int:
+        try:
+            _, status = os.waitpid(self.pid, os.WNOHANG)
+        except ChildProcessError:
+            return 0
+        if os.WIFEXITED(status):
+            return os.WEXITSTATUS(status)
+        return 0
+
+    # ------------------------------------------------------------------ #
+    # Input
+    # ------------------------------------------------------------------ #
+
     def write(self, data: str) -> None:
-        """Feed keystrokes (raw, may include \r, \u0003 for Ctrl+C …)."""
+        """Feed keystrokes (raw, may include \\r, \\u0003 for Ctrl+C …)."""
         if self.closed:
             raise RuntimeError("session closed")
         self.last_activity = time.time()
@@ -144,16 +218,41 @@ class PtySession:
         except (OSError, ValueError):
             pass
 
-    def subscribe(self, wfileno: int, from_offset: int = 0) -> bytes:
-        """Register an SSE response for live output; returns the backlog."""
-        with self.lock:
-            backlog = bytes(self.buffer[from_offset:]) if from_offset else bytes(self.buffer)
-            self.subscribers.add(wfileno)
-        return backlog
+    # ------------------------------------------------------------------ #
+    # State
+    # ------------------------------------------------------------------ #
 
-    def unsubscribe(self, wfileno: int) -> None:
+    def touch(self) -> None:
+        self.last_activity = time.time()
+
+    def snapshot(self, since: int = 0) -> tuple[bytes, int]:
+        """Bytes produced after `since`, plus the new cursor position.
+
+        `since` is a total-bytes counter, not a buffer index, so it stays
+        correct after the scrollback ring trims old output.
+        """
         with self.lock:
-            self.subscribers.discard(wfileno)
+            start = max(0, self.total - len(self.buffer))
+            begin = max(start, int(since or 0))
+            return bytes(self.buffer[begin - start:]), self.total
+
+    def info(self, active: bool = False) -> dict:
+        with self.lock:
+            return {
+                "id": self.id,
+                "label": self.label,
+                "cwd": self.cwd,
+                "active": active,
+                "closed": self.closed,
+                "pid": self.pid,
+                "exit_code": self.exit_code,
+                "created_at": self.created_at,
+                "last_activity": self.last_activity,
+                "idle_s": int(max(0, time.time() - self.last_activity)),
+                "cols": self.cols,
+                "rows": self.rows,
+                "buffer_size": len(self.buffer),
+            }
 
     def stop(self) -> None:
         if self.closed:
@@ -174,106 +273,158 @@ class PtySession:
         except OSError:
             pass
 
-    def snapshot(self, from_offset: int = 0) -> tuple[bytes, int]:
-        with self.lock:
-            return bytes(self.buffer[from_offset:]), len(self.buffer)
 
-    def info(self) -> dict:
-        return {
-            "id": self.id,
-            "pid": self.pid,
-            "cwd": self.cwd,
-            "closed": self.closed,
-            "created_at": self.created_at,
-            "last_activity": self.last_activity,
-            "cols": self.cols,
-            "rows": self.rows,
-            "buffer_size": len(self.buffer),
-        }
+class SessionLimitReached(RuntimeError):
+    """Raised when a new session is requested while MAX_SESSIONS are live."""
 
 
-# --------------------------------------------------------------------------- #
-# Registry
-# --------------------------------------------------------------------------- #
+class TerminalManager:
+    """Single source of truth for every terminal session on this server."""
 
-_SESSIONS: dict[str, PtySession] = {}
-_REG_LOCK = threading.Lock()
-_REAPER_STARTED = False
+    def __init__(self, max_sessions: int = MAX_SESSIONS):
+        self._sessions: dict[str, TerminalSession] = {}
+        self._active: str | None = None
+        self._lock = threading.Lock()
+        self._counter = 0
+        self._max = max_sessions
+        self._reaper_started = False
 
+    # --------------------------- lifecycle --------------------------- #
 
-def start_reaper() -> None:
-    global _REAPER_STARTED
-    if _REAPER_STARTED:
-        return
-
-    def reap() -> None:
+    def _reap_loop(self) -> None:
         while True:
             time.sleep(60)
             now = time.time()
-            with _REG_LOCK:
-                dead = [sid for sid, s in _SESSIONS.items() if s.closed or now - s.last_activity > SESSION_TTL_S]
-                for sid in dead:
-                    sess = _SESSIONS.pop(sid)
-                    sess.stop()
+            dead: list[TerminalSession] = []
+            with self._lock:
+                stale = [
+                    sid for sid, s in self._sessions.items()
+                    if s.closed or now - s.last_activity > SESSION_TTL_S
+                ]
+                for sid in stale:
+                    dead.append(self._sessions.pop(sid))
+                    if self._active == sid:
+                        self._active = next(reversed(list(self._sessions)), None)
+            for session in dead:
+                session.stop()
 
-    threading.Thread(target=reap, daemon=True, name="pty-reaper").start()
-    _REAPER_STARTED = True
+    def start_reaper(self) -> None:
+        with self._lock:
+            if self._reaper_started:
+                return
+            self._reaper_started = True
+        threading.Thread(target=self._reap_loop, daemon=True, name="pty-reaper").start()
+
+    # ---------------------------- sessions ---------------------------- #
+
+    def create(self, cwd: str = "", cols: int = 120, rows: int = 32,
+               label: str = "") -> TerminalSession:
+        self.start_reaper()
+        with self._lock:
+            if len(self._sessions) >= self._max:
+                raise SessionLimitReached(
+                    f"the limit of {self._max} concurrent sessions is reached — "
+                    "close a tab before opening another one"
+                )
+            self._counter += 1
+            session_id = f"pty-{int(time.time())}-{self._counter}"
+            session = TerminalSession(session_id, cwd=cwd, cols=cols, rows=rows, label=label)
+            self._sessions[session_id] = session
+            self._active = session_id
+            return session
+
+    def get(self, session_id: str | None) -> TerminalSession | None:
+        if not session_id:
+            return None
+        with self._lock:
+            return self._sessions.get(session_id)
+
+    def close(self, session_id: str) -> bool:
+        """Close a session and hand focus to the next one, if any."""
+        with self._lock:
+            session = self._sessions.pop(session_id, None)
+            if session is None:
+                return False
+            if self._active == session_id:
+                self._active = next(reversed(list(self._sessions)), None)
+        session.stop()
+        return True
+
+    def close_all(self) -> None:
+        with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+            self._active = None
+        for session in sessions:
+            session.stop()
+
+    def activate(self, session_id: str) -> TerminalSession | None:
+        """Switch the focused session (creating it is not implied)."""
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is not None and not session.closed:
+                self._active = session_id
+        return session
+
+    def rename(self, session_id: str, label: str) -> TerminalSession | None:
+        clean = " ".join((label or "").split())[:40]
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            session.label = clean or session.label
+            session.named = bool(clean)
+        return session
+
+    @property
+    def active_id(self) -> str | None:
+        with self._lock:
+            return self._active
+
+    def snapshot(self) -> dict:
+        """Everything a client needs to render the whole terminal state."""
+        with self._lock:
+            active = self._active
+            return {
+                "active": active,
+                "max_sessions": self._max,
+                "sessions": [
+                    s.info(active=s.id == active) for s in self._sessions.values()
+                ],
+            }
+
+    def list_sessions(self) -> list[dict]:
+        return self.snapshot()["sessions"]
 
 
-def get_session(session_id: str) -> PtySession | None:
-    with _REG_LOCK:
-        return _SESSIONS.get(session_id)
+# --------------------------------------------------------------------------- #
+# Process-wide manager + compatibility helpers
+# --------------------------------------------------------------------------- #
 
-
-def create_session(session_id: str, cwd: str = "", cols: int = 120, rows: int = 32) -> PtySession:
-    start_reaper()
-    with _REG_LOCK:
-        old = _SESSIONS.get(session_id)
-        if old is not None and not old.closed:
-            return old
-        if old is not None:
-            old.stop()
-        sess = PtySession(session_id, cwd or str(PROJECT_ROOT), cols, rows)
-        _SESSIONS[session_id] = sess
-        return sess
-
-
-def stop_session(session_id: str) -> bool:
-    with _REG_LOCK:
-        sess = _SESSIONS.pop(session_id, None)
-    if sess is None:
-        return False
-    sess.stop()
-    return True
+manager = TerminalManager()
 
 
 def stop_all() -> None:
-    with _REG_LOCK:
-        sessions = list(_SESSIONS.values())
-        _SESSIONS.clear()
-    for sess in sessions:
-        sess.stop()
-
-
-def list_sessions() -> list[dict]:
-    with _REG_LOCK:
-        return [s.info() for s in _SESSIONS.values()]
+    """Shutdown hook — every shell is torn down with the gateway process."""
+    manager.close_all()
 
 
 def shell_hint(cmd: str) -> str | None:
     """One-shot exec hint: TTY-requiring flows need the live terminal."""
-    first = shlex.split(cmd)[0] if shlex.split(cmd) else ""
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        parts = cmd.split()
+    first = parts[0] if parts else ""
     if first in ("ssh", "sftp", "scp"):
         return (
-            "ssh needs an interactive terminal for host-key/password prompts — "
-            "open the Terminal tab and press “Live session”, then run it there."
+            "ssh needs an interactive terminal for host-key and password prompts — "
+            "open a session tab and run it there."
         )
-    if first == "git" and any(
-        flag in cmd for flag in ("clone", "push", "pull", "fetch")
-    ) and "https://" in cmd:
+    if first == "git" and any(flag in cmd for flag in ("clone", "push", "pull", "fetch")) \
+            and "https://" in cmd:
         return (
-            "private/interactive git over HTTPS asks for credentials — run it in "
-            "a Live session (Terminal tab) where the username/password prompt works, "
-            "or use a token URL / SSH remote."
+            "Private git over HTTPS asks for credentials — run it in a session tab, "
+            "where the username and password prompt works, or use a token URL."
         )
     return None

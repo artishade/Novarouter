@@ -34,6 +34,12 @@
   <script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js"></script>
   <script src="https://unpkg.com/lucide@0.525.0/dist/umd/lucide.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  <!-- xterm.js — real terminal emulation for the Terminal tab (ANSI colour,
+       full-screen apps, selection, resize). Loaded in head so the tab
+       fragment never has to wait on a late swap-in script. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <link rel="stylesheet" href="/static/nova.css" />
   <script src="/static/app.js?v=5" defer></script>
 </head>

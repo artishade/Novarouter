@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    name: Lint + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Byte-compiles the app, runs the offline provider/gateway suites and the
+      # dashboard navigation tests. No API keys or network needed.
+      - name: Run the offline check script
+        run: sh ./scripts/test.sh
+
+  boot:
+    name: Server boots and serves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Boot the gateway and check the HTTP surface
+        run: |
+          set -euo pipefail
+          PORT=3111 NOVA_ENGINE_DISABLED=1 python3 main.py &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3111/health -o health.json; then break; fi
+            sleep 1
+          done
+
+          python3 -c "import json; d = json.load(open('health.json')); assert d['status'] == 'healthy', d; print('health ok:', d['status'], '/ db', d['db'])"
+
+          # The dashboard shell and every tab fragment render server-side.
+          curl -fsS http://127.0.0.1:3111/ | grep -q 'NovaRouter'
+          curl -fsS http://127.0.0.1:3111/partials/tab/terminal | grep -q 'term-tabs'
+
+          # The terminal session API answers with a real shell session.
+          curl -fsS -X POST http://127.0.0.1:3111/api/admin/terminal/pty/sessions \
+            -H 'Content-Type: application/json' -d '{}' -o session.json
+          python3 -c "import json; s = json.load(open('session.json')); assert s['ok'] and s['session'], s; print('session ok:', s['info']['label'])"

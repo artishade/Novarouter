@@ -19,6 +19,7 @@ Actions (HTMX mutations → html(..., toast=..., refresh=True)):
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import Any
@@ -116,15 +117,29 @@ async def _providers_ctx(request: Request) -> dict:
     if expand is not None and expand <= 0:
         expand = None
 
+    # All reads are independent; expanded keys are optional and still render
+    # empty if the provider list itself fails.
+    reads = [api.get("/api/admin/providers"), api.get("/api/admin/stats"),
+             api.get("/api/admin/meta")]
+    if expand:
+        reads.append(api.get("/api/admin/keys", params={"provider_id": expand}))
+    results = await asyncio.gather(*reads, return_exceptions=True)
+    provider_result, stats, meta = results[:3]
     rows: list[dict] = []
     keys: list[dict] = []
     error: str | None = None
-    try:
-        rows = await api.get("/api/admin/providers")
-    except ApiError as e:
-        error = e.message
-    except Exception as e:  # noqa: BLE001 — any self-API failure becomes the error panel
-        error = f"Failed to load providers ({e.__class__.__name__})"
+    if isinstance(provider_result, ApiError):
+        error = provider_result.message
+    elif isinstance(provider_result, BaseException):
+        error = f"Failed to load providers ({provider_result.__class__.__name__})"
+    else:
+        rows = provider_result
+    if isinstance(stats, BaseException):
+        stats = None
+    if isinstance(meta, BaseException):
+        meta = None
+    if expand and not error and not isinstance(results[3], BaseException):
+        keys = results[3]
 
     visible = _filter_providers(rows, q)
     visible = [_decorate(p, q, expand) for p in visible]
@@ -133,23 +148,6 @@ async def _providers_ctx(request: Request) -> dict:
         p["id"] for p in rows
         if p.get("enabled") and (p.get("key_count", 0) > 0 or p.get("kind") == "builtin")
     ]
-
-    if expand and not error:
-        try:
-            keys = await api.get("/api/admin/keys", params={"provider_id": expand})
-        except Exception:  # noqa: BLE001 — panel renders its own empty state
-            keys = []
-
-    stats = None
-    try:
-        stats = await api.get("/api/admin/stats")
-    except Exception:  # noqa: BLE001
-        stats = None
-    meta = None
-    try:
-        meta = await api.get("/api/admin/meta")
-    except Exception:  # noqa: BLE001
-        meta = None
 
     return {
         "rows": rows,
@@ -166,13 +164,11 @@ async def _providers_ctx(request: Request) -> dict:
 
 
 async def _providers_tab_ctx(request: Request) -> dict:
-    ctx = await _providers_ctx(request)
-    presets: list[dict] = []
-    try:
-        presets = await api.get("/api/admin/providers/presets")
-    except Exception:  # noqa: BLE001 — dialog degrades to Custom-only
-        presets = []
-    ctx["presets"] = presets
+    ctx, presets = await asyncio.gather(
+        _providers_ctx(request), api.get("/api/admin/providers/presets"),
+        return_exceptions=True,
+    )
+    ctx["presets"] = [] if isinstance(presets, BaseException) else presets
     return ctx
 
 

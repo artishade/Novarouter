@@ -209,6 +209,24 @@ def disable_unreachable(db: Session = Depends(get_db)):
 
 
 # --------------------------------------------------------------------------- #
+# GET /api/admin/models/{id} — one model for the detail dialog. Avoid sorting
+# and serializing the entire catalogue each time a card is opened.
+# --------------------------------------------------------------------------- #
+
+@router.get("/{id}")
+def get_model(id: str, db: Session = Depends(get_db)):
+    model_id = parse_int(id)
+    if model_id is None:
+        return invalid_id("Invalid model id")
+    model = db.scalars(
+        select(ModelRow).where(ModelRow.id == model_id).options(joinedload(ModelRow.provider))
+    ).first()
+    if model is None:
+        return not_found("Model not found")
+    return JSONResponse(to_model(model, model.provider.name, model.provider.color))
+
+
+# --------------------------------------------------------------------------- #
 # PATCH /api/admin/models/{id} — toggle a model on/off
 # --------------------------------------------------------------------------- #
 

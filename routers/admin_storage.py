@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, defer, joinedload
 
 from nova.models import (
     ClientKey,
@@ -102,7 +102,9 @@ def storage_info(db: Session = Depends(get_db)):
     providers = db.scalars(
         select(StorageProviderRow).order_by(StorageProviderRow.createdAt.asc())
     ).all()
-    files = db.scalars(select(StorageFile).order_by(StorageFile.createdAt.desc())).all()
+    files = db.scalars(
+        select(StorageFile).options(defer(StorageFile.data)).order_by(StorageFile.createdAt.desc())
+    ).all()
 
     active = next((p for p in providers if p.active), None) or next(
         (p for p in providers if p.id == "local_disk"), None
@@ -331,7 +333,9 @@ async def test_connection(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/files")
 def list_files(db: Session = Depends(get_db)):
-    rows = db.scalars(select(StorageFile).order_by(StorageFile.createdAt.desc())).all()
+    rows = db.scalars(
+        select(StorageFile).options(defer(StorageFile.data)).order_by(StorageFile.createdAt.desc())
+    ).all()
     return JSONResponse([map_storage_file(r) for r in rows])
 
 

@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from nova.config import public_base_url
@@ -280,10 +280,19 @@ def stats(db: Session = Depends(get_db)):
     total_tokens_in = int(totals[1] or 0)
     total_tokens_out = int(totals[2] or 0)
 
-    recent = db.execute(
+    recent = (
         select(RequestLog.status, RequestLog.latencyMs, RequestLog.via)
         .where(RequestLog.ts >= day_ago).limit(10000)
-    ).all()
+        .subquery()
+    )
+    # Aggregate the bounded 24h window in SQL instead of transferring up to
+    # 10,000 rows into Python on every tab navigation / live refresh.
+    n24, cache_hits, errors, avg_latency = db.execute(select(
+        func.count(),
+        func.coalesce(func.sum(case((recent.c.via == "cache", 1), else_=0)), 0),
+        func.coalesce(func.sum(case((recent.c.status >= 400, 1), else_=0)), 0),
+        func.coalesce(func.avg(recent.c.latencyMs), 0),
+    ).select_from(recent)).one()
 
     active_keys = db.scalar(
         select(func.count()).select_from(ProviderKey).where(ProviderKey.enabled.is_(True))
@@ -305,11 +314,6 @@ def stats(db: Session = Depends(get_db)):
         db.scalar(select(func.count()).select_from(Provider).where(Provider.key.in_(session_keys)))
         if session_keys else 0
     ) or 0
-
-    n24 = len(recent)
-    cache_hits = sum(1 for _s, _lat, via in recent if via == "cache")
-    errors = sum(1 for status, _lat, _via in recent if status >= 400)
-    avg_latency = sum(lat for _s, lat, _v in recent) / n24 if n24 else 0.0
 
     cfg = cfg_map(db, ["gateway_started_at", "v8_heap_mb", "swap_mb"])
 

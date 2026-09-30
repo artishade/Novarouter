@@ -35,40 +35,65 @@
     }
   }
 
-  /* Fragment cache — instant repeat navigation. Entries are short-lived
-   * (10s) so data stays fresh while killing the round-trip on back/forth
-   * clicks. Hover/pointerdown prefetch warms the next tab before the click. */
-  const fragCache = new Map();
-  const FRAG_TTL = 10000;
-  function cacheGet(tab) {
-    const hit = fragCache.get(tab);
-    if (!hit) return null;
-    if (Date.now() - hit.at > FRAG_TTL) { fragCache.delete(tab); return null; }
-    return hit.html;
+  /* A tab request must finish through HTMX: direct innerHTML insertion skips
+   * cleanup, hx-trigger registration, fragment scripts and afterSwap hooks.
+   * Keep the old DOM until HTMX cleans it up, but hide it while navigating so
+   * a slow request cannot make the new sidebar selection show old tab data. */
+  let navigationVersion = 0;
+  let navigationPending = true; // the initial overview hx-trigger="load"
+  const tabRequests = new WeakMap();
+  let activeTabRequest = null;
+
+  function requestTab(tab) {
+    // htmx.ajax defaults to body as its source and queues all body requests.
+    // Use the tab's own button instead, and abort only the superseded tab GET.
+    if (activeTabRequest && activeTabRequest.readyState !== 4) activeTabRequest.abort();
+    const source = document.querySelector(`#sidebar .nav-item[data-tab="${tab}"]`);
+    window.htmx.ajax('GET', '/partials/tab/' + tab, {
+      source, target: '#tab-content', swap: 'innerHTML',
+    });
   }
-  function prefetch(tab) {
-    if (!tab || fragCache.has(tab) || !window.htmx) return;
-    fetch('/partials/tab/' + tab)
-      .then((r) => (r.ok ? r.text() : null))
-      .then((text) => { if (text) fragCache.set(tab, { html: text, at: Date.now() }); })
-      .catch(() => {});
+
+  function showTabLoading() {
+    const target = document.getElementById('tab-content');
+    if (target) {
+      target.hidden = true;
+      target.setAttribute('aria-busy', 'true');
+    }
+    const loading = document.getElementById('tab-loading');
+    if (loading) {
+      loading.hidden = false;
+      loading.querySelector('[data-tab-error]')?.classList.add('hidden');
+      loading.querySelector('[data-tab-skeleton]')?.classList.remove('hidden');
+    }
+  }
+
+  function finishTabLoading(error = false) {
+    navigationPending = false;
+    const loading = document.getElementById('tab-loading');
+    if (loading) {
+      loading.hidden = !error;
+      loading.querySelector('[data-tab-error]')?.classList.toggle('hidden', !error);
+      loading.querySelector('[data-tab-skeleton]')?.classList.toggle('hidden', error);
+    }
+    const target = document.getElementById('tab-content');
+    if (target) {
+      target.hidden = error;
+      target.setAttribute('aria-busy', 'false');
+    }
   }
 
   function nav(tab) {
-    if (!tab) return;
+    if (!tab || !document.querySelector(`#sidebar .nav-item[data-tab="${tab}"]`)) return;
+    if (tab === store.tab) return;
+    navigationVersion += 1;
+    navigationPending = true;
     store.tab = tab;
     applySidebar();
     const target = document.getElementById('tab-content');
     if (!window.htmx || !target) return;
-    const cached = cacheGet(tab);
-    if (cached) {
-      target.innerHTML = cached;
-      window.htmx.process(target);
-      if (window.lucide) window.lucide.createIcons();
-      applySidebar();
-    } else {
-      window.htmx.ajax('GET', '/partials/tab/' + tab, { target: '#tab-content', swap: 'innerHTML' });
-    }
+    showTabLoading();
+    requestTab(tab);
     window.scrollTo({ top: 0, behavior: 'auto' });
   }
 
@@ -116,7 +141,7 @@
   }
 
   function refresh() {
-    if (window.htmx) window.htmx.trigger(document.body, 'nova:refresh');
+    if (window.htmx && !navigationPending) window.htmx.trigger(document.body, 'nova:refresh');
   }
 
   async function downloadFile(id, name) {
@@ -148,21 +173,47 @@
 
   /* ----------------------------- HTMX wiring ----------------------------- */
 
-  let inflight = 0;
-  document.addEventListener('htmx:beforeRequest', () => {
-    inflight += 1;
+  const requests = new Set();
+  document.addEventListener('htmx:beforeRequest', (e) => {
+    const { xhr, target } = e.detail;
+    requests.add(xhr);
+    if (target?.id === 'tab-content') {
+      tabRequests.set(xhr, navigationVersion);
+      activeTabRequest = xhr;
+    }
     document.getElementById('refresh-btn')?.classList.add('nova-spin');
   });
-  const settle = () => {
-    inflight = Math.max(0, inflight - 1);
-    if (inflight === 0) document.getElementById('refresh-btn')?.classList.remove('nova-spin');
+  const settle = (e) => {
+    requests.delete(e.detail?.xhr);
+    if (activeTabRequest === e.detail?.xhr) activeTabRequest = null;
+    if (requests.size === 0) document.getElementById('refresh-btn')?.classList.remove('nova-spin');
   };
   document.addEventListener('htmx:afterRequest', settle);
   document.addEventListener('htmx:timeout', settle);
   document.addEventListener('htmx:sendError', settle);
 
+  document.addEventListener('htmx:beforeSwap', (e) => {
+    if (e.detail.target?.id !== 'tab-content') return;
+    if (tabRequests.get(e.detail.xhr) !== navigationVersion) {
+      e.detail.shouldSwap = false;
+    }
+  });
+
+  function tabRequestFailed(e) {
+    const version = tabRequests.get(e.detail?.xhr);
+    if (version === navigationVersion && navigationPending) finishTabLoading(true);
+  }
+  document.addEventListener('htmx:afterRequest', (e) => {
+    if (e.detail.successful === false) tabRequestFailed(e);
+  });
+  document.addEventListener('htmx:timeout', tabRequestFailed);
+  document.addEventListener('htmx:sendError', tabRequestFailed);
+
   document.addEventListener('htmx:afterSwap', (e) => {
-    if (e.target && e.target.id === 'tab-content') window.scrollTo({ top: 0 });
+    if (e.target?.id === 'tab-content') {
+      finishTabLoading();
+      window.scrollTo({ top: 0 });
+    }
     if (window.lucide) window.lucide.createIcons();
     applySidebar();
   });
@@ -182,16 +233,12 @@
     if (copyBtn) { e.preventDefault(); copyFromSelector(copyBtn.dataset.copySelector); }
   });
 
-  /* Speed: prefetch a tab fragment as soon as the pointer heads for it
-   * (pointerdown fires ~100ms before click; hover warms it on desktop). */
-  document.addEventListener('pointerover', (e) => {
-    const btn = e.target.closest && e.target.closest('#sidebar .nav-item');
-    if (btn && btn.dataset.tab !== store.tab) prefetch(btn.dataset.tab);
-  }, { passive: true });
-  document.addEventListener('pointerdown', (e) => {
-    const btn = e.target.closest && e.target.closest('#sidebar .nav-item');
-    if (btn && btn.dataset.tab !== store.tab) prefetch(btn.dataset.tab);
-  }, { capture: true, passive: true });
+  document.getElementById('tab-retry')?.addEventListener('click', () => {
+    navigationVersion += 1;
+    navigationPending = true;
+    showTabLoading();
+    requestTab(store.tab);
+  });
 
   document.getElementById('sidebar-toggle')?.addEventListener('click', () => {
     store.expanded = !store.expanded;
@@ -253,7 +300,7 @@
     if (!store.autoRefresh) return;
     if (document.hidden) return;
     if (AUTO_REFRESH_EXEMPT_TABS.has(store.tab)) return;
-    if (inflight > 0) return;
+    if (navigationPending || requests.size > 0) return;
     if (isEditing()) return;
     if (Date.now() - lastActivity < 8000) return;
     if (!document.querySelector('#tab-content [data-live]')) return;

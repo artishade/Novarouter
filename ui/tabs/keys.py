@@ -17,6 +17,7 @@ Action endpoints (BFF → /api/admin/client-keys):
 """
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any
 
@@ -79,21 +80,17 @@ async def keys_tab() -> HTMLResponse:
 @router.get("/partials/keys/main")
 async def keys_main() -> HTMLResponse:
     """Header + cards + hint (mirrors KeysTab body)."""
-    try:
-        keys = await api.get("/api/admin/client-keys")
-    except (ApiError, Exception) as err:
-        message = err.message if isinstance(err, ApiError) else str(err) or "Failed to load client keys"
+    keys, stats, meta = await asyncio.gather(
+        api.get("/api/admin/client-keys"), api.get("/api/admin/stats"),
+        api.get("/api/admin/meta"), return_exceptions=True,
+    )
+    if isinstance(keys, BaseException):
+        message = keys.message if isinstance(keys, ApiError) else str(keys) or "Failed to load client keys"
         return _err_panel(message)
 
-    stats = None
-    meta = None
-    try:
-        stats = await api.get("/api/admin/stats")
-    except (ApiError, Exception):
+    if isinstance(stats, BaseException):
         stats = None
-    try:
-        meta = await api.get("/api/admin/meta")
-    except (ApiError, Exception):
+    if isinstance(meta, BaseException):
         meta = None
 
     return html(render("partials/keys_main.html", keys=keys or [], stats=stats, meta=meta))

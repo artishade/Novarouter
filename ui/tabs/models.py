@@ -14,6 +14,7 @@ Actions (HTMX mutations → html(..., toast=..., refresh=True)):
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -101,28 +102,27 @@ async def _models_ctx(request: Request) -> dict:
     """List context shared by the tab fragment and the live-refresh partial."""
     f = _parse_filters(request.query_params)
 
+    res, providers, stats = await asyncio.gather(
+        api.get("/api/admin/models", params=_api_params(f)),
+        api.get("/api/admin/providers"), api.get("/api/admin/stats"),
+        return_exceptions=True,
+    )
     rows: list[dict] = []
     total = 0
     error: str | None = None
-    try:
-        res = await api.get("/api/admin/models", params=_api_params(f))
-        total = res.get("total", 0)
-        rows = _decorate(res.get("rows", []) or [])
-    except ApiError as e:
-        error = e.message
-    except Exception as e:  # noqa: BLE001
-        error = f"Failed to load models ({e.__class__.__name__})"
-
-    providers: list[dict] = []
-    try:
-        providers = await api.get("/api/admin/providers")
-    except Exception:  # noqa: BLE001 — filter select just loses options
+    if isinstance(res, ApiError):
+        error = res.message
+    elif isinstance(res, BaseException):
+        error = f"Failed to load models ({res.__class__.__name__})"
+    else:
+        try:
+            total = res.get("total", 0)
+            rows = _decorate(res.get("rows", []) or [])
+        except Exception as e:  # noqa: BLE001 — malformed primary payload
+            error = f"Failed to load models ({e.__class__.__name__})"
+    if isinstance(providers, BaseException):
         providers = []
-
-    stats = None
-    try:
-        stats = await api.get("/api/admin/stats")
-    except Exception:  # noqa: BLE001
+    if isinstance(stats, BaseException):
         stats = None
 
     active_filters = int(f["provider_id"] != "all") + int(f["status"] != "all") + \
@@ -214,9 +214,8 @@ async def models_detail(request: Request) -> HTMLResponse:
         return html(render("partials/models_error.html", message="Invalid model id — refresh the tab and try again."))
     model: dict | None = None
     try:
-        res = await api.get("/api/admin/models")
-        rows = _decorate(res.get("rows", []) or [])
-        model = next((m for m in rows if m.get("id") == mid), None)
+        res = await api.get(f"/api/admin/models/{mid}")
+        model = _decorate([res])[0] if isinstance(res, dict) else None
     except Exception:  # noqa: BLE001
         model = None
     if model is None:

@@ -19,6 +19,7 @@ Endpoint:
 """
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any
 
@@ -106,25 +107,19 @@ async def analytics_tab(request: Request) -> HTMLResponse:
     hours = int(raw) if raw and raw.isdigit() and int(raw) in (h for h, _ in RANGES) else 24
     group_by = "day" if hours >= 720 else "hour"
 
-    data: Any = None
-    err_message = "Gateway API unreachable"
-    try:
-        data = await api.get("/api/admin/analytics", params={"hours": hours, "group_by": group_by})
-    except Exception as err:  # ApiError or transport failure
-        err_message = getattr(err, "message", None) or "Gateway API unreachable"
+    data, stats, meta = await asyncio.gather(
+        api.get("/api/admin/analytics", params={"hours": hours, "group_by": group_by}),
+        api.get("/api/admin/stats"), api.get("/api/admin/meta"),
+        return_exceptions=True,
+    )
+    err_message = getattr(data, "message", None) or "Gateway API unreachable"
     if not isinstance(data, dict):
         return html(render("partials/analytics_error.html", message=err_message, hours=hours))
 
     # Shared gateway stats (live avg chip) + meta (version) — optional, TSX parity.
-    stats: Any = None
-    meta: Any = None
-    try:
-        stats = await api.get("/api/admin/stats")
-    except Exception:
+    if isinstance(stats, BaseException):
         stats = None
-    try:
-        meta = await api.get("/api/admin/meta")
-    except Exception:
+    if isinstance(meta, BaseException):
         meta = None
 
     summary: dict[str, Any] = data.get("summary") or {}

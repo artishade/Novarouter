@@ -22,8 +22,8 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import case, func, select
+from sqlalchemy.orm import Session
 
 from nova import engine as nova_engine
 from nova import synclog
@@ -200,7 +200,7 @@ def to_session(s: ProviderSession) -> dict:
     }
 
 
-def to_provider(p: Provider, key_count: int, model_statuses: list[str], session: ProviderSession | None) -> dict:
+def to_provider(p: Provider, key_count: int, model_counts: tuple[int, int, int], session: ProviderSession | None) -> dict:
     return {
         "id": p.id,
         "key": p.key,
@@ -217,9 +217,9 @@ def to_provider(p: Provider, key_count: int, model_statuses: list[str], session:
         "free_tier": p.freeTier,
         "created_at": epoch_ms(p.createdAt),
         "key_count": key_count,
-        "model_count": len(model_statuses),
-        "ok_count": sum(1 for s in model_statuses if s == "healthy"),
-        "cooling_count": sum(1 for s in model_statuses if s == "cooling"),
+        "model_count": model_counts[0],
+        "ok_count": model_counts[1],
+        "cooling_count": model_counts[2],
         "session": to_session(session) if session is not None else None,
     }
 
@@ -242,22 +242,42 @@ def _base36(n: int) -> str:
 @router.get("")
 def list_providers(db: Session = Depends(get_db)):
     providers = db.scalars(
-        select(Provider)
-        .options(selectinload(Provider.keys), selectinload(Provider.models))
-        .order_by(Provider.priority.asc(), Provider.id.asc())
-    ).unique().all()
-
-    sessions = db.scalars(
-        select(ProviderSession).order_by(ProviderSession.connectedAt.desc(), ProviderSession.id.desc())
+        select(Provider).order_by(Provider.priority.asc(), Provider.id.asc())
     ).all()
 
-    latest: dict[str, ProviderSession] = {}
-    for s in sessions:
-        if s.providerKey not in latest:
-            latest[s.providerKey] = s
+    # Avoid loading all key secrets, model descriptions/capabilities and full ORM
+    # objects for a list that only displays three model counts and a key count.
+    key_counts = dict(db.execute(
+        select(ProviderKey.providerId, func.count(ProviderKey.id))
+        .group_by(ProviderKey.providerId)
+    ).all())
+    model_counts = {
+        provider_id: (int(total), int(healthy), int(cooling))
+        for provider_id, total, healthy, cooling in db.execute(
+            select(
+                ModelRow.providerId,
+                func.count(ModelRow.id),
+                func.sum(case((ModelRow.status == "healthy", 1), else_=0)),
+                func.sum(case((ModelRow.status == "cooling", 1), else_=0)),
+            ).group_by(ModelRow.providerId)
+        ).all()
+    }
+
+    ranked = select(
+        ProviderSession.id.label("session_id"),
+        func.row_number().over(
+            partition_by=ProviderSession.providerKey,
+            order_by=(ProviderSession.connectedAt.desc(), ProviderSession.id.desc()),
+        ).label("rank"),
+    ).subquery()
+    sessions = db.scalars(
+        select(ProviderSession).join(ranked, ProviderSession.id == ranked.c.session_id)
+        .where(ranked.c.rank == 1)
+    ).all()
+    latest = {s.providerKey: s for s in sessions}
 
     return JSONResponse([
-        to_provider(p, len(p.keys), [m.status for m in p.models], latest.get(p.key))
+        to_provider(p, int(key_counts.get(p.id, 0)), model_counts.get(p.id, (0, 0, 0)), latest.get(p.key))
         for p in providers
     ])
 

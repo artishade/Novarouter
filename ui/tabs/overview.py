@@ -21,6 +21,7 @@ ConsoleTab.tsx (ui/tabs/console.py scope).
 """
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from typing import Any
@@ -141,32 +142,18 @@ async def overview_tab() -> HTMLResponse:
     global _prev_stats, _prev_at
 
     # Primary dataset — a failure here renders the retryable error panel.
-    stats: Any = None
-    err_message = "Gateway API unreachable"
-    try:
-        stats = await api.get("/api/admin/stats")
-    except Exception as err:  # ApiError or transport failure
-        err_message = getattr(err, "message", None) or "Gateway API unreachable"
+    stats, meta, providers, logs = await asyncio.gather(
+        api.get("/api/admin/stats"), api.get("/api/admin/meta"),
+        api.get("/api/admin/providers"),
+        api.get("/api/admin/logs", params={"limit": 50}),
+        return_exceptions=True,
+    )
+    err_message = (getattr(stats, "message", None) or "Gateway API unreachable")
     if not isinstance(stats, dict):
         return html(render("partials/overview_error.html", message=err_message))
 
     # Secondary datasets — degraded individually (TSX Promise.allSettled parity).
-    meta: Any = None
-    providers: Any = None
-    recent: Any = None
-    try:
-        meta = await api.get("/api/admin/meta")
-    except Exception:
-        meta = None
-    try:
-        providers = await api.get("/api/admin/providers")
-    except Exception:
-        providers = None
-    try:
-        logs = await api.get("/api/admin/logs", params={"limit": 50})
-        recent = logs[:8] if isinstance(logs, list) else None
-    except Exception:
-        recent = None
+    recent = logs[:8] if isinstance(logs, list) else None
 
     prev = _prev_stats if (time.monotonic() - _prev_at) < 15 else None
     _prev_stats = stats

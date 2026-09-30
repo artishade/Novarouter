@@ -23,6 +23,7 @@ Action endpoints:
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import Any
@@ -57,10 +58,13 @@ async def console_tab() -> HTMLResponse:
     # Models are essential (picker) → hard error panel on failure, like the
     # TSX would render a broken console without them. meta/stats/tools are
     # optional decorations (nullable props in the TSX) → degrade to None.
-    try:
-        payload = await api.get("/api/admin/models")
-    except (ApiError, Exception) as err:
-        message = err.message if isinstance(err, ApiError) else str(err) or "Failed to load models"
+    payload, meta, stats, raw_tools = await asyncio.gather(
+        api.get("/api/admin/models"), api.get("/api/admin/meta"),
+        api.get("/api/admin/stats"), api.get("/api/agent/tools"),
+        return_exceptions=True,
+    )
+    if isinstance(payload, BaseException):
+        message = payload.message if isinstance(payload, ApiError) else str(payload) or "Failed to load models"
         return _err_panel(message)
 
     rows: list[Any] = []
@@ -71,31 +75,25 @@ async def console_tab() -> HTMLResponse:
     # TSX: enabledModels = models.filter(m => m.enabled); picker slices to 40.
     models = [m for m in rows if isinstance(m, dict) and m.get("enabled")]
 
-    meta = None
-    stats = None
-    tools: list[dict] = []
-    try:
-        meta = await api.get("/api/admin/meta")
-    except (ApiError, Exception):
+    if isinstance(meta, BaseException):
         meta = None
-    try:
-        stats = await api.get("/api/admin/stats")
-    except (ApiError, Exception):
+    if isinstance(stats, BaseException):
         stats = None
-    try:
-        raw_tools = await api.get("/api/agent/tools")
-        tools = [
-            {
-                "id": t.get("id"),
-                "name": t.get("name"),
-                "description": t.get("description"),
-                "icon": _icon_kebab(str(t.get("icon") or "wrench")),
-            }
-            for t in (raw_tools or [])
-            if isinstance(t, dict)
-        ]
-    except (ApiError, Exception):
-        tools = []
+    tools: list[dict] = []
+    if not isinstance(raw_tools, BaseException):
+        try:
+            tools = [
+                {
+                    "id": t.get("id"),
+                    "name": t.get("name"),
+                    "description": t.get("description"),
+                    "icon": _icon_kebab(str(t.get("icon") or "wrench")),
+                }
+                for t in (raw_tools or [])
+                if isinstance(t, dict)
+            ]
+        except Exception:
+            tools = []
 
     return html(
         render("tabs/console.html", models=models, meta=meta, stats=stats, tools=tools)

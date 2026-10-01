@@ -1,0 +1,62 @@
+{# Run one plugin tool by hand — the argument form is generated from the
+   cached inputSchema, so the Playground shows exactly the fields the tool
+   declares. Rendered into #console-plugins-run. #}
+{% if output is defined %}
+<div class="rounded-xl border {{ 'border-emerald-500/30 bg-emerald-500/5' if ok else 'border-rose-500/30 bg-rose-500/5' }} p-3">
+  <div class="flex items-center justify-between gap-2">
+    <div class="min-w-0 text-[10px] font-semibold uppercase tracking-wider {{ 'text-emerald-400' if ok else 'text-rose-400' }}">
+      {{ server }}::{{ tool }}
+    </div>
+    <button type="button" hx-get="/ui/console/plugins/run?server={{ server }}&tool={{ tool }}"
+      hx-target="#console-plugins-run" hx-swap="innerHTML"
+      class="inline-flex size-6 items-center justify-center rounded-md border border-slate-800 text-slate-500 hover:text-slate-300">
+      <i data-lucide="rotate-ccw" class="size-3"></i>
+    </button>
+  </div>
+  <pre class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-slate-800 bg-black/40 p-2 font-mono text-[10px] leading-relaxed text-slate-300">{{ output }}</pre>
+</div>
+{% else %}
+<form hx-post="/ui/console/plugins/call" hx-target="#console-plugins-run" hx-swap="innerHTML"
+  class="space-y-2 rounded-xl border border-slate-800 bg-[#0d1322] p-3">
+  <input type="hidden" name="server" value="{{ server }}">
+  <input type="hidden" name="tool" value="{{ tool }}">
+  <div class="flex items-center justify-between gap-2">
+    <div class="min-w-0">
+      <div class="truncate font-mono text-[11px] text-emerald-300">{{ server }}::{{ tool }}</div>
+      {% if description %}<div class="truncate text-[10px] text-slate-500">{{ description }}</div>{% endif %}
+    </div>
+    <button type="button" hx-get="/ui/console/plugins" hx-target="#console-plugins-body" hx-swap="innerHTML"
+      class="inline-flex size-6 shrink-0 items-center justify-center rounded-md border border-slate-800 text-slate-500 hover:text-slate-300">
+      <i data-lucide="x" class="size-3"></i>
+    </button>
+  </div>
+
+  {% if fields %}
+  {% for field in fields %}
+  <label class="block">
+    <span class="mb-1 block text-[10px] text-slate-500">
+      {{ field.name }}{% if field.required %} <span class="text-rose-400">*</span>{% endif %}
+      <span class="text-slate-600">{{ field.type }}</span>
+    </span>
+    {% if field.type == 'boolean' %}
+    <input type="checkbox" name="arg__{{ field.name }}" class="accent-emerald-400">
+    {% elif field.type == 'number' or field.type == 'integer' %}
+    <input type="number" name="arg__{{ field.name }}" {% if field.required %}required{% endif %}
+      class="h-8 w-full rounded-md border border-slate-800 bg-[#080c14] px-2 font-mono text-[11px] text-slate-200 focus:border-emerald-500/40 focus:outline-none">
+    {% else %}
+    <input type="text" name="arg__{{ field.name }}" {% if field.required %}required{% endif %} value="{{ field.default }}"
+      placeholder="{{ field.description }}"
+      class="h-8 w-full rounded-md border border-slate-800 bg-[#080c14] px-2 font-mono text-[11px] text-slate-200 focus:border-emerald-500/40 focus:outline-none">
+    {% endif %}
+  </label>
+  {% endfor %}
+  {% else %}
+  <p class="text-[10px] text-slate-500">This tool takes no arguments.</p>
+  {% endif %}
+
+  <button type="submit"
+    class="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 text-[11px] font-medium text-slate-950 transition-colors hover:bg-emerald-400">
+    <i data-lucide="play" class="size-3"></i>Run tool
+  </button>
+</form>
+{% endif %}

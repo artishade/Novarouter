@@ -1,0 +1,199 @@
+{# Console plugins drawer — the user's custom MCP servers ("plugins").
+   Rendered into #console-plugins-body by ui/tabs/console.py. Every action is
+   an HTMX post that swaps this same panel, so the list never needs a reload. #}
+{% if error %}
+<div class="mb-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-300">{{ error }}</div>
+{% endif %}
+
+<div class="space-y-3">
+  <div class="flex items-center justify-between gap-2">
+    <div class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
+      <i data-lucide="plug" class="size-3"></i>MCP servers · plugins
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="font-mono text-[10px] text-slate-600">
+        {{ summary.servers }} server{{ '' if summary.servers == 1 else 's' }} ·
+        {{ summary.tools }} tool{{ '' if summary.tools == 1 else 's' }}
+      </span>
+      {% if summary.enabled %}
+      <button type="button" hx-post="/ui/console/plugins/test-all" hx-target="#console-plugins-body" hx-swap="innerHTML"
+        title="Re-connect every enabled plugin and refresh its tool list"
+        class="inline-flex h-6 items-center gap-1 rounded-md border border-slate-800 px-2 text-[10px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">
+        <i data-lucide="refresh-cw" class="size-3"></i>Refresh
+      </button>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ------------------------------ servers ------------------------------ #}
+  {% for s in servers %}
+  <div class="rounded-xl border {{ 'border-emerald-500/30 bg-[#0d1322]' if s.enabled else 'border-slate-800 bg-[#0b101c] opacity-70' }} p-3">
+    <div class="flex items-start justify-between gap-2">
+      <div class="flex min-w-0 items-center gap-2.5">
+        <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border
+          {{ 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' if s.status == 'connected'
+             else ('border-rose-500/40 bg-rose-500/10 text-rose-300' if s.status == 'error'
+             else 'border-slate-800 bg-slate-900/60 text-slate-500') }}">
+          <i data-lucide="plug-zap" class="size-4"></i>
+        </span>
+        <div class="min-w-0">
+          <div class="flex items-center gap-1.5">
+            <span class="truncate text-xs font-semibold text-slate-100">{{ s.name }}</span>
+            <span class="rounded bg-slate-800/70 px-1 font-mono text-[9px] text-slate-400">{{ s.transport }}</span>
+          </div>
+          <div class="truncate font-mono text-[10px] text-slate-500" title="{{ s.url or s.command }}">
+            {{ s.id }} · {{ s.url or s.command }}
+          </div>
+        </div>
+      </div>
+      <div class="flex shrink-0 items-center gap-1">
+        <button type="button" hx-post="/ui/console/plugins/test" hx-vals='{"id":"{{ s.id }}"}' hx-target="#console-plugins-body" hx-swap="innerHTML"
+          title="Connect and refresh the tool list"
+          class="inline-flex h-6 items-center gap-1 rounded-md border border-slate-800 px-1.5 text-[10px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">
+          <i data-lucide="plug" class="size-3"></i>Test
+        </button>
+        <button type="button" hx-get="/ui/console/plugins/form?server={{ s.id }}" hx-target="#console-plugins-body" hx-swap="innerHTML"
+          title="Edit this server"
+          class="inline-flex size-6 items-center justify-center rounded-md border border-slate-800 text-slate-500 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">
+          <i data-lucide="pencil" class="size-3"></i>
+        </button>
+        <button type="button" hx-post="/ui/console/plugins/toggle" hx-vals='{"id":"{{ s.id }}","enabled":{{ "false" if s.enabled else "true" }}}'
+          hx-target="#console-plugins-body" hx-swap="innerHTML"
+          title="{{ 'Disable' if s.enabled else 'Enable' }} this server"
+          class="inline-flex size-6 items-center justify-center rounded-md border border-slate-800 text-slate-500 transition-colors hover:border-amber-500/40 hover:text-amber-300">
+          <i data-lucide="{{ 'power' if s.enabled else 'power-off' }}" class="size-3"></i>
+        </button>
+        <button type="button" hx-post="/ui/console/plugins/delete" hx-vals='{"id":"{{ s.id }}"}' hx-target="#console-plugins-body" hx-swap="innerHTML"
+          hx-confirm="Remove the {{ s.name }} MCP server? Tools from it stop being available to the agent."
+          title="Remove this server"
+          class="inline-flex size-6 items-center justify-center rounded-md border border-slate-800 text-slate-500 transition-colors hover:border-rose-500/40 hover:text-rose-300">
+          <i data-lucide="trash-2" class="size-3"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+      <span class="rounded px-1.5 py-0.5 font-mono
+        {{ 'bg-emerald-500/10 text-emerald-300' if s.status == 'connected'
+           else ('bg-rose-500/10 text-rose-300' if s.status == 'error' else 'bg-slate-800/60 text-slate-500') }}">
+        {{ s.status }}{% if s.last_checked_at %} · {{ s.last_checked_at | time_ago }}{% endif %}
+      </span>
+      <span class="rounded bg-slate-800/60 px-1.5 py-0.5 font-mono text-slate-400">{{ s.tool_count }} tools</span>
+      {% if s.allow %}
+      <span class="rounded bg-slate-800/60 px-1.5 py-0.5 font-mono text-slate-400">allow: {{ s.allow | join(', ') }}</span>
+      {% endif %}
+    </div>
+
+    {% if s.last_error %}
+    <p class="mt-2 rounded-md border border-rose-500/30 bg-rose-500/10 px-2 py-1 font-mono text-[10px] text-rose-300">{{ s.last_error }}</p>
+    {% endif %}
+
+    {% if s.tools %}
+    <div class="mt-2 flex flex-wrap gap-1.5">
+      {% for t in s.tools %}
+      <button type="button" hx-get="/ui/console/plugins/run?server={{ s.id }}&tool={{ t.name }}"
+        hx-target="#console-plugins-run" hx-swap="innerHTML"
+        title="{{ t.description or 'Call this tool' }}"
+        class="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-black/30 px-2 py-1 font-mono text-[10px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">
+        <i data-lucide="play" class="size-2.5"></i>{{ t.name }}
+      </button>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  {# --------------------------- empty state --------------------------- #}
+  {% if not servers %}
+  <div class="rounded-xl border border-dashed border-slate-800 bg-[#0d1322]/50 p-3 text-[11px] leading-relaxed text-slate-500">
+    No MCP server registered yet. Add one and its tools join the console and every
+    agent task — the planner sees them by name and can call them.
+    <div class="mt-2 space-y-1 font-mono text-[10px] text-slate-600">
+      <div><span class="text-emerald-400">http</span> — https://mcp.example.com/mcp (streamable HTTP)</div>
+      <div><span class="text-emerald-400">stdio</span> — npx -y @modelcontextprotocol/server-filesystem /app/build</div>
+      <div><span class="text-emerald-400">stdio</span> — uvx mcp-server-fetch</div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ------------------------------ add/edit ------------------------------ #}
+  {% if form %}
+  <form hx-post="/ui/console/plugins/save" hx-target="#console-plugins-body" hx-swap="innerHTML"
+    class="space-y-2 rounded-xl border border-emerald-500/30 bg-[#0d1322] p-3">
+    <input type="hidden" name="id" value="{{ form.id }}">
+    <div class="flex items-center justify-between gap-2">
+      <div class="text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
+        {{ 'Edit plugin' if form.id else 'Add a plugin' }}
+      </div>
+      <button type="button" hx-get="/ui/console/plugins" hx-target="#console-plugins-body" hx-swap="innerHTML"
+        class="inline-flex size-6 items-center justify-center rounded-md border border-slate-800 text-slate-500 hover:text-slate-300">
+        <i data-lucide="x" class="size-3"></i>
+      </button>
+    </div>
+
+    <div class="grid gap-2 sm:grid-cols-2">
+      <label class="block">
+        <span class="mb-1 block text-[10px] text-slate-500">Name</span>
+        <input name="name" value="{{ form.name }}" required placeholder="DeepWiki"
+          class="h-8 w-full rounded-md border border-slate-800 bg-[#080c14] px-2 text-[11px] text-slate-200 focus:border-emerald-500/40 focus:outline-none">
+      </label>
+      <label class="block">
+        <span class="mb-1 block text-[10px] text-slate-500">Transport</span>
+        <select name="transport"
+          class="h-8 w-full rounded-md border border-slate-800 bg-[#080c14] px-2 text-[11px] text-slate-200 focus:border-emerald-500/40 focus:outline-none">
+          <option value="http" {{ 'selected' if form.transport != 'stdio' }}>http — streamable HTTP URL</option>
+          <option value="stdio" {{ 'selected' if form.transport == 'stdio' }}>stdio — local plugin process</option>
+        </select>
+      </label>
+    </div>
+
+    <label class="block">
+      <span class="mb-1 block text-[10px] text-slate-500">Server URL</span>
+      <input name="url" value="{{ form.url }}" placeholder="https://mcp.example.com/mcp"
+        class="h-8 w-full rounded-md border border-slate-800 bg-[#080c14] px-2 font-mono text-[11px] text-slate-200 focus:border-emerald-500/40 focus:outline-none">
+    </label>
+
+    <label class="block">
+      <span class="mb-1 block text-[10px] text-slate-500">Command (stdio)</span>
+      <input name="command" value="{{ form.command }}" placeholder="npx -y @modelcontextprotocol/server-filesystem /app/build"
+        class="h-8 w-full rounded-md border border-slate-800 bg-[#080c14] px-2 font-mono text-[11px] text-slate-200 focus:border-emerald-500/40 focus:outline-none">
+    </label>
+
+    <label class="block">
+      <span class="mb-1 block text-[10px] text-slate-500">Headers (JSON, stored as a secret — masked when read back)</span>
+      <textarea name="headers" rows="2" placeholder='{"Authorization": "Bearer …"}'
+        class="w-full resize-none rounded-md border border-slate-800 bg-[#080c14] px-2 py-1.5 font-mono text-[11px] text-slate-200 focus:border-emerald-500/40 focus:outline-none">{{ form.headers_text }}</textarea>
+    </label>
+
+    <label class="block">
+      <span class="mb-1 block text-[10px] text-slate-500">Allowed tools (comma separated, empty = every tool the server offers)</span>
+      <input name="allow" value="{{ form.allow | join(', ') }}"
+        class="h-8 w-full rounded-md border border-slate-800 bg-[#080c14] px-2 font-mono text-[11px] text-slate-200 focus:border-emerald-500/40 focus:outline-none">
+    </label>
+
+    <div class="flex items-center justify-between gap-2 pt-1">
+      <label class="inline-flex items-center gap-1.5 text-[11px] text-slate-400">
+        <input type="checkbox" name="enabled" {{ 'checked' if form.enabled }} class="accent-emerald-400"> Enabled
+      </label>
+      <button type="submit"
+        class="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-500/90 px-3 text-[11px] font-medium text-slate-950 transition-colors hover:bg-emerald-400">
+        <i data-lucide="check" class="size-3"></i>{{ 'Save plugin' if form.id else 'Add plugin' }}
+      </button>
+    </div>
+  </form>
+  {% else %}
+  <button type="button" hx-get="/ui/console/plugins/form" hx-target="#console-plugins-body" hx-swap="innerHTML"
+    class="flex w-full items-center gap-3 rounded-xl border border-dashed border-slate-800 bg-[#0d1322]/50 p-3 text-left transition-colors hover:border-emerald-500/40">
+    <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
+      <i data-lucide="plus" class="size-4"></i>
+    </span>
+    <span class="min-w-0">
+      <span class="block text-xs font-semibold text-slate-100">Add an MCP server</span>
+      <span class="block truncate text-[10px] text-slate-500">A hosted MCP endpoint or a local plugin process — its tools join the agent</span>
+    </span>
+  </button>
+  {% endif %}
+
+  {# ------------------------- run a tool inline ------------------------- #}
+  <div id="console-plugins-run"></div>
+</div>

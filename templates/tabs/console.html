@@ -1,5 +1,5 @@
 {# Console tab — port of ConsoleTab.tsx: toolbar, stream, composer + client JS. #}
-<div id="console-root" class="flex h-[calc(100vh-10.5rem)] min-h-[540px] flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#0a0f1c]">
+<div id="console-root" class="relative flex h-[calc(100vh-10.5rem)] min-h-[540px] flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#0a0f1c]">
   {# ------------------------------- toolbar ------------------------------- #}
   <div class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/80 px-4 py-2">
     <div class="flex items-center gap-2">
@@ -29,6 +29,15 @@
       <button id="console-clear" type="button" title="Clear console" aria-label="Clear console" disabled
         class="inline-flex h-8 items-center justify-center rounded-md border border-slate-800 px-2.5 text-slate-400 transition-colors hover:bg-slate-800/60 hover:text-slate-200 disabled:opacity-40">
         <i data-lucide="eraser" class="size-3.5"></i>
+      </button>
+      {# Custom MCP servers ("plugins") — their tools join the chat + agent. #}
+      <button id="console-plugins-btn" type="button"
+        title="Custom MCP servers and plugin tools" aria-label="Custom MCP servers and plugin tools"
+        class="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-800 px-2.5 text-[11px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">
+        <i data-lucide="plug" class="size-3.5"></i>
+        {% if plugins and plugins.tools %}
+        <span class="rounded bg-emerald-500/15 px-1 font-mono text-[10px] text-emerald-300">{{ plugins.tools }}</span>
+        {% endif %}
       </button>
     </div>
   </div>
@@ -151,6 +160,41 @@
       </div>
     </div>
   </div>
+
+  {# ------------------------------ plugins drawer ------------------------------ #}
+  {# Loaded on first open (htmx.ajax in the inline script below) — a closed
+     drawer must cost nothing. #}
+  <div id="console-plugins" hidden
+    class="absolute inset-0 z-30 flex items-stretch justify-end bg-black/60 backdrop-blur-sm">
+    <div class="flex h-full w-[min(94vw,460px)] flex-col border-l border-slate-800 bg-[#0a0f1c]">
+      <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/80 px-3 py-2">
+        <div class="flex min-w-0 items-center gap-2.5">
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
+            <i data-lucide="plug" class="size-4 text-emerald-400"></i>
+          </span>
+          <div class="min-w-0">
+            <div class="truncate text-sm font-semibold text-slate-100">MCP servers &amp; plugins</div>
+            <div class="truncate text-[10px] text-slate-500">
+              {% if plugins and plugins.servers %}
+                {{ plugins.enabled }} of {{ plugins.servers }} enabled · {{ plugins.tools }} tools in the agent toolbox
+              {% else %}
+                Register a server — its tools join the console and every agent task
+              {% endif %}
+            </div>
+          </div>
+        </div>
+        <button id="console-plugins-close" type="button" title="Close plugins" aria-label="Close plugins"
+          class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300">
+          <i data-lucide="x" class="size-4"></i>
+        </button>
+      </div>
+      <div id="console-plugins-body" class="flex-1 overflow-y-auto p-3">
+        <div class="flex items-center justify-center gap-2 py-6 text-[11px] text-slate-600">
+          <i data-lucide="loader-2" class="size-3 animate-spin"></i>loading plugins…
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -193,6 +237,7 @@
     '- **Agent** — prefix with `!` (`!find the best free GPU providers and compare them`) or just describe an actionable task; Nova delegates it to the autonomous agent and streams every step here.\n\n' +
     '**Slash commands**\n\n' +
     '- `/status` · `/models` · `/gpu` · `/storage` · `/keys` · `/agents` — gateway diagnostics\n' +
+    '- `/plugins` — open the MCP server / plugin drawer (register a server, test it, run one of its tools)\n' +
     '- `/boost` — live memory report (RAM, swap, gateway RSS)\n' +
     '- `/strategy <quota_aware|latency_first|max_vram>` — GPU scheduling strategy\n' +
     '- `/agent <goal>` — start an autonomous task\n' +
@@ -672,6 +717,10 @@
       await runTerminal('nova boost');
       return;
     }
+    if (cmd === '/plugins' || cmd === '/mcp') {
+      openPlugins();
+      return;
+    }
     if (cmd === '/strategy') {
       if (['quota_aware', 'latency_first', 'max_vram'].indexOf(argStr) < 0) {
         pushMsg({ kind: 'system', id: uid(), text: 'Usage: /strategy <quota_aware|latency_first|max_vram>', at: Date.now() });
@@ -822,6 +871,39 @@
     if (mode === 'slash') return handleSlash(text);
     if (mode === 'agent') return startAgent(text.startsWith('!') ? text.slice(1) : text.replace(/^(agent|task)[:\s]/i, ''));
     return sendChat(text, history);
+  }
+
+  /* --------------------------- plugins drawer ---------------------------- */
+  /* The drawer's body is fetched the first time it opens (and on /plugins), so
+     the console costs nothing while it stays closed. Everything inside it is
+     HTMX — the server swaps the panel after every add/test/remove. */
+  const drawer = document.getElementById('console-plugins');
+  const drawerBody = document.getElementById('console-plugins-body');
+  let drawerLoaded = false;
+
+  function openPlugins() {
+    if (!drawer) return;
+    drawer.hidden = false;
+    icons();
+    if (!drawerLoaded && window.htmx && drawerBody) {
+      drawerLoaded = true;
+      htmx.ajax('GET', '{{ plugins_url }}', { target: '#console-plugins-body', swap: 'innerHTML' });
+    }
+  }
+
+  function closePlugins() {
+    if (drawer) drawer.hidden = true;
+  }
+
+  const pluginsBtn = document.getElementById('console-plugins-btn');
+  if (pluginsBtn) pluginsBtn.addEventListener('click', openPlugins);
+  const pluginsClose = document.getElementById('console-plugins-close');
+  if (pluginsClose) pluginsClose.addEventListener('click', closePlugins);
+  if (drawer) {
+    drawer.addEventListener('click', (e) => { if (e.target === drawer) closePlugins(); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && drawer && !drawer.hidden) closePlugins();
+    });
   }
 
   /* ------------------------------ events ---------------------------------- */

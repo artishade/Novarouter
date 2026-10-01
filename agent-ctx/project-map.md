@@ -31,7 +31,7 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 | --- | --- |
 | `config.py` | Env handling: `PORT`, `DATABASE_URL` normalization (Prisma-style `file:` / `postgres://` accepted), `IS_POSTGRES`, `PUBLIC_BASE_URL`/`public_base_url()`, `ENGINE_SIDECAR_PORT` (3099, steps aside if it collides with app port), `CORS_ALLOW_ORIGINS`, `slugify()` |
 | `database.py` | SQLAlchemy engine + `SessionLocal`; `get_db()` FastAPI dependency; `ping()`; `ensure_sqlite_dir()` |
-| `models.py` | All ORM rows (single source of schema truth): Provider, ProviderKey, Model, ModelRoute, ClientKey, RequestLog, TerminalCommand, SystemConfig (KV), StorageProviderRow, StorageFile, AgentTask, AgentStep, ProviderSession. `utcnow()` helper |
+| `models.py` | All ORM rows (single source of schema truth): Provider, ProviderKey, Model, ModelRoute, ClientKey, RequestLog, TerminalCommand, SystemConfig (KV), StorageProviderRow, StorageFile, AgentTask, AgentStep, ProviderSession, McpServer. `utcnow()` helper |
 | `bootstrap.py` | First-boot: additive table creation + seeds NovaFree engine + gateway config. Never destructive, never mock data |
 | `kv.py` | SystemConfig KV helpers: `get_config`, `set_config`, `get_config_number`, `get_gpu_providers`, `set_gpu_providers` |
 | `engine.py` | Sidecar lifecycle: `start_sidecar()` / `stop_sidecar()` / `health_check()`; spawns bun/node `engine/index.js`; degrades honestly if absent |
@@ -41,8 +41,10 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 | `freemodels.py` | Loads `engine/free-models.json` (snapshot of ClawLabsAI/free-ai-models); feeds NovaFree tiers `nova/pro`, `nova/air`, `nova/mini` |
 | `terminal.py` | **Simulated** allowlist sandbox executor (~1200 lines). No child processes; outputs synthesized from real OS telemetry (/proc, platform) + live DB state. Only subprocess ever run: `--version` probes of node/bun/npm. Allowlist + dangerous-token blocklist (exit 126) / unknown (exit 127). Persists TerminalCommand, capped 200 rows |
 | `pty_session.py` | Real PTY session manager for Terminal tab sessions: `stop_all()` on shutdown, OSC 7 cwd reporting, max 8 sessions, 30-min idle reap |
-| `agent.py` | Autonomous runner: plan (LLM strict JSON) → execute tool → persist AgentStep → repeat until `finish`/step limit → final summary. Tools: web_search, read_url, terminal, gateway_stats, storage_scan, discover_models, write_file, read_file, edit_file, mkdir. Each DB touch opens its own SessionLocal; cancellation checked per loop. Async callable handed to FastAPI BackgroundTasks |
+| `agent.py` | Autonomous runner: plan (LLM strict JSON) → execute tool → persist AgentStep → repeat until `finish`/step limit → final summary. Tools: web_search, read_url, terminal, gateway_stats, storage_scan, discover_models, write_file, read_file, edit_file, mkdir, bash_exec, **mcp_call**. `agent_llm()` = engine sidecar first, this server's own `/v1/chat/completions` as fallback (`_default_model_id()` resolves `auto` to a healthy enabled model). Each DB touch opens its own SessionLocal; cancellation checked per loop. Async callable handed to FastAPI BackgroundTasks |
 | `storage_lib.py` | Storage providers (Firebase/Supabase/B2/R2/GitHub…), backups, file ops |
+| `mcp_client.py` | Transport-only MCP client: `list_tools` / `call_tool` / `probe`, streamable HTTP (JSON or SSE-framed, `Mcp-Session-Id` echo) + stdio plugin processes (argv-split, cached per server, capped at 8, `close_all()` on shutdown). Helpers: `parse_call` (`server::tool {json}`), `mask_headers` |
+| `mcp_registry.py` | The user's plugins: CRUD over `McpServer` (validated, slugged, secrets preserved across a masked re-save), `refresh()` caches `tools/list` + status, `tool_catalogue()` feeds the agent prompt and `/api/agent/tools`, `invoke()` dispatches a call |
 | `gwlog.py` | `record_request()` — compact RequestLog writes from the gateway middleware |
 | `synclog.py` | Catalogue-sync audit logging |
 
@@ -61,6 +63,7 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 | `admin_compute.py` | `/api/admin/compute` | GPU/compute provider toggles + config |
 | `admin_storage.py` | `/api/admin/storage` | Providers, connect/disconnect, files, backup |
 | `admin_misc.py` | `/api/admin` | meta, stats, analytics, logs, and other misc |
+| `admin_mcp.py` | `/api/admin/mcp` | Custom MCP servers: `/servers` (CRUD), `/servers/{delete,toggle,test,refresh,call}`, `/tools`. Header values are stored, never returned |
 | `agent_api.py` | `/api/agent` | Task create/list/get/cancel + tools list |
 | `_common.py` | (helpers) | `json_body`, `as_str`, `as_num`, `parse_int`, `epoch_ms`, `mask_key`, `not_found`, `invalid_id` |
 
@@ -91,3 +94,4 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 - **New DB entity** → class in `nova/models.py` (bootstrap creates missing tables additively); KV-only values can just use `nova/kv.py` SystemConfig helpers instead.
 - **New free provider/model source** → `engine/free-models.json` + `nova/freemodels.py`.
 - **New agent tool** → action in `nova/agent.py` `ALLOWED_ACTIONS` + executor branch + tools list in `routers/agent_api.py`.
+- **New plugin/MCP server** → a row in `McpServer` (additive table) via `nova/mcp_registry.py`; nothing else needs touching — the console drawer and the agent catalogue read the same registry.

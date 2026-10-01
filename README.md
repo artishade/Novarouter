@@ -29,6 +29,7 @@ The base URL is also advertised live by `GET /api/admin/meta` (`base_url` field)
 | 🐍 Python server | FastAPI + SQLAlchemy — binds `0.0.0.0:$PORT` (Render assigns PORT dynamically, never hardcoded), CORS enabled for browser clients, `/health` for uptime pings |
 | 🤖 Autonomous Agent | Task queue, background execution, tool use (web search, page reader, terminal, live model discovery), task history & cancellation |
 | 💬 Nova Console | **One chatbox for everything** — questions → AI chat with fallback telemetry, `$ cmd` → sandbox shell, `! task` → agent execution |
+| 🔌 MCP plugins | Register your own **MCP servers** from the console (streamable HTTP or a local stdio plugin process) — their tools join the toolbox, the agent planner and a built-in "run this tool" form |
 | 🧠 Free AI providers | Built-in presets (OpenRouter, Groq, GitHub Models, Google AI Studio, Mistral, Ollama, …) with health checks, weights, cooldowns |
 | 🔀 Smart routing | Fallback chains, identity spoofing, request logs, analytics dashboards |
 | 📡 OpenAI-spec API | `/v1/models`, `/v1/chat/completions` (**streaming SSE + non-streaming**), `/v1/completions` (legacy), `/v1/messages` (Anthropic format), `/v1/embeddings`, live discovery |
@@ -214,7 +215,53 @@ Everything lives in one chatbox — input is routed automatically:
 | `$ nova agents` | Lists autonomous agent task history |
 | `/boost 256`, `/models`, `/gpu`, `/storage`, `/help` | Slash shortcuts for terminal-side config |
 | `! Audit the storage providers and report failures` | Delegates to the autonomous agent — watch steps stream live until the task completes |
+| `/plugins` | Opens the MCP server drawer — add, test, disable/remove, and run a tool by hand |
 | Natural language task | Detected as a task → auto-delegates to the agent |
+
+---
+
+## 🔌 MCP plugins — your own tools in the toolbox
+
+The **Plugins** button in the Nova Console toolbar (or `/plugins`) registers
+[Model Context Protocol](https://modelcontextprotocol.io) servers. Everything
+you add is additive: rows are never seeded and never wiped by a deploy.
+
+| Transport | Example | How it runs |
+| --- | --- | --- |
+| `http` | `https://mcp.example.com/mcp` | Streamable HTTP JSON-RPC, plain-JSON **or** SSE-framed replies, `Mcp-Session-Id` echoed back |
+| `stdio` | `npx -y @modelcontextprotocol/server-filesystem /app/build` | A local plugin process, argv-split (never a shell), one cached child per server |
+
+- **Test** connects, reports what the server actually offers, and caches the
+  tool list — no fabrication, and a dead plugin never stalls a task.
+- **Run** opens a form generated from the tool's own `inputSchema`, so you can
+  call any tool by hand and read exactly what came back.
+- **Enable/disable** controls what the agent may use; an allow-list
+  (`ask_wiki, search`) narrows it further.
+- Headers are stored as credentials: they are masked on every read and a
+  masked re-save keeps the stored value.
+
+The tools join the permanent toolbox, so an agent task can call them the same
+way it calls the terminal — `! use the wiki plugin to look up …`:
+
+```
+mcp_call → mcp nova-test-plugin::add
+{"result": "42"}
+```
+
+The API behind the drawer, if you would rather script it:
+
+```bash
+# register
+curl -X POST /api/admin/mcp/servers -H 'Content-Type: application/json' \
+  -d '{"name":"DeepWiki","transport":"http","url":"https://mcp.deepwiki.com/mcp"}'
+
+# connect + cache the tool list
+curl -X POST /api/admin/mcp/servers/test -H 'Content-Type: application/json' \
+  -d '{"id":"deepwiki"}'
+
+# what the agent is allowed to call
+curl /api/admin/mcp/tools
+```
 
 ---
 
@@ -262,9 +309,9 @@ curl -s -XPOST localhost:3000/api/build/providers \
 main.py            FastAPI entrypoint — 0.0.0.0:$PORT, CORS, /health, API routers, UI
 nova/              config, SQLAlchemy models (Prisma-layout compatible), bootstrap,
                    engine sidecar client, live discovery, model sync, terminal sandbox,
-                   agent runtime, storage lib
+                   agent runtime, storage lib, MCP client + plugin registry
 routers/           gateway (/v1), admin CRUD, admin misc, terminal, compute, storage, agent,
-                   build APIs (permanent cloud terminal config)
+                   MCP plugin registry, build APIs (permanent cloud terminal config)
 ui/                the Python frontend module — shell + 9 dashboard tabs,
                    server-rendered fragments consumed by HTMX (BFF over the JSON API)
 templates/         Jinja2 templates (base shell, tab fragments, partials)

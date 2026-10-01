@@ -38,8 +38,23 @@ TOOLS = [
 
 
 @router.get("/tools")
-def list_tools():
-    return JSONResponse(TOOLS)
+def list_tools(db: Session = Depends(get_db)):
+    """The permanent toolbox + whatever plugins (MCP servers) the user added."""
+    payload = [dict(t) for t in TOOLS]
+    try:
+        from nova import mcp_registry
+
+        for tool in mcp_registry.tool_catalogue(db):
+            payload.append({
+                "id": f"mcp:{tool['qualified']}",
+                "name": tool["qualified"],
+                "description": tool["description"] or f"Tool from the {tool['server_name']} MCP server",
+                "icon": "Plug",
+            })
+    except Exception:
+        # The plugin registry must never take the builtin catalogue down.
+        pass
+    return JSONResponse(payload)
 
 
 @router.get("/tasks")

@@ -83,6 +83,7 @@ ALLOWED_ACTIONS = {
     "edit_file",
     "mkdir",
     "bash_exec",
+    "mcp_call",
     "finish",
 }
 
@@ -100,6 +101,7 @@ TOOLS_DOC = {
     "edit_file": "Edit a workspace file (<path> ||| <old> ||| <new>)",
     "mkdir": "Create a directory",
     "bash_exec": "Run a real shell command in the cloud workspace",
+    "mcp_call": "Call a tool exposed by a registered MCP server (plugin): server::tool",
     "finish": "End the task with a final summary",
 }
 
@@ -117,10 +119,11 @@ You work toward the user's goal one step at a time using these tools:
 - edit_file: EDIT a file. query_or_url_or_command = "<path> ||| <old string> ||| <new string>" (three-way split)
 - mkdir: CREATE a directory. query_or_url_or_command = "<path>"
 - bash_exec: RUN a real shell command (bun, npm, pip, python3, build). query_or_url_or_command = "<shell command>" (e.g. "bun install && bun run build")
+- mcp_call: CALL a tool from one of the MCP servers (plugins) the user registered — see the "# Available MCP tools" section of the request. query_or_url_or_command = "server_id::tool_name" followed by an optional JSON object of arguments, e.g. 'deepwiki::ask_wiki {"repo":"fastapi/fastapi"}'
 - finish: the goal is achieved ("query_or_url_or_command" = final key takeaway, optional)
 
 STRICT OUTPUT RULE — respond with JSON only, no prose, no markdown fences, exactly this shape:
-{"action": "web_search|read_url|terminal|gateway_stats|storage_scan|discover_models|finish", "title": "short title", "query_or_url_or_command": "...", "reason": "why this step"}
+{"action": "web_search|read_url|terminal|gateway_stats|storage_scan|discover_models|mcp_call|finish", "title": "short title", "query_or_url_or_command": "...", "reason": "why this step"}
 
 Rules:
 1. Exactly one action per response.
@@ -248,9 +251,33 @@ def build_planner_user_prompt(goal: str, steps: list[AgentStep]) -> str:
         step_log = "\n".join(lines)
     return (
         f"# Goal\n{goal}\n\n# Step log so far\n{step_log}\n\n"
+        f"{_mcp_catalogue_prompt()}\n"
         'Decide the next single action. Respond with STRICT JSON per the system rules. '
         'Use action "finish" when the goal is achieved.'
     )
+
+
+def _mcp_catalogue_prompt() -> str:
+    """The user's plugins, as a plain list the planner can pick from.
+
+    Read from the cached snapshot (never probed here), so a slow or dead
+    plugin can never stall a task — it simply is not offered.
+    """
+    try:
+        from . import mcp_registry  # noqa: PLC0415 - avoids an import cycle
+
+        with SessionLocal() as db:
+            tools = mcp_registry.tool_catalogue(db)
+    except Exception as err:  # a broken registry must not break the planner
+        log.warning("MCP catalogue unavailable: %s", err)
+        return "# Available MCP tools\n(none — the plugin registry could not be read)"
+    if not tools:
+        return "# Available MCP tools\n(none registered — use the builtin tools)"
+    lines = [
+        f"- {t['qualified']} — {t['description'] or 'no description'}"
+        for t in tools[:60]
+    ]
+    return "# Available MCP tools\n" + "\n".join(lines)
 
 
 def _squash(text: str | None) -> str:
@@ -643,6 +670,33 @@ async def tool_bash_exec(arg: str) -> str:
         return (res.get("output") or str(res))[:2000]
     except Exception as e: return f"bash_exec failed: {e}"
 
+async def tool_mcp_call(argument: str) -> str:
+    """Call a tool on one of the user's registered MCP servers (plugins).
+
+    `argument` is `server_id::tool_name` plus an optional JSON object, or a
+    single JSON object. Tools are offered from the cached catalogue, so a call
+    only fails when the plugin itself is unreachable — and then it says so.
+    """
+    from .mcp_client import McpError, parse_call  # noqa: PLC0415 - lazy by design
+    from . import mcp_registry  # noqa: PLC0415
+
+    raw = (argument or "").strip()
+    if not raw:
+        return "mcp_call error: use `server::tool` — see the available MCP tools"
+    try:
+        server_id, tool, args = parse_call(raw)
+    except McpError as err:
+        return f"mcp_call error: {err}"
+    try:
+        with SessionLocal() as db:
+            output = await mcp_registry.invoke(db, server_id, tool, args)
+    except McpError as err:
+        return f"mcp_call {server_id}::{tool} failed: {err}"
+    except Exception as err:  # pragma: no cover - defensive
+        return f"mcp_call {server_id}::{tool} failed: {err.__class__.__name__}: {err}"
+    return f"mcp {server_id}::{tool}\n{output}"
+
+
 async def tool_discover_models(query: str) -> str:
     """Live model discovery via nova.discovery (port of toolDiscoverModels)."""
     q = (query or "").strip().lower()
@@ -689,6 +743,8 @@ async def execute_tool(plan: AgentPlan) -> str:
         return await tool_mkdir(plan.query)
     if plan.action == "bash_exec":
         return await tool_bash_exec(plan.query)
+    if plan.action == "mcp_call":
+        return await tool_mcp_call(plan.query)
     raise ValueError(f"Unknown action: {plan.action}")
 
 

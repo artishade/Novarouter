@@ -59,3 +59,24 @@ with the user before overriding, or add a new dated entry explaining the pivot.
 - When a decision is reversed or a big feature lands, append a dated entry here
   and update `AGENTS.md`/`project-map.md` — that's the whole job of the
   `nova-memory-sync` skill.
+
+## 2026-10-01 — Custom MCP servers are the console's plugin system
+- **One table (`McpServer`), two transports.** A plugin is either a streamable
+  HTTP MCP endpoint or a local stdio process. Legacy HTTP+SSE (GET stream +
+  POST side channel) is deliberately not implemented: every current server
+  speaks streamable HTTP, and a half-working second transport is worse than an
+  honest two. Reason: plugins must not turn the gateway into a transport zoo.
+- **Discovery is cached on the row, never probed at prompt time.** The agent
+  prompt is built from the `tools/list` snapshot, so a slow or dead plugin can
+  never stall a task — it simply is not offered. "Test"/"Refresh" re-probe on
+  demand. Reason: prompt building is on the task's critical path.
+- **stdio children are cached (max 8), argv-split, `shell=False`.** A plugin
+  boots in ~350 ms; reusing the child keeps repeated agent steps cheap. Nothing
+  runs through a shell — `shlex.split` + `create_subprocess_exec` only.
+  `mcp_client.close_all()` runs on shutdown, next to `pty_session.stop_all()`.
+- **Header values are credentials.** They are stored, masked on every read, and
+  a re-save whose value is still masked keeps the stored one — the browser
+  never holds the real token, so rotating it means typing a new one.
+- **One registry, two consumers.** `nova/mcp_registry.py` backs both the console
+  drawer (`/ui/console/plugins*`) and the agent (`mcp_call` action), so what
+  the user sees in the UI is exactly what the planner can call.

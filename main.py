@@ -86,6 +86,11 @@ async def lifespan(_app: FastAPI):
         pty_session.stop_all()
     except Exception:
         pass
+    try:
+        from nova import mcp_client
+        await mcp_client.close_all()
+    except Exception:
+        pass
     await nova_engine.stop_sidecar()
 
 
@@ -223,6 +228,7 @@ from routers import (  # noqa: E402
     admin_client_keys,
     admin_compute,
     admin_keys,
+    admin_mcp,
     admin_misc,
     admin_models,
     admin_providers,
@@ -243,6 +249,7 @@ admin_router.include_router(admin_client_keys.router, prefix="/client-keys", tag
 admin_router.include_router(admin_terminal.router, prefix="/terminal", tags=["terminal"])
 admin_router.include_router(admin_compute.router, prefix="/compute", tags=["compute"])
 admin_router.include_router(admin_storage.router, prefix="/storage", tags=["storage"])
+admin_router.include_router(admin_mcp.router, prefix="/mcp", tags=["mcp"])
 admin_router.include_router(admin_misc.router, tags=["misc"])
 
 # Permanent cloud build config (Root@Build terminal) — providers, tool registry.

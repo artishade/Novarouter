@@ -241,6 +241,33 @@ class AgentStep(Base):
     task: Mapped[AgentTask] = relationship(back_populates="steps")
 
 
+class McpServer(Base):
+    """A user-registered MCP server ("plugin") for the console + agent.
+
+    Additive table: created at boot by `Base.metadata.create_all`, never
+    touched by bootstrap beyond existing rows. `headers` holds the user's
+    credentials as JSON and is always masked on the way out (see
+    nova.mcp_client.mask_headers) — same rule as the storage targets.
+    """
+
+    __tablename__ = "McpServer"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # slug, e.g. "deepwiki"
+    name: Mapped[str] = mapped_column(String)
+    transport: Mapped[str] = mapped_column(String, default="http")  # http|stdio
+    url: Mapped[str] = mapped_column(String, default="")
+    command: Mapped[str] = mapped_column(Text, default="")   # stdio: "npx -y @scope/server"
+    headers: Mapped[str] = mapped_column(Text, default="{}")  # JSON object, secrets included
+    allow: Mapped[str] = mapped_column(Text, default="[]")     # JSON list of tool names ([] = all)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String, default="unknown")  # unknown|connected|error
+    lastError: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tools: Mapped[str] = mapped_column(Text, default="[]")    # cached tools/list snapshot
+    lastCheckedAt: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    createdAt: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updatedAt: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class ProviderSession(Base):
     __tablename__ = "ProviderSession"
 
@@ -258,5 +285,5 @@ class ProviderSession(Base):
 ALL_TABLES = [
     Provider, ProviderKey, Model, ModelRoute, ClientKey, RequestLog,
     TerminalCommand, SystemConfig, StorageProviderRow, StorageFile,
-    AgentTask, AgentStep, ProviderSession,
+    AgentTask, AgentStep, ProviderSession, McpServer,
 ]

@@ -23,6 +23,8 @@ echo "[novarouter] test: python suite"
 if command -v node >/dev/null 2>&1; then
   echo "[novarouter] test: dashboard navigation suite"
   node --test tests/test_app_navigation.cjs
+  echo "[novarouter] test: terminal workspace suite"
+  node --test tests/test_terminal_workspace.cjs
 else
   echo "[novarouter] test: node not available, skipping the JS suite"
 fi

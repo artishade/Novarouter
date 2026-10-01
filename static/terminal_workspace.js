@@ -94,11 +94,11 @@
 
   /* ------------------------- text selection ------------------------- */
   /* xterm paints every cell on a <canvas>, so the browser has no DOM text to
-   * select: a finger drag highlights nothing and there is no native
-   * cut/copy/cut menu — which is why output could not be copied on a phone at
-   * all. Long-pressing the terminal now selects the word under the finger
-   * (a second long press inside a selection takes the whole line), which the
-   * Copy button then copies. Desktop keeps xterm's own mouse selection. */
+   * select: a finger drag highlights nothing and there is no native copy menu —
+   * which is why output could not be copied on a phone at all. A long press
+   * therefore maps the finger to a buffer row and selects that line, which the
+   * Copy button (or the copy event handler) then copies. Desktop keeps
+   * xterm's own mouse selection. */
   const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
   function cellAt(clientX, clientY) {
@@ -115,33 +115,21 @@
     return { col, row };
   }
 
+  /* Long-press picks whole lines, not single characters: the canvas has no
+   * text nodes, so the finger position has to be mapped to a buffer row
+   * ourselves. Pressing again on a line that is already selected grows the
+   * selection by one line, which is how you copy a two-line `df -h` row. */
   function selectAt(clientX, clientY) {
     const cell = cellAt(clientX, clientY);
     if (!cell) return;
     const buffer = term.buffer.active;
-    const line = buffer.getLine(cell.row);
-    const text = line ? line.translateToString(true) : '';
+    const last = Math.max(0, buffer.length - 1);
+    const row = clamp(cell.row, 0, last);
     const current = term.getSelectionPosition ? term.getSelectionPosition() : null;
-    const insideCurrent = current
-      && current.start.y === cell.row
-      && cell.col >= current.start.x && cell.col <= current.end.x;
-    if (insideCurrent) {
-      term.selectLines(cell.row, cell.row);          // widen: whole line
-      toast('Line selected — tap Copy', 'info');
-      return;
-    }
-    const isWord = (ch) => !!ch && !/\s/.test(ch);
-    let start = Math.min(cell.col, text.length);
-    let end = start;
-    while (start > 0 && isWord(text[start - 1])) start--;
-    while (end < text.length && isWord(text[end])) end++;
-    if (end === start) {
-      term.selectLines(cell.row, cell.row);
-      toast('Line selected — tap Copy', 'info');
-      return;
-    }
-    term.select(start, cell.row, end - start);
-    toast('"' + text.slice(start, end).slice(0, 24) + '" selected — tap Copy', 'info');
+    const already = !!current && current.start.y === row && current.end.y === row;
+    if (already && row < last) term.selectLines(row, row + 1);   // grow by a line
+    else term.selectLines(row, row);
+    toast(term.getSelection() ? 'Line selected — tap Copy' : 'Nothing to copy on that line', 'info');
   }
 
   let pressTimer = null;
@@ -159,7 +147,7 @@
         pressTimer = null;
         // The callout Android/iOS raise over a canvas has nothing to select,
         // and the tap that follows would raise the keyboard over the
-        // selection — so take the word now and let the Copy button do the rest.
+        // selection — so take the line now and let the Copy button do the rest.
         const active = document.activeElement;
         if (active && active !== document.body && view.contains(active)) {
           active.blur();          // drop the keyboard, keep the selection readable
@@ -189,18 +177,97 @@
     toast('Output selected — tap Copy', 'info');
   }
 
-  async function pasteClipboard() {
+  /* ------------------------- clipboard in and out ------------------------- */
+  /* Copy and paste both had dead ends on a phone. Copy needed a DOM selection
+   * that a canvas can never produce, and paste needed a clipboard read the
+   * browser refuses outside a secure context — so both are done here:
+   *   • a long press / "Sel" key selects rows in the xterm buffer,
+   *   • the copy event and the Copy button put that selection on the clipboard,
+   *   • a paste anywhere outside xterm is forwarded to the shell by hand,
+   *   • and the Paste key falls back to a real focused field the OS paste bar
+   *     can write into when `navigator.clipboard.readText()` is refused. */
+  let pasteHelper = null;
+
+  function ensurePasteHelper() {
+    if (pasteHelper) return pasteHelper;
+    pasteHelper = document.createElement('textarea');
+    pasteHelper.setAttribute('aria-label', 'Paste here, then choose Paste');
+    pasteHelper.setAttribute('autocomplete', 'off');
+    pasteHelper.setAttribute('autocorrect', 'off');
+    pasteHelper.setAttribute('autocapitalize', 'off');
+    pasteHelper.setAttribute('spellcheck', 'false');
+    pasteHelper.style.cssText =
+      'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;';
+    pasteHelper.addEventListener('paste', (e) => {
+      const data = e.clipboardData || window.clipboardData;
+      const text = data ? data.getData('text') : '';
+      e.preventDefault();
+      pasteHelper.blur();
+      if (text) sendPaste(text);
+    });
+    document.body.appendChild(pasteHelper);
+    return pasteHelper;
+  }
+
+  function sendPaste(text) {
     const live = session(state.active);
     if (!live || live.closed) { toast('Open a terminal session first', 'info'); return; }
-    try {
-      const text = await navigator.clipboard.readText();
-      if (!text) { toast('Clipboard is empty', 'info'); return; }
-      send(text.replace(/\r\n/g, '\r').replace(/\n$/, ''));
-      toast('Pasted', 'success');
-    } catch (e) {
-      toast('This browser will not hand over the clipboard — long-press the input instead', 'info');
-    }
+    const clean = String(text || '').replace(/\r\n/g, '\r').replace(/\n$/, '');
+    if (!clean) { toast('Clipboard is empty', 'info'); return; }
+    send(clean);
+    if (term) term.focus();
+    toast('Pasted', 'success');
   }
+
+  async function pasteClipboard() {
+    if (!requireSession()) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        const text = await navigator.clipboard.readText();
+        if (text) { sendPaste(text); return; }
+        toast('Clipboard is empty', 'info');
+        return;
+      }
+    } catch (e) { /* permission refused / insecure context — fall through */ }
+    // Safari and locked-down webviews refuse a programmatic clipboard read.
+    // Focus a real field instead: the OS paste bar then works, and its paste
+    // event is what actually hands the text to the shell.
+    const helper = ensurePasteHelper();
+    helper.value = '';
+    helper.focus();
+    toast('Long-press here and choose Paste', 'info');
+  }
+
+  // xterm already forwards a paste that lands on its own helper textarea, and a
+  // paste into the chat box belongs to the chat box — only the rest of the page
+  // hands its clipboard to the shell.
+  const EDITABLE_SEL = 'input, textarea, select, [contenteditable="true"]';
+  document.addEventListener('paste', (e) => {
+    const target = e.target;
+    if (!target || !target.closest) return;
+    if (target === pasteHelper) return;
+    if (target.closest(EDITABLE_SEL)) return;
+    if (term && target.closest('.xterm')) return;
+    const data = e.clipboardData || window.clipboardData;
+    const text = data ? data.getData('text') : '';
+    if (!text) return;
+    e.preventDefault();
+    sendPaste(text);
+  }, true);
+
+  // The terminal's own selection wins over the page's — unless the user picked
+  // real page text (a chat bubble, a code block), which must still copy.
+  document.addEventListener('copy', (e) => {
+    if (!term || !e.clipboardData) return;
+    const selected = term.getSelection();
+    if (!selected) return;
+    const dom = document.getSelection();
+    const pickedPageText = dom && String(dom).length
+      && !(view && dom.anchorNode && view.contains(dom.anchorNode));
+    if (pickedPageText) return;
+    e.clipboardData.setData('text/plain', selected);
+    e.preventDefault();
+  }, true);
 
   const state = { sessions: [], active: null, es: null, busy: false };
   const tabsEl = $('term-tabs');
@@ -651,10 +718,17 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data && data.error) || 'HTTP ' + res.status);
-      state.sessions = state.sessions.filter((s) => s.closed);
-      state.sessions.push(data.info);
+      // Every other tab stays in the strip. Opening a shell used to keep only
+      // the *closed* sessions in the local list, so the live ones disappeared
+      // from the tab bar — and only a page refresh brought them back, because
+      // that re-read the whole list from the server.
+      if (data.info && data.session) {
+        state.sessions = state.sessions.filter((s) => s.id !== data.session);
+        state.sessions.push(data.info);
+      }
       attach(data.session);
       toast('Shell session started', 'success');
+      refreshState();          // the server owns the full tab list
     } catch (err) {
       toast((err && err.message) || 'Could not start a shell session', 'error');
     }
@@ -767,6 +841,30 @@
   let chatBusy = false;
 
   const MODES = [[/^\$/, 'command', 'text-sky-300'], [/^\//, 'shortcut', 'text-amber-300'], [/^!/, 'agent', 'text-purple-300']];
+
+  /* ------------------------- what belongs to the agent ------------------------- */
+  /* A plain sentence about this machine has to reach the agent runtime, not the
+   * chat model. The chat model is a bare completion endpoint — it has no tools,
+   * so "check config via terminal: ram, cpu, gpu, storage" came back as "I can't
+   * access or run a terminal on your device, paste the output here" and nothing
+   * was ever executed. The agent has the shell (its own PTY tab you can watch),
+   * so anything that reads or changes this box goes there.
+   *
+   * Subject + action keeps that narrow: real questions ("what is a transformer?",
+   * "explain this traceback") stay chat and cost nothing. */
+  const TASK_SUBJECT = /\b(terminal|shell|bash|console|command|cpu|cores?|ram|memory|swap|disk|drive|storage|gpu|nvidia|vram|config|configuration|environment|env|port|process|processes|service|daemon|docker|container|uptime|load average|bandwidth|network|hostname|file|files|folder|directory|log|logs|build|deploy|server|machine|sandbox|workspace|repo|repository|package|venv|cron|permission|root)\b/i;
+  const TASK_ACTION = /\b(check|show|tell|report|summari[sz]e|list|print|inspect|read|find|look at|scan|monitor|measure|usage|utili[sz]ation|restart|kill|clear|delete|remove|clean|install|run|execute|start|stop|fix|debug|diagnose|download|create|make|set up|configure|verify|test)\b/i;
+  // Clearly conceptual questions that must stay a chat turn.
+  const CHAT_ONLY = /^(how (do|can|would) (i|you|we) (write|code|make|learn|explain|build a (website|app|page))|what (is|are|was|were)\b|explain\b|teach me\b|translate\b|write (a|an) (poem|story|essay|blog|article|email)|summari[sz]e this (article|text|paper|thread))\b/i;
+  // …and the shape of a tool-less model refusing to touch the machine.
+  const NO_SHELL_REFUSAL = /\bi (can'?t|cannot|can not|am unable to|do not have access to|don'?t have access to|will not)\b[^.!?\n]{0,80}\b(terminal|shell|command|device|machine|system|environment|server|execute|run)\b/i;
+
+  function looksLikeTask(text) {
+    const t = String(text || '').trim();
+    if (!t || t.length > 400) return false;
+    if (CHAT_ONLY.test(t)) return false;
+    return TASK_SUBJECT.test(t) && TASK_ACTION.test(t);
+  }
 
   function bubble(cls, html) {
     const el = document.createElement('div');
@@ -896,14 +994,17 @@
       meta + why + summary;
   }
 
-  async function sideAgent(goal) {
+  async function sideAgent(goal, note) {
     agentTabId = null;
     const report = bubble('rounded-xl border border-purple-500/30 bg-purple-500/10 px-3 py-2 text-[12px]',
       '<div class="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wider text-sky-300">' +
       '<i data-lucide="loader-2" class="size-3 animate-spin"></i>Starting</div>' +
+      (note ? '<div class="mb-1 text-[11px] text-purple-200/80">' + esc(note) + '</div>' : '') +
       '<div class="text-slate-300">' + esc(goal) + '</div>');
     const render = (task, running) => {
-      report.innerHTML = '<div class="mb-1 text-[11px] text-slate-400">' + esc(goal) + '</div>' + reportHtml(task, running);
+      report.innerHTML = '<div class="mb-1 text-[11px] text-slate-400">' + esc(goal) + '</div>' +
+        (note ? '<div class="mb-1 text-[11px] text-purple-200/80">' + esc(note) + '</div>' : '') +
+        reportHtml(task, running);
       icons();
     };
     report.addEventListener('click', (e) => {
@@ -913,7 +1014,11 @@
       const res = await fetch('/api/agent/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal, max_steps: 8 }),
+        body: JSON.stringify({
+          goal,
+          max_steps: 8,
+          model: (modelSel && modelSel.value) || 'auto',
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data && data.error) || 'HTTP ' + res.status);
@@ -1013,8 +1118,10 @@
         }
       }
       body.innerHTML = '<span class="whitespace-pre-wrap break-words">' + esc(content || '(empty response)') + '</span>';
+      return content;
     } catch (err) {
       body.innerHTML = '<span class="text-rose-300">' + esc((err && err.message) || 'The request failed') + '</span>';
+      return '';
     }
   }
 
@@ -1041,9 +1148,18 @@
             '<span class="font-mono text-slate-400">/storage</span> <span class="font-mono text-slate-400">/agents</span> — or just ask a question.');
         } else await sideCommand('nova ' + target.arg.replace(/^\//, ''));
       } else if (target.kind === 'agent') await sideAgent(target.arg);
-      else {
-        await sideChat(text, context);
+      else if (looksLikeTask(text)) {
+        // A request about this machine — run it in the agent's own shell tab.
+        await sideAgent(text, 'Running this in the agent terminal tab');
+      } else {
+        const reply = await sideChat(text, context);
         sideHist.push({ role: 'assistant', content: 'done' });
+        // The chat model has no shell: if it says it cannot touch the machine,
+        // hand the same request to the agent rather than leaving the user
+        // with a refusal and a copy-paste exercise.
+        if (reply && NO_SHELL_REFUSAL.test(reply)) {
+          await sideAgent(text, 'The chat model has no shell — rerun by the agent');
+        }
       }
     } catch (err) {
       bubble('rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200',
@@ -1060,8 +1176,10 @@
       if (!sideMode) return;
       if (!text) { sideMode.textContent = 'chat'; sideMode.className = 'font-mono text-[10px] text-slate-600'; return; }
       const match = MODES.find(([re]) => re.test(text));
-      sideMode.textContent = match ? match[1] : 'chat';
-      sideMode.className = 'truncate font-mono text-[10px] ' + (match ? match[2] : 'text-slate-600');
+      const kind = match ? match[1] : (looksLikeTask(text) ? 'agent' : 'chat');
+      const tone = match ? match[2] : (kind === 'agent' ? 'text-purple-300' : 'text-slate-600');
+      sideMode.textContent = kind;
+      sideMode.className = 'truncate font-mono text-[10px] ' + tone;
     });
     sideInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sideSendNow(); }

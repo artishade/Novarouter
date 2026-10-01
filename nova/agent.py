@@ -5,9 +5,10 @@ Loop: plan (LLM, strict JSON) → execute tool → persist AgentStep → repeat 
 failures are recorded as error steps and never abort the task; a cancelled
 status in the DB stops the loop on the next iteration.
 
-LLM calls go through nova.engine (the free-model sidecar); every DB touch opens its
-own SessionLocal() session — never one session across the whole run. The runner
-is an async callable, so routers/agent_api.py can hand it to FastAPI
+LLM calls go through nova.engine (the free-model sidecar) and fall back to this
+server's own /v1/chat/completions when the sidecar is off; every DB touch opens
+its own SessionLocal() session — never one session across the whole run. The
+runner is an async callable, so routers/agent_api.py can hand it to FastAPI
 BackgroundTasks and respond immediately.
 """
 from __future__ import annotations
@@ -26,10 +27,12 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from . import engine as nova_engine
+from .config import PORT
 from .database import SessionLocal
 from .models import (
     AgentStep,
@@ -260,6 +263,87 @@ def _completion_content(completion) -> str:
     except (KeyError, IndexError, TypeError):
         return ""
     return content if isinstance(content, str) else str(content or "")
+
+
+# --------------------------------------------------------------------------- #
+# The agent's own brain
+# --------------------------------------------------------------------------- #
+# The planner and the final summary are LLM calls, and they used to have exactly
+# one source: the builtin NovaFree engine sidecar. That sidecar can legitimately
+# be off (NOVA_ENGINE_DISABLED, no bun/node runtime, no reachable free
+# catalogue) — and then every task died with "Agent planner returned unparseable
+# output twice" before reaching a single tool, while the chat box right next to
+# it answered happily through the configured providers. So the sidecar stays
+# first (it is free and keyless) and the gateway is the fallback: the very same
+# OpenAI-shaped call the console chat makes, looped back over 127.0.0.1.
+
+AGENT_LLM_TIMEOUT_S = 90.0
+
+
+def _default_model_id() -> str | None:
+    """A concrete exposed model id to plan with.
+
+    The gateway routes by model id (plus that route's fallback chain), so
+    `auto` is not something it can answer on its own — a task left on `auto`
+    used to come back 502 "All routing stages failed" even with working
+    providers. Prefer a healthy, enabled, cheap model; free first so a task
+    never quietly spends the user's credits when a free tier exists.
+    """
+    try:
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(Model)
+                .where(Model.enabled.is_(True))
+                .options(joinedload(Model.provider))
+            ).unique().all()
+    except Exception:
+        return None
+    usable = [m for m in rows if getattr(m.provider, "enabled", False)]
+    if not usable:
+        return None
+    healthy = [m for m in usable if m.status == "healthy"] or usable
+    healthy.sort(key=lambda m: (not bool(m.isFree), m.latencyMs or 10**6, m.displayName or m.exposedId))
+    return healthy[0].exposedId or None
+
+
+async def _gateway_chat(messages: list[dict], model: str = "auto",
+                        timeout: float = AGENT_LLM_TIMEOUT_S) -> dict:
+    """One completion through this server's own /v1/chat/completions."""
+    url = f"http://127.0.0.1:{PORT}/v1/chat/completions"
+    wanted = (model or "").strip()
+    candidates = [wanted] if wanted and wanted != "auto" else []
+    default = _default_model_id()
+    if default and default not in candidates:
+        candidates.append(default)
+    if not candidates:
+        raise RuntimeError("no enabled model to plan with — add a provider or enable a model")
+    failure = ""
+    for candidate in candidates:
+        try:
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+                res = await client.post(url, json={"model": candidate, "messages": messages})
+        except httpx.HTTPError as err:
+            failure = f"gateway unreachable: {err}"
+            continue
+        if res.status_code < 400:
+            return res.json()
+        detail = ""
+        try:
+            detail = str(res.json().get("error") or "")
+        except Exception:
+            detail = res.text[:200]
+        failure = f"gateway HTTP {res.status_code} on {candidate}: {detail or 'no detail'}"
+    raise RuntimeError(failure)
+
+
+async def agent_llm(messages: list[dict], model: str = "auto",
+                    timeout: float = AGENT_LLM_TIMEOUT_S) -> dict:
+    """Engine sidecar first, gateway second. Never returns a non-dict."""
+    try:
+        return await nova_engine.chat(messages, timeout=timeout)
+    except Exception as err:
+        log.info("agent: engine sidecar unavailable (%s) — using the gateway", err)
+    return await _gateway_chat(messages, model, timeout)
 
 
 # --------------------------------------------------------------------------- #
@@ -633,6 +717,7 @@ async def run_agent_task(task_id: str) -> None:
                 task.startedAt = utcnow()
             task.error = None
             goal = task.goal
+            task_model = task.model or "auto"
             max_steps = max(1, min(task.maxSteps or 8, 24))
             db.commit()
 
@@ -663,10 +748,10 @@ async def run_agent_task(task_id: str) -> None:
             raw = ""
             plan: AgentPlan | None = None
             try:
-                completion = await nova_engine.chat([
+                completion = await agent_llm([
                     {"role": "system", "content": AGENT_SYSTEM_PROMPT},
                     {"role": "user", "content": build_planner_user_prompt(goal, steps)},
-                ])
+                ], task_model)
                 raw = _completion_content(completion)
                 plan = parse_plan(raw)
             except Exception as err:
@@ -761,10 +846,10 @@ async def run_agent_task(task_id: str) -> None:
         )
         summary = ""
         try:
-            completion = await nova_engine.chat([
+            completion = await agent_llm([
                 {"role": "system", "content": FINAL_SYSTEM_PROMPT},
                 {"role": "user", "content": f"# Goal\n{goal}\n\n# Evidence gathered\n{evidence}"},
-            ])
+            ], task_model)
             summary = _completion_content(completion).strip()
         except Exception:
             summary = ""

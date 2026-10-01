@@ -35,8 +35,13 @@
             <div><span class="text-amber-300">/</span> <span class="text-slate-500">shortcut — status, models, keys</span></div>
           </div>
           <div class="mt-1.5 text-slate-600">
-            Long-press the terminal to select text and copy it. The agent answers with a
-            result summary; its command scrollback stays in its terminal tab.
+            Any question about this machine — RAM, CPU, GPU, disk, config — is handed to the
+            agent automatically, which runs it in a real terminal tab you can watch. The agent
+            answers with a result summary; its command scrollback stays in its terminal tab.
+          </div>
+          <div class="mt-1.5 text-slate-600">
+            On a phone: long-press a line to select it and tap Copy; the key row's Paste button
+            types the clipboard into the shell.
           </div>
         </div>
         {% if tools %}
@@ -271,7 +276,7 @@
     class="ws-fab ws-fab-term"><i data-lucide="square-terminal" class="size-5"></i></button>
 </div>
 
-<script src="/static/terminal_workspace.js?v=6" defer></script>
+<script src="/static/terminal_workspace.js?v=7" defer></script>
 <script>
   (function () {
     const drawer = document.getElementById('ws-config');

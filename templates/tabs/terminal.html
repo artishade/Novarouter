@@ -1,11 +1,14 @@
 {# Terminal workspace fragment — console (left) + Root@Build shell (right).
-   Rendered both as the embedded dashboard fragment (/partials/tab/terminal)
-   and, with the outer page, at /terminal. Session/PTY wiring lives in
-   static/terminal_workspace.js (shared by both). #}
-<div id="tab-terminal" class="flex h-[calc(100vh-8.5rem)] min-h-[560px] flex-col gap-3 xl:flex-row">
+   Rendered as the embedded dashboard fragment (/partials/tab/terminal); the
+   standalone /terminal page wraps the same structure with its own chrome.
+   Mobile: panels become full-height sheets opened from the corner FABs.
+   Session/PTY/key-row wiring lives in static/terminal_workspace.js. #}
+<div id="tab-terminal" class="flex h-[calc(100vh-8.5rem)] min-h-[560px] flex-col gap-3 xl:flex-row"
+  style="--ws-top: 3.5rem; --ws-landing-min: calc(100dvh - 9rem)">
 
   {# ========================= Nova Console (left) ========================= #}
-  <aside id="ws-console" class="flex w-full shrink-0 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#0a0f1c] xl:w-[380px]">
+  <aside id="ws-console" data-sheet="chat"
+    class="ws-sheet flex w-full shrink-0 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#0a0f1c] xl:w-[380px]">
     <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/70 px-3 py-2">
       <div class="flex min-w-0 items-center gap-2.5">
         <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10">
@@ -17,8 +20,8 @@
         </div>
       </div>
       <button id="term-side-toggle" type="button" title="Collapse the console panel" aria-label="Collapse the console panel"
-        class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300">
-        <i data-lucide="panel-left-close" class="size-4"></i>
+        class="ws-sheet-close inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300">
+        <i data-lucide="x" class="size-4"></i>
       </button>
     </div>
 
@@ -28,8 +31,12 @@
           Ask a question, or start a line with a prefix:
           <div class="mt-1.5 space-y-1 font-mono text-[11px]">
             <div><span class="text-sky-300">$</span> <span class="text-slate-500">run a shell command</span></div>
-            <div><span class="text-purple-300">!</span> <span class="text-slate-500">hand a task to the autonomous agent</span></div>
+            <div><span class="text-purple-300">!</span> <span class="text-slate-500">hand a task to the agent — it runs in its own terminal tab</span></div>
             <div><span class="text-amber-300">/</span> <span class="text-slate-500">shortcut — status, models, keys</span></div>
+          </div>
+          <div class="mt-1.5 text-slate-600">
+            Long-press the terminal to select text and copy it. The agent answers with a
+            result summary; its command scrollback stays in its terminal tab.
           </div>
         </div>
         {% if tools %}
@@ -49,6 +56,25 @@
         {% endif %}
       </div>
       <div class="shrink-0 border-t border-slate-800 bg-[#0d1322]/50 p-2.5">
+        {# chat target pickers: model (grouped by provider) + reasoning effort #}
+        <div class="mb-1.5 flex items-center gap-1.5">
+          <select id="ws-model" aria-label="Chat model"
+            class="h-7 min-w-0 flex-1 rounded-md border border-slate-800 bg-[#080c14] px-1.5 text-[10px] text-slate-300 focus:border-sky-500/40 focus:outline-none">
+            <option value="auto">model: auto — gateway routes</option>
+          </select>
+          <select id="ws-effort" aria-label="Reasoning effort"
+            class="h-7 w-[104px] shrink-0 rounded-md border border-slate-800 bg-[#080c14] px-1.5 text-[10px] text-slate-300 focus:border-sky-500/40 focus:outline-none">
+            <option value="">effort: default</option>
+            <option value="minimal">minimal</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+          <button id="ws-pickers-refresh" type="button" title="Reload the model list" aria-label="Reload the model list"
+            class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300">
+            <i data-lucide="refresh-cw" class="size-3"></i>
+          </button>
+        </div>
         <textarea id="term-side-input" rows="2" aria-label="Message to the assistant"
           placeholder="Ask anything, or type $ for a command"
           class="max-h-28 w-full resize-none border-0 bg-transparent px-1 text-[12px] text-slate-100 placeholder:text-slate-600 focus:outline-none"></textarea>
@@ -64,9 +90,9 @@
   </aside>
 
   {# ===================== Root@Build terminal (right) ===================== #}
-  <section class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#070b13]">
+  <section data-sheet="term" class="ws-sheet ws-term-chrome flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#070b13]">
 
-    <header class="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-slate-800 bg-[#0d1322]/70 px-3 py-2">
+    <header class="ws-hide-mobile flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-slate-800 bg-[#0d1322]/70 px-3 py-2">
       <div class="flex min-w-0 items-center gap-2.5">
         <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
           <i data-lucide="square-terminal" class="size-4 text-emerald-400"></i>
@@ -74,13 +100,15 @@
         <div class="min-w-0">
           <h2 class="truncate text-sm font-semibold leading-tight text-slate-100">~ Root@Build</h2>
           <p class="truncate font-mono text-[10px] leading-tight text-slate-500">
-            Debian Linux · root access · permanent cloud shell
+            /app/build · root · permanent cloud shell
           </p>
         </div>
         <span class="hidden rounded border border-rose-500/30 bg-rose-500/10 px-1 font-mono text-[10px] text-rose-300 sm:inline">root</span>
       </div>
 
       <div class="flex shrink-0 items-center gap-1.5">
+        {# Mobile: collapse the sheet back to the workspace picker. #}
+        
         <button id="term-settings" type="button" title="Cloud build targets &amp; tools"
           class="inline-flex h-7 items-center gap-1.5 rounded-md border border-slate-800 px-2.5 text-[11px] font-medium text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">
           <i data-lucide="settings-2" class="size-3.5"></i>Config
@@ -111,11 +139,15 @@
 
     {# session tabs #}
     <div class="flex shrink-0 items-center gap-2 border-b border-slate-800/70 bg-[#090e1a] px-2 py-1.5">
+      <button id="term-sheet-close" type="button" class="ws-sheet-close ws-sheet-close-term inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300"
+          title="Back to the workspace" aria-label="Back to the workspace">
+          <i data-lucide="x" class="size-4"></i>
+        </button>
       <div id="term-tabs" class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto py-0.5"
         role="tablist" aria-label="Terminal sessions"></div>
       <button id="term-new" type="button" title="Open a new interactive shell session"
         class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 text-[11px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20">
-        <i data-lucide="plus" class="size-3.5"></i>New session
+        <i data-lucide="plus" class="size-3.5"></i><span class="ws-hide-mobile">New session</span>
       </button>
     </div>
 
@@ -130,8 +162,53 @@
       </div>
     </div>
 
+    {# --- mobile command bar: interrupt / environment / settings (Termux-style) --- #}
+    <div id="term-cmdbar" class="ws-mobile-only flex shrink-0 items-center gap-1.5 border-b border-slate-800/70 bg-[#0b101c] px-2 py-1.5">
+      <button id="term-interrupt" type="button" class="ws-chip is-danger" title="Send Ctrl+C to the shell">
+        <i data-lucide="circle-stop" class="size-3.5"></i>Ctrl+C Interrupt
+      </button>
+      <span class="flex-1"></span>
+      <button id="term-envsetup" type="button" class="ws-chip" title="Cloud build targets and registered tools">
+        <i data-lucide="package" class="size-3.5"></i>Environment Setup
+      </button>
+      <button id="term-config-gear" type="button" class="ws-icon" title="Cloud build config" aria-label="Cloud build config">
+        <i data-lucide="settings" class="size-4"></i>
+      </button>
+    </div>
+
+    {# --- mobile prompt bar: live cwd + every toggle a phone cannot reach --- #}
+    <div id="term-promptbar" class="ws-mobile-only flex shrink-0 items-center gap-1.5 border-b border-slate-800/70 bg-[#0b101c] px-2 py-1.5">
+      <span id="term-prompt-badge" class="ws-prompt-badge" title="Working directory">~ $</span>
+      <span class="ws-prompt-caret" aria-hidden="true"></span>
+      <span class="flex-1"></span>
+      <button id="term-copy-m" type="button" class="ws-icon" title="Copy the selection or visible output" aria-label="Copy terminal output">
+        <i data-lucide="copy" class="size-4"></i>
+      </button>
+      <button id="term-clear-m" type="button" class="ws-icon" title="Clear this screen" aria-label="Clear screen">
+        <i data-lucide="eraser" class="size-4"></i>
+      </button>
+      <button id="term-font-down-m" type="button" class="ws-icon" title="Smaller text" aria-label="Decrease font size">
+        <span class="font-mono text-[10px]">A-</span>
+      </button>
+      <button id="term-font-up-m" type="button" class="ws-icon" title="Larger text" aria-label="Increase font size">
+        <span class="font-mono text-[10px]">A+</span>
+      </button>
+      <button id="term-kbd" type="button" class="ws-icon" title="Show or hide the soft keyboard" aria-label="Toggle the soft keyboard">
+        <i data-lucide="keyboard" class="size-4"></i>
+      </button>
+      <button id="term-keys-next" type="button" class="ws-chip" title="Cycle the key layout (keys / edit / symbols)" aria-label="Change the key layout">
+        <i data-lucide="arrow-left-right" class="size-3.5"></i><span id="term-keys-label">keys</span>
+      </button>
+    </div>
+
+    {# mobile key row — arrows, Tab, Esc, Ctrl, pipes etc (touch keyboards
+       hide modifiers; these buttons send the real bytes) #}
+    {# The extra-keys grid is rendered by terminal_workspace.js (KEY_LAYOUTS) so
+       the layout can be swapped on the device. #}
+    <div id="ws-keyrow" class="ws-keyrow md:hidden" aria-label="Terminal helper keys"></div>
+
     {# status bar #}
-    <footer class="flex shrink-0 items-center justify-between gap-3 border-t border-slate-800 bg-[#0d1322]/70 px-3 py-1.5 font-mono text-[10px] text-slate-500">
+    <footer class="ws-hide-mobile flex shrink-0 items-center justify-between gap-3 border-t border-slate-800 bg-[#0d1322]/70 px-3 py-1.5 font-mono text-[10px] text-slate-500">
       <div class="flex min-w-0 items-center gap-2">
         <span id="term-mode" class="inline-flex items-center gap-1.5 rounded border border-slate-700 px-1.5 py-0.5 text-slate-400">Interactive shell</span>
         <span id="term-cwd" class="truncate" title="Working directory">~</span>
@@ -145,7 +222,7 @@
 
   {# ================= Config drawer (build targets) ================= #}
   <div id="ws-config" hidden
-    class="fixed inset-y-0 right-0 z-50 flex w-[min(94vw,460px)] flex-col overflow-hidden border-l border-slate-800 bg-[#0a0f1c] shadow-2xl">
+    class="fixed inset-y-0 right-0 z-[60] flex w-[min(94vw,460px)] flex-col overflow-hidden border-l border-slate-800 bg-[#0a0f1c] shadow-2xl">
     <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/80 px-3 py-2">
       <div class="flex min-w-0 items-center gap-2">
         <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
@@ -163,9 +240,38 @@
     </div>
     <div id="ws-config-body" class="flex-1 overflow-y-auto p-3" hx-get="/ui/terminal/providers" hx-trigger="load" hx-swap="innerHTML"></div>
   </div>
+
+  {# ================= Mobile landing (no sheet open) ================= #}
+  <div id="ws-landing" class="ws-landing ws-mobile-only flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+    <p class="text-sm font-semibold text-slate-200">What do you want to open?</p>
+    <div class="grid w-full max-w-sm gap-2">
+      <button type="button" data-sheet-open="term"
+        class="flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-left active:bg-emerald-500/20">
+        <i data-lucide="square-terminal" class="size-5 shrink-0 text-emerald-400"></i>
+        <span class="min-w-0">
+          <span class="block text-sm font-medium text-slate-100">Root@Build terminal</span>
+          <span class="block truncate font-mono text-[10px] text-slate-500">/app/build · root · permanent cloud shell</span>
+        </span>
+      </button>
+      <button type="button" data-sheet-open="chat"
+        class="flex items-center gap-3 rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-left active:bg-sky-500/20">
+        <i data-lucide="message-circle" class="size-5 shrink-0 text-sky-400"></i>
+        <span class="min-w-0">
+          <span class="block text-sm font-medium text-slate-100">Nova Console</span>
+          <span class="block truncate font-mono text-[10px] text-slate-500">chat · $ commands · ! agent tasks</span>
+        </span>
+      </button>
+    </div>
+  </div>
+
+  {# ================= Mobile FABs (corner buttons) ================= #}
+  <button id="ws-fab-chat" type="button" aria-label="Open the Nova Console chatbox"
+    class="ws-fab ws-fab-chat"><i data-lucide="message-circle" class="size-5"></i></button>
+  <button id="ws-fab-term" type="button" aria-label="Open the Root@Build terminal"
+    class="ws-fab ws-fab-term"><i data-lucide="square-terminal" class="size-5"></i></button>
 </div>
 
-<script src="/static/terminal_workspace.js?v=1" defer></script>
+<script src="/static/terminal_workspace.js?v=6" defer></script>
 <script>
   (function () {
     const drawer = document.getElementById('ws-config');

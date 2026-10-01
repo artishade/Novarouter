@@ -43,6 +43,9 @@ SESSION_TTL_S = 30 * 60          # idle reaper
 SCROLLBACK_BYTES = 512 * 1024    # per-session history kept for late attachers
 READ_CHUNK = 4096
 MAX_SESSIONS = 8                 # hard cap — every session is a real process
+AGENT_LABEL_PREFIX = "agent"    # every autonomous-agent tab is labelled with this
+AGENT_SESSION_LABEL = "agent"    # the bare label; agent_session() adds the goal
+AGENT_RUN_TIMEOUT_S = 45         # how long one agent command may hold the session
 
 # OSC 7 — "current working directory" report. Emitted by the shell before
 # every prompt, parsed here so the session list always shows a real path.
@@ -473,16 +476,181 @@ def ensure_default() -> None:
     The cloud terminal always presents a ready root shell: if no live session
     exists (first boot, or the idle reaper collected an unused one), a default
     `Root@Build` session is created so agent tasks and users always have a
-    terminal to run in. Existing sessions are left untouched.
+    terminal to run in. Sessions start in the builder workspace base
+    location (`/app/build`) — deliberately separate from the gateway's own
+    project files. Existing sessions are left untouched.
     """
     with manager._lock:  # noqa: SLF001 — single-owner check under the manager lock
         live = [s for s in manager._sessions.values() if not s.closed]
     if live:
         return
     try:
-        manager.create(cwd=str(PROJECT_ROOT), cols=120, rows=32, label="Root@Build")
+        from .build_registry import build_root
+        cwd = str(build_root())
+    except Exception:
+        cwd = str(PROJECT_ROOT)
+    try:
+        manager.create(cwd=cwd, cols=120, rows=32, label="Root@Build")
     except (SessionLimitReached, OSError):
         pass
+
+
+_ANSI_RE = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]|\x1b\[[0-?]*[ -/]*[@-~]|\r")
+
+
+def strip_ansi(data: bytes | str) -> str:
+    """Plain text for a tool result — the terminal keeps the raw bytes."""
+    raw = data.encode("utf-8", errors="replace") if isinstance(data, str) else data
+    return _ANSI_RE.sub(b"", raw).decode("utf-8", errors="replace")
+
+
+def agent_label(goal: str) -> str:
+    """Tab label for one agent task: `agent` plus enough of the goal that two
+    tasks are tellable apart in the session strip."""
+    flat = " ".join((goal or "").split())[:28].strip()
+    return f"{AGENT_SESSION_LABEL} \u00b7 {flat}" if flat else AGENT_SESSION_LABEL
+
+
+def is_agent_label(label: str) -> bool:
+    return (label or "").split("\u00b7")[0].strip() == AGENT_SESSION_LABEL
+
+
+def agent_session(label: str | None = None) -> TerminalSession | None:
+    """The live PTY session the agent types its commands into.
+
+    Agent tasks are far easier to trust when you can watch them: this is a
+    real `Root@Build` shell, listed in the session tabs like any other. It is
+    a dedicated session rather than the user's focused one so an agent command
+    can never land in the middle of something you were typing.
+
+    One tab per task: `label` identifies the task, so every step of that task
+    reuses its own shell (state has to survive between steps) while the next
+    task opens a fresh tab of its own. When the session cap is hit we fall back
+    to the newest agent tab, then to whichever session is focused.
+    """
+    label = (label or "").strip()
+    with manager._lock:  # noqa: SLF001 - single-owner read under the manager lock
+        agent_tabs = [s for s in manager._sessions.values()
+                      if not s.closed and is_agent_label(s.label)]
+        newest = max(agent_tabs, key=lambda s: s.created_at, default=None)
+        if label:
+            for s in agent_tabs:
+                if s.label == label:
+                    return s             # a later step of the same task
+        elif newest is not None:
+            return newest                # no task context: keep using one tab
+    try:
+        from .build_registry import build_root
+        cwd = str(build_root())
+    except Exception:
+        cwd = str(PROJECT_ROOT)
+    for attempt in (0, 1, 2):
+        try:
+            return manager.create(cwd=cwd, cols=120, rows=32,
+                                  label=label or AGENT_SESSION_LABEL)
+        except SessionLimitReached:
+            if attempt == 0 and newest is not None:
+                return newest                  # reuse the last agent tab
+            if attempt == 1:
+                return manager.get(manager.active_id)
+        except OSError:
+            return None
+    return None
+
+
+def run_in_session(session: TerminalSession, command: str,
+                   timeout: int = AGENT_RUN_TIMEOUT_S) -> tuple[str, int]:
+    """Type `command` into a live session and read the real output back.
+
+    The command is wrapped in a unique sentinel echo, so completion is known
+    exactly instead of guessed from a prompt string, and the exit code comes
+    back for free. Everything printed stays in the session buffer, so what the
+    user watches in the tab is byte-for-byte what the agent gets.
+
+    Returns (output, exit_code); exit_code is -1 when the command timed out.
+    """
+    cmd = (command or "").strip()
+    if not cmd or session.closed:
+        return "", -1
+    # The marker is printed from two separate words on purpose. A single
+    # literal token would also appear in the PTY's *echo* of the command we
+    # just typed, so the wait below would finish before the command ran.
+    nonce = str(int(time.time() * 1000) % 1_000_000)
+    token = f"NOVA_DONE_{nonce}"
+    start = session.total
+    session.write(cmd + "\n")
+    session.write(f"printf '\\n%s%s:%s\\n' NOVA_DONE_ {nonce} \"$?\"\n")
+
+    deadline = time.time() + max(1, timeout)
+    tail = ""
+    while time.time() < deadline:
+        time.sleep(0.05)
+        chunk, _ = session.snapshot(since=start)
+        tail = chunk.decode("utf-8", errors="replace")
+        if token + ":" in tail:
+            break
+
+    head, sep, rest = tail.partition(token + ":")
+    if not sep:
+        return _clean_run_output(strip_ansi(tail), cmd, nonce), -1
+    code_raw, _, _ = rest.partition("\n")
+    try:
+        code = int(code_raw.strip() or 0)
+    except ValueError:
+        code = -1
+    return _clean_run_output(strip_ansi(head), cmd, nonce), code
+
+
+_PROMPT_PREFIX_RE = re.compile(r"^(?:~[ \t]*)?Root@\S*#[ \t]*")
+_TRAILING_PROMPT_RE = re.compile(r"(?:~[ \t]*)?Root@\S*#[ \t]*$")
+
+
+def _marker_echo(nonce: str) -> str:
+    """The exact text `run_in_session` types to print the completion marker."""
+    return f"printf '\\n%s%s:%s\\n' NOVA_DONE_ {nonce} \"$?\""
+
+
+def _command_echo_line(lines: list[str], cmd: str) -> int:
+    """Index of the first line that is our command's own echo.
+
+    A freshly started shell prefixes the echo with its prompt; an already
+    running one only echoes the raw bytes we wrote. Prefer the prompted copy
+    (it lands after the banner), and fall back to the raw echo, which is
+    always written before the output it precedes.
+    """
+    prompted = [
+        i for i, line in enumerate(lines)
+        if (m := _PROMPT_PREFIX_RE.match(line.strip()))
+        and line.strip()[m.end():].strip() == cmd
+    ]
+    if prompted:
+        return prompted[-1] + 1
+    for i, line in enumerate(lines):
+        if line.strip() == cmd:
+            return i + 1
+    return 0
+
+
+def _clean_run_output(head: str, cmd: str, nonce: str) -> str:
+    """Strip the tty chrome so the agent only sees what the command printed.
+
+    A raw capture is noisy: the shell banner, the command echoed once by the
+    tty and again by the shell, the marker `printf` echoed the same two ways,
+    and the prompt printed again after the output. The command's own echo is
+    the divider, and cutting every line at the marker echo removes whatever the
+    shell printed to run the command — so what is left is the output itself.
+    """
+    marker = _marker_echo(nonce)
+    lines = head.replace("\r\n", "\n").replace("\r", "").split("\n")
+    kept: list[str] = []
+    for line in lines[_command_echo_line(lines, cmd):]:
+        at = line.find(marker)
+        if at != -1:
+            line = line[:at]                      # drop the echoed marker printf
+        line = _TRAILING_PROMPT_RE.sub("", line).rstrip()
+        if line.strip():
+            kept.append(line)
+    return "\n".join(kept).strip()
 
 
 def shell_hint(cmd: str) -> str | None:

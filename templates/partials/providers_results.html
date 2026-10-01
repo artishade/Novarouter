@@ -127,7 +127,13 @@
         </div>
         {% endif %}
 
-        {# ------------------------------ keys toggle ------------------------------ #}
+        {# ------------------------------ keys toggle ------------------------------ #
+            The toggle URL is absolute — it encodes the NEXT expand state, so the
+            click works no matter what hx-include picks up. Critically, no
+            #np-expand is included on purpose: the hidden input still carries
+            the OLD state at click time, and merging it would override the URL's
+            expand param (htmx prefers included form values), making collapse
+            impossible — the panel always stayed expanded. #}
         <button type="button" hx-get="{{ p._toggle_url }}" hx-target="#providers-root" hx-swap="outerHTML"
           aria-expanded="{{ 'true' if expand == p.id else 'false' }}" aria-label="{{ 'Hide' if expand == p.id else 'Show' }} keys for {{ p.name }}"
           class="mt-3 flex w-full items-center gap-1.5 text-[11px] text-slate-500 transition hover:text-emerald-300">

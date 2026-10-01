@@ -12,6 +12,7 @@ BackgroundTasks and respond immediately.
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -45,7 +46,27 @@ from .models import (
 log = logging.getLogger("nova.agent")
 
 MAX_DETAIL_CHARS = 2000
-TERMINAL_DEFAULT_CWD = "/workspace"
+
+# Every agent task types its commands into its own terminal tab, so two tasks
+# never share a shell and you can read back what each one ran. The label is
+# remembered process-wide (the tools are called without a task handle) and is
+# set once per run_agent_task().
+_ACTIVE_AGENT_LABEL: str | None = None
+
+
+def agent_label_for(goal: str) -> str:
+    from .pty_session import agent_label  # noqa: PLC0415 - avoids an import cycle
+    return agent_label(goal)
+
+
+def _terminal_default_cwd() -> str:
+    """Agent shell cwd — the builder base location (`/app/build`), kept
+    separate from the gateway's own project files."""
+    try:
+        from .build_registry import build_root
+        return str(build_root())
+    except Exception:
+        return str(__import__("pathlib").Path("/tmp"))
 
 ALLOWED_ACTIONS = {
     "web_search",
@@ -342,12 +363,54 @@ def _exec_field(res, key: str):
     return getattr(res, key, None)
 
 
+async def run_in_live_terminal(command: str, timeout: int = 45,
+                             label: str | None = None) -> str | None:
+    """Run `command` in the terminal tab the user is watching, or None.
+
+    The agent's shell steps go through a real PTY session (labelled `agent`,
+    listed in the session tabs) so a task in the chatbox visibly runs its
+    commands in the terminal instead of vanishing into a subprocess. Returns
+    None when no live session can be had, and the caller then falls back to
+    its original one-shot executor — the agent never loses the ability to run
+    a command just because nobody is watching.
+
+    Off-thread on purpose: run_agent_task is an async callable handed to
+    FastAPI BackgroundTasks, so it executes on the event loop.
+    """
+    try:
+        from .pty_session import agent_session, run_in_session  # noqa: PLC0415
+    except Exception:
+        return None
+    try:
+        session = await asyncio.to_thread(
+            agent_session, label if label is not None else _ACTIVE_AGENT_LABEL)
+    except Exception:
+        return None
+    if session is None or getattr(session, "closed", True):
+        return None
+    cmd = (command or "").strip()
+    if not cmd:
+        return None
+    try:
+        out, code = await asyncio.to_thread(run_in_session, session, cmd, timeout)
+    except Exception as exc:  # pragma: no cover — defensive
+        logging.getLogger("nova.agent").warning("live terminal step failed: %s", exc)
+        return None
+    if code == -1:
+        return f"$ {cmd}\n{out or '(no output)'}\n[still running or timed out — check the agent terminal tab]"
+    tail = "" if code == 0 else f"\n[exit {code}]"
+    return f"$ {cmd}\n{out or '(no output)'}{tail}"
+
+
 async def tool_terminal(command: str) -> str:
     """Run a command through agent 2-c's safe executor. nova.terminal is
     imported LAZILY inside this function (it may not exist yet while 2-c works
     concurrently); if it is unavailable we degrade to honest OS stats, exactly
     like the TypeScript fallback."""
     cmd = command or "nova status"
+    live = await run_in_live_terminal(cmd)
+    if live is not None:
+        return live
     try:
         from nova.terminal import execute_command  # noqa: PLC0415 — lazy by design
     except Exception:
@@ -356,7 +419,7 @@ async def tool_terminal(command: str) -> str:
     db: Session = SessionLocal()
     try:
         try:
-            res = execute_command(db, cmd, TERMINAL_DEFAULT_CWD)
+            res = execute_command(db, cmd, _terminal_default_cwd())
         except TypeError:
             # signature drift guard — try the 2-arg variant before giving up
             res = execute_command(db, cmd)
@@ -487,6 +550,9 @@ async def tool_mkdir(arg: str) -> str:
 async def tool_bash_exec(arg: str) -> str:
     cmd=(arg or "").strip()
     if not cmd: return "bash_exec error: empty"
+    live = await run_in_live_terminal(cmd, timeout=120)
+    if live is not None:
+        return live[:8000]
     try:
         from .terminal import builder_bash
         res = builder_bash(cmd)
@@ -569,6 +635,11 @@ async def run_agent_task(task_id: str) -> None:
             goal = task.goal
             max_steps = max(1, min(task.maxSteps or 8, 24))
             db.commit()
+
+        # This task gets its own terminal tab (one shell per task, so steps
+        # keep their state and nothing lands in the session you are typing in).
+        global _ACTIVE_AGENT_LABEL
+        _ACTIVE_AGENT_LABEL = agent_label_for(goal)
 
         parse_retried = False  # one retry after an unparseable planner response
 

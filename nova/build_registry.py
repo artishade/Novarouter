@@ -20,13 +20,41 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from .config import PROJECT_ROOT
 from .kv import set_config
 from .models import StorageProviderRow
 
 log = logging.getLogger("nova.build_registry")
+
+# --------------------------------------------------------------------------- #
+# Base workspace location — /app/build, separate from the project files
+# --------------------------------------------------------------------------- #
+# Builder agents and user shell sessions work here instead of inside the
+# gateway's own code tree, so builds can never clobber NovaRouter itself.
+# Overridable with NOVA_BUILD_ROOT (absolute path).
+
+DEFAULT_BUILD_ROOT = Path("/app/build")
+
+
+def _resolve_build_root() -> Path:
+    raw = (os.environ.get("NOVA_BUILD_ROOT") or "").strip()
+    if raw:
+        return Path(raw)
+    # /app/build when we can actually create it (root on the container);
+    # otherwise fall back beside the project so local dev still works.
+    if os.access("/", os.W_OK) or os.geteuid() == 0:
+        return DEFAULT_BUILD_ROOT
+    fallback = PROJECT_ROOT.parent / "app_build"
+    try:
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+    except OSError:
+        return PROJECT_ROOT / "build"
 
 # --------------------------------------------------------------------------- #
 # Permanent cloud config targets — extendable from the web UI
@@ -128,6 +156,22 @@ BUILD_PROVIDER_BY_ID = {p["id"]: p for p in BUILD_PROVIDERS}
 
 # KV key that records the permanent toolbox registration.
 BUILTIN_TOOLS_FLAG = "agent_builtin_tools_registered"
+
+
+def build_root() -> Path:
+    """The builder workspace base location (`/app/build`), created on demand.
+
+    Always outside the NovaRouter source tree — agent writes, `npm create`
+    scaffolds, venvs and node_modules land here, never in the app's files.
+    """
+    root = _resolve_build_root()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return PROJECT_ROOT / "build"
+    if root.resolve() == PROJECT_ROOT.resolve():
+        return PROJECT_ROOT / "build"  # never the app tree itself
+    return root
 
 
 def ensure_build_providers(db: Session) -> None:

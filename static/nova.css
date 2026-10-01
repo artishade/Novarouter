@@ -91,6 +91,28 @@ body.sb-collapsed .nav-item { height: 2.5rem; justify-content: center; padding: 
 #term-view .xterm-viewport::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 8px; }
 #term-view .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #334155; }
 #term-view .xterm-screen { background: transparent; }
+/* Safety net for the CDN stylesheet. xterm.js hides this textarea (it exists
+ * only to raise the soft keyboard and host IME composition) by moving it off
+ * screen with opacity 0 — without xterm.css it renders as a plain white box
+ * right above the terminal, so every keystroke shows up twice. Duplicated
+ * here so a blocked/slow CDN can never bring the double-echo back. */
+#term-view .xterm-helper-textarea {
+  position: absolute !important;
+  left: -9999em !important;
+  top: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  z-index: -5 !important;
+  resize: none !important;
+  overflow: hidden !important;
+  white-space: pre !important;
+  background: transparent !important;
+  color: transparent !important;
+}
 
 /* Session tabs */
 .term-tab { transition: background-color 0.12s ease, color 0.12s ease; }
@@ -115,3 +137,212 @@ dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
 .md-body ol { list-style: decimal; }
 .md-body a { color: #34d399; text-decoration: underline; text-underline-offset: 2px; }
 .md-body strong { color: #f1f5f9; }
+
+/* ------------------------------------------------------------------ */
+/* Mobile workspace — floating action buttons + bottom sheets          */
+/* ------------------------------------------------------------------ */
+/* [hidden] has to beat Tailwind's display utilities. The UA stylesheet's
+ * [hidden] { display: none } loses to any author `.flex`/`.grid` rule, so
+ * every `hidden class="... flex ..."` drawer stayed permanently open on
+ * top of the workspace. One rule here fixes the whole app. */
+[hidden] { display: none !important; }
+
+/* On phones the workspace shows two corner buttons: the chatbox bubble
+ * (bottom-left) and the terminal icon (bottom-right). Tapping one expands
+ * that tool into a full-screen sheet; tapping the same FAB again (or the
+ * sheet's own close handle) collapses it back. Desktop layout untouched. */
+.ws-fab { display: none; }
+@media (max-width: 767px) {
+  .ws-desktop-only { display: none !important; }
+  /* The panels are position:fixed sheets on phones, so the flex container
+   * only has to hold the FABs and the mobile landing card — pinning it to
+   * a vh height just produced a phantom scrollbar under the sheets. */
+  #tab-terminal { height: auto !important; min-height: 0 !important; }
+  .ws-fab {
+    display: inline-flex;
+    position: fixed;
+    bottom: 0.75rem;
+    z-index: 55;
+    width: 3rem;
+    height: 3rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9999px;
+    border: 1px solid #1e293b;
+    background: #0d1322;
+    color: #34d399;
+    box-shadow: 0 10px 30px rgb(0 0 0 / 0.55);
+  }
+  .ws-fab-chat { left: 0.75rem; color: #38bdf8; }
+  .ws-fab-term { right: 0.75rem; }
+  .ws-fab:active { transform: scale(0.96); }
+  /* The sheet that is currently open dims its own FAB. */
+  .ws-fab.is-open { opacity: 0.45; }
+  /* Full-screen sheet below the slim top bar (--ws-top differs between the
+   * standalone page and the embedded dashboard fragment). A plain flex
+   * column: children size themselves, so the terminal viewport and the key
+   * row always stay on screen. */
+  .ws-sheet {
+    position: fixed;
+    inset: 0;
+    top: var(--ws-top, 2.75rem);
+    /* --kb is the soft-keyboard height, published by the visualViewport
+     * watcher in terminal_workspace.js. Lifting the sheet's bottom edge by
+     * that much keeps the key row and the status footer ABOVE the keyboard
+     * instead of hiding behind it. It is 0 whenever no keyboard is up. */
+    bottom: var(--kb, 0px);
+    z-index: 54;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    /* keep the corner FABs (3rem tall + 0.75rem offset) from covering the
+     * key row / footer */
+    padding-bottom: 4.25rem;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+  /* Same story for the corner buttons — they ride above the keyboard too. */
+  .ws-fab { bottom: calc(0.75rem + var(--kb, 0px)); }
+  /* min-height:0 lets the scrollable children shrink inside the flex column.
+   * A `height: 100%` here would stack every row below the fold and make the
+   * whole workspace untappable. */
+  .ws-sheet > * { min-height: 0; }
+  .ws-sheet-close-term { display: inline-flex; }
+}
+@media (min-width: 768px) {
+  .ws-sheet { position: static; inset: auto; bottom: auto; padding-bottom: 0; border-radius: 0.75rem; border-left: 1px solid #1e293b; border-right: 1px solid #1e293b; }
+  .ws-mobile-only { display: none !important; }
+  .ws-sheet-close-term { display: none !important; }
+}
+
+/* Mobile terminal key row — a real terminal emulator's extra-keys grid: the
+ * soft keyboard hides every modifier, so the grid carries arrows, Tab, Esc,
+ * Ctrl/Alt, Home/End/PageUp/PageDown, space and the shell control keys.
+ * Rendered from KEY_LAYOUTS in terminal_workspace.js so the layout can be
+ * swapped on the device (the ⇄ button) instead of being baked into HTML. */
+.ws-keyrow {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.3rem;
+  padding: 0.3rem 0.35rem;
+  padding-bottom: calc(0.3rem + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid #1e293b;
+  background: #05070d;
+}
+.ws-keyrow::-webkit-scrollbar { display: none; }
+.ws-key {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.15rem;
+  border-radius: 0.4rem;
+  border: 1px solid #1f2937;
+  background: #1b2333;
+  color: #e2e8f0;
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.ws-key:active { background: #26344d; border-color: #34d39966; color: #34d399; }
+.ws-key.is-sticky { background: #0f3a2c; border-color: #34d399; color: #6ee7b7; }
+.ws-key.is-wide { grid-column: span 2; }
+@media (max-width: 360px) {
+  .ws-key { height: 2.25rem; font-size: 10.5px; }
+}
+
+/* ---- Mobile terminal chrome (below the wide layout) ----
+ * Mirrors a phone terminal app: a compact session strip on top, the black
+ * shell, a command bar (interrupt / environment / settings), a prompt bar that
+ * shows the live cwd plus the toggles, and the key grid underneath. */
+@media (max-width: 767px) {
+  .ws-term-chrome .ws-hide-mobile { display: none !important; }
+  /* Pure black shell — the one thing every mobile terminal gets right. */
+  .ws-term-chrome #term-view { background: #000; }
+  #term-tabs { gap: 0.35rem; }
+  #term-tabs .term-tab { height: 1.75rem; max-width: 46vw; padding-left: 0.45rem; font-size: 10.5px; }
+  #term-tabs .term-tab-close { width: 1.1rem; height: 1.1rem; }
+  #term-new { height: 1.75rem; padding: 0 0.6rem; font-size: 11px; }
+  .ws-chip {
+    display: inline-flex;
+    height: 2rem;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0 0.7rem;
+    border-radius: 0.45rem;
+    border: 1px solid #1f2937;
+    background: #1b2333;
+    color: #e2e8f0;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .ws-chip:active { background: #26344d; }
+  .ws-chip.is-danger { color: #fda4af; }
+  .ws-icon {
+    display: inline-flex;
+    width: 2rem;
+    height: 2rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.45rem;
+    border: 1px solid #1f2937;
+    background: #1b2333;
+    color: #cbd5e1;
+  }
+  .ws-icon:active { background: #26344d; }
+  .ws-icon.is-on { border-color: #34d399; color: #34d399; }
+  .ws-prompt-badge {
+    display: inline-flex;
+    height: 1.75rem;
+    align-items: center;
+    padding: 0 0.5rem;
+    border-radius: 0.4rem;
+    background: #14532d;
+    color: #86efac;
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    font-size: 12px;
+  }
+  .ws-prompt-caret {
+    display: inline-block;
+    width: 0.4rem;
+    height: 1.05rem;
+    margin-left: 0.25rem;
+    background: #34d399;
+    animation: ws-caret 1.1s steps(2, start) infinite;
+  }
+  @keyframes ws-caret { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .ws-prompt-caret { animation: none; } }
+}
+
+/* Mobile landing card — shown only when no sheet is open, so the FAB state
+ * is a real screen with big tap targets instead of an empty dark page. */
+.ws-landing { display: none; }
+@media (max-width: 767px) {
+  /* Fills the screen so the two choices are genuinely reachable with a
+   * thumb. The height is a variable because the standalone /terminal page
+   * has only a 2.75rem top bar, while the embedded dashboard fragment also
+   * pays for its own header, main padding and status footer — each template
+   * sets --ws-landing-min so the card never adds a phantom scrollbar. */
+  .ws-landing {
+    display: flex;
+    min-height: var(--ws-landing-min, calc(100dvh - 9rem));
+    padding-bottom: 4.5rem;
+  }
+  .ws-landing.is-hidden { display: none; }
+}
+

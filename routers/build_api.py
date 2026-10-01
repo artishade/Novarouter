@@ -12,13 +12,15 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import platform
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from nova import pty_session
 from nova.build_registry import BUILD_PROVIDER_BY_ID, BUILD_PROVIDERS, ensure_build_providers
@@ -26,6 +28,19 @@ from nova.database import get_db
 from nova.models import StorageProviderRow
 from nova.storage_lib import parse_config, slugify
 from routers.agent_api import TOOLS
+
+log = logging.getLogger("nova.build_api")
+
+# Reasoning-effort choices surfaced in the workspace chatbox. Values pass
+# through the gateway verbatim (`reasoning_effort` is already in the gateway's
+# PASSTHROUGH_FIELDS), so OpenAI-compatible and native Anthropic upstreams
+# both honour them.
+REASONING_EFFORTS = [
+    {"id": "minimal", "label": "Minimal", "hint": "fastest, no extended thinking"},
+    {"id": "low", "label": "Low", "hint": "light reasoning"},
+    {"id": "medium", "label": "Medium", "hint": "balanced (default)"},
+    {"id": "high", "label": "High", "hint": "deepest reasoning, slower"},
+]
 
 router = APIRouter()
 
@@ -167,6 +182,51 @@ async def save_build_provider(request: Request, db: Session = Depends(get_db)):
         row.lastError = None
     db.commit()
     return JSONResponse({"ok": True, "id": provider_key, "status": row.status})
+
+
+@router.get("/models")
+async def build_models(provider_id: int | None = None):
+    """Picker data for the workspace chatbox: every enabled model grouped by
+    provider, plus the reasoning-effort choices."""
+    from nova.models import Model as ModelRow
+    from nova.database import SessionLocal
+
+    def _load() -> list[dict]:
+        with SessionLocal() as db:
+            stmt = (
+                select(ModelRow)
+                .where(ModelRow.enabled.is_(True))
+                .options(joinedload(ModelRow.provider))
+                .order_by(ModelRow.providerId, ModelRow.exposedId)
+            )
+            if provider_id is not None:
+                stmt = stmt.where(ModelRow.providerId == provider_id)
+            rows = db.scalars(stmt).unique().all()
+            out: dict[int, dict] = {}
+            for m in rows:
+                prov = m.provider
+                if prov is None:
+                    continue
+                bucket = out.setdefault(
+                    prov.id,
+                    {"provider_id": prov.id, "provider_name": prov.name, "color": prov.color, "models": []},
+                )
+                bucket["models"].append({
+                    "exposed_id": m.exposedId,
+                    "display_name": m.displayName,
+                    "is_free": bool(m.isFree),
+                    "reasoning": bool((m.capabilities or "").find('"reasoning": true') >= 0),
+                })
+            return list(out.values())
+
+    try:
+        groups = await asyncio.to_thread(_load)
+    except Exception:
+        # Never break the chatbox on a transient DB hiccup, but keep the
+        # failure visible — a silent [] here once hid a missing import.
+        log.exception("/api/build/models: model picker load failed")
+        groups = []
+    return JSONResponse({"groups": groups, "reasoning_efforts": REASONING_EFFORTS})
 
 
 @router.post("/tools/register")

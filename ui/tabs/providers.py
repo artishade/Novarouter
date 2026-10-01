@@ -99,7 +99,13 @@ def _filter_providers(rows: list[dict], q: str) -> list[dict]:
 
 
 def _decorate(p: dict, q: str, expand: int | None) -> dict:
-    """Add per-card computed fields (URLs, cached test result)."""
+    """Add per-card computed fields (URLs, cached test result).
+
+    Toggle URLs are absolute (query string carries q + expand) — they never
+    depend on hx-include picking up the live #np-expand hidden input, which
+    could keep a stale expanded id around and make a collapse click re-open
+    the same provider forever.
+    """
     pid = p.get("id")
     p["_test"] = _test_results.get(pid)
     if expand == pid:
@@ -156,6 +162,9 @@ async def _providers_ctx(request: Request) -> dict:
         "keys": keys,
         "q": q,
         "expand": expand,
+        # Next-state URL for the key panels' refresh links — the expanded id
+        # is already encoded, so panels never depend on hidden inputs either.
+        "_root_url": _root_url(q, expand),
         "error": error,
         "stats": stats,
         "meta": meta,

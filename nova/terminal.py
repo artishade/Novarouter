@@ -59,23 +59,36 @@ DANGEROUS_WORDS = {
 DANGEROUS_CHARS = ["|", ";", "&", ">", "<", "`", "$("]
 
 # ---------------------------------------------------------------------------
-# Builder FS helpers - sandboxed to PROJECT_ROOT + /tmp
+# Builder FS helpers - sandboxed to the builder base location + /tmp
 # ---------------------------------------------------------------------------
 BUILDER_ALLOWED_TMP = pathlib.Path("/tmp").resolve()
+
+
+def _builder_base() -> pathlib.Path:
+    """Builder base location — `/app/build` (see nova.build_registry), kept
+    separate from the NovaRouter source tree so agent file writes and shell
+    builds can never touch the gateway's own code."""
+    try:
+        from .build_registry import build_root
+        return pathlib.Path(build_root())
+    except Exception:
+        return PROJECT_ROOT
+
+
 def _builder_resolve(target: str):
     if not target or not target.strip():
         return None
     raw = target.strip()
     p = pathlib.Path(raw)
     if not p.is_absolute():
-        p = PROJECT_ROOT / p
+        p = _builder_base() / p
     try:
         rp = p.resolve()
     except Exception:
         return None
-    # allow under PROJECT_ROOT or /tmp
+    # allow under the builder base or /tmp
     try:
-        rp.relative_to(PROJECT_ROOT.resolve())
+        rp.relative_to(_builder_base().resolve())
         return rp
     except ValueError:
         try:
@@ -131,7 +144,7 @@ def builder_bash(cmd: str, timeout: int = 30):
     if not cmd:
         return _err(1, "bash: empty")
     try:
-        proc = _sp.run(cmd, shell=True, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=timeout)
+        proc = _sp.run(cmd, shell=True, cwd=str(_builder_base()), capture_output=True, text=True, timeout=timeout)
         out = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
         out = out.strip()[:8000] or "(no output)"
         if proc.returncode != 0:

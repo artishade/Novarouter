@@ -1,5 +1,12 @@
 # NovaRouter Next.js — API CONTRACT (v1)
 
+> ⚠️ **HISTORICAL DOCUMENT — paths are stale, shapes are still authoritative.**
+> The Next.js file layout below (`src/app/api/**`, `src/lib/**`) does NOT exist
+> in this repo; the app is Python/FastAPI (map: `agent-ctx/project-map.md`).
+> The **endpoint list, snake_case JSON shapes, and status/error semantics in
+> this contract are still the reference** the Python routers implement — keep
+> new endpoints consistent with them.
+
 All agents MUST follow this contract exactly. DB fields are camelCase (Prisma); **API JSON is snake_case**.
 DB access: `import { db } from '@/lib/db'`. Shared TS types: `src/lib/types.ts`. Client wrapper: `src/lib/api.ts` (already written — do not modify without orchestrator approval).
 Helper: `src/lib/format.ts` has fmtNum/fmtBytes/fmtMb/fmtUptime/timeAgo/fmtClock/fmtDate/maskKey/cx.

@@ -73,8 +73,9 @@ try:
     status, body, headers = get("/")
     print(f"  GET /                  {status} {headers.get('Content-Type','')}"
           f" ({len(body)} bytes)")
-    for needle in ("xterm.js", 'id="tabs"', "/static/console.js", "AGENTBOX"):
-        print(f"    contains {needle:<22} {needle in body}")
+    for needle in ('xterm.js', 'id="tabs"', 'id="split"', 'id="zoomIn"',
+                   'id="expand"', 'class="mobile-switch"', "/static/console.js"):
+        print(f"    has {needle:<22} {needle in body}")
     status, js, headers = get("/static/console.js")
     print(f"  GET /static/console.js {status} {headers.get('Content-Type','')} ({len(js)} bytes)")
     print(f"  GET /agent             {get('/agent')[0]}   (docs link, same console)")

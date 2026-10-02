@@ -88,12 +88,18 @@ function fakeElement(id) {
   return el;
 }
 
-function makeEnvironment({ sessions = [], withTerminal = true } = {}) {
+function makeEnvironment({ sessions = [], withTerminal = true, stacked = false } = {}) {
   const elements = {};
-  const ids = ['log', 'screen', 'tabs', 'where', 'count', 'new', 'clear', 'dot', 'adot',
+  const ids = ['log', 'screen', 'tabs', 'where', 'new', 'rename', 'copy', 'menu', 'expand',
+    'closePanel', 'zoomIn', 'zoomOut', 'zoomReset', 'zoomRead', 'split', 'agentTitle',
+    'newChat', 'expandAgent', 'closeAgent', 'mobileSwitch',
     'provider', 'manage', 'providerBox', 'provList', 'registry', 'provForm',
     'p_id', 'p_url', 'p_model', 'p_key', 'composer', 'input'];
   ids.forEach((id) => { elements[id] = fakeElement(id); });
+  elements.mobileSwitch.children = [
+    Object.assign(fakeElement('pane-shell'), { dataset: { pane: 'shell' } }),
+    Object.assign(fakeElement('pane-agent'), { dataset: { pane: 'agent' } }),
+  ];
 
   const calls = [];
   const streams = [];
@@ -101,8 +107,10 @@ function makeEnvironment({ sessions = [], withTerminal = true } = {}) {
 
   const xterm = {
     written: writes,
+    options: { fontSize: 13 },
     loadAddon() {},
     write(data) { writes.push(data); },
+    getSelection() { return ''; },
     resize(cols, rows) { xterm.size = `${cols}x${rows}`; },
     clear() { writes.length = 0; },
     focus() {},
@@ -130,13 +138,22 @@ function makeEnvironment({ sessions = [], withTerminal = true } = {}) {
     return respond(200, { ok: true, session: 'pty-new' });
   }
 
+  const docVars = {};
+  const body = fakeElement('body');
+  const windowHandlers = new Map();
+
   const window = {
     document: {
       getElementById: (id) => elements[id] || null,
       createElement: (tag) => fakeElement(tag),
       createTextNode: (text) => ({ textContent: String(text) }),
+      querySelector: () => null,
       addEventListener() {},
+      documentElement: { clientWidth: 1440, clientHeight: 820, style: { setProperty(k, v) { docVars[k] = v; }, } },
+      body,
     },
+    matchMedia: (q) => ({ matches: stacked && String(q).includes('max-width'), media: q }),
+    navigator: { clipboard: { writeText: () => Promise.resolve() } },
     localStorage: {
       _v: '',
       getItem() { return this._v; },
@@ -148,6 +165,12 @@ function makeEnvironment({ sessions = [], withTerminal = true } = {}) {
     setTimeout,
     clearTimeout,
     prompt: () => 'typed-secret',
+    addEventListener(name, cb) {
+      windowHandlers.set(name, [...(windowHandlers.get(name) || []), cb]);
+    },
+    removeEventListener(name, cb) {
+      windowHandlers.set(name, (windowHandlers.get(name) || []).filter((c) => c !== cb));
+    },
   };
   if (withTerminal) {
     window.Terminal = function () { return xterm; };
@@ -167,23 +190,26 @@ function makeEnvironment({ sessions = [], withTerminal = true } = {}) {
   const client = sandbox.window.NovaTerminalConsole || sandbox.NovaTerminalConsole;
   // The page wires the screen at boot; do the same so writes land somewhere.
   client.buildTerminal();
-  return { client, elements, calls, streams, writes, xterm, fetchCalls };
+  return { client, elements, calls, streams, writes, xterm, fetchCalls,
+           docVars, body, window, windowHandlers };
 }
 
 test('the console client boots and keeps every live tab when one opens', async () => {
   const env = makeEnvironment({
     sessions: [{ id: 'pty-1', label: 'app', cwd: '/app/build', closed: false }],
   });
+  const tabLabels = () => env.elements.tabs.children
+    .filter((c) => String(c.className).includes('tab'))
+    .map((t) => t.children[0].textContent);
   await env.client.loadSessions();
-  assert.equal(env.elements.tabs.children.length, 1, 'the first tab renders');
+  assert.deepEqual(tabLabels(), ['app'], 'the first tab renders');
 
   await env.client.newSession();
   await env.client.loadSessions();
 
   // Regression guard: the tab strip used to drop the tab that was already
   // there, which made a multi-tab terminal look broken after every new tab.
-  const labels = env.elements.tabs.children.map((t) => t.children[0].textContent);
-  assert.ok(labels.includes('app'), `existing tab survives: ${labels}`);
+  assert.ok(tabLabels().includes('app'), `existing tab survives: ${tabLabels()}`);
 });
 
 test('the stream cursor advances so output is never replayed', async () => {
@@ -260,4 +286,100 @@ test('an agent task refreshes the tab strip so its shell is visible', async () =
   await env.client.ask('list the files');
   const after = env.fetchCalls.filter((c) => c.url.endsWith('/terminal/pty/sessions')).length;
   assert.ok(after > before, 'sessions were re-read after the task');
+});
+
+// --------------------------------------------------------------------------- //
+// The panel chrome the screenshot asks for: zoom, a draggable bar, expand.
+// --------------------------------------------------------------------------- //
+
+test('zoom resizes the text, tells the shell, and remembers itself', () => {
+  const env = makeEnvironment({ sessions: [{ id: 'pty-1', label: 'app', cwd: '/app', closed: false }] });
+  env.client.zoom(2);
+  assert.equal(env.client.state.font, 15);
+  assert.equal(env.xterm.options.fontSize, 15, 'xterm followed');
+  assert.equal(env.elements.zoomRead.textContent, '15px');
+  assert.equal(env.client.readSetting('font', 0), 15);
+
+  env.client.zoom(-40);
+  assert.equal(env.client.state.font, 9, 'clamped at the floor');
+  env.client.zoom(100);
+  assert.equal(env.client.state.font, 24, 'clamped at the ceiling');
+
+  env.client.state.font = 13;
+  env.client.applyFont();
+  assert.equal(env.xterm.options.fontSize, 13);
+});
+
+test('dragging the bar resizes the chat pane and persists the size', () => {
+  const env = makeEnvironment({ sessions: [{ id: 'pty-1', label: 'app', cwd: '/app', closed: false }] });
+  env.client.setSplit(300);
+  assert.equal(env.docVars['--split'], '300px');
+  assert.equal(env.client.readSetting('split', 0), 300);
+
+  // A pointer near the right edge means a narrow chat pane, and never zero.
+  const wide = env.client.splitFromPointer({ clientX: 20 });
+  assert.ok(wide <= 1240, `clamped: ${wide}`);
+  const narrow = env.client.splitFromPointer({ clientX: 3000 });
+  assert.ok(narrow >= 260, `clamped: ${narrow}`);
+});
+
+test('clicking the bar (without dragging) collapses and restores the chat pane', () => {
+  const env = makeEnvironment({ sessions: [{ id: 'pty-1', label: 'app', cwd: '/app', closed: false }] });
+  env.client.wire();
+
+  env.elements.split.dispatch('mousedown', { clientX: 700, clientY: 400 });
+  (env.windowHandlers.get('mouseup') || []).forEach((cb) => cb({}));
+  assert.ok(env.body.classList.contains('agent-collapsed'), 'a click collapsed the chat pane');
+
+  env.client.togglePane('agent');
+  assert.ok(!env.body.classList.contains('agent-collapsed'), 'and it comes back');
+});
+
+test('a real drag resizes instead of collapsing', () => {
+  const env = makeEnvironment({ sessions: [{ id: 'pty-1', label: 'app', cwd: '/app', closed: false }] });
+  env.client.wire();
+
+  env.elements.split.dispatch('mousedown', { clientX: 900, clientY: 400 });
+  (env.windowHandlers.get('mousemove') || []).forEach((cb) => cb({ clientX: 1000, clientY: 400 }));
+  (env.windowHandlers.get('mouseup') || []).forEach((cb) => cb({}));
+  assert.ok(!env.body.classList.contains('agent-collapsed'), 'dragging never collapses');
+  assert.equal(env.docVars['--split'], `${1440 - 1000 - 3}px`);
+});
+
+test('arrow keys nudge the bar, and Enter collapses it', () => {
+  const env = makeEnvironment({ sessions: [{ id: 'pty-1', label: 'app', cwd: '/app', closed: false }] });
+  env.client.wire();
+  env.client.setSplit(400);
+  env.elements.split.dispatch('keydown', { key: 'ArrowRight', preventDefault() {} });
+  assert.equal(env.client.state.split, 424);
+  env.elements.split.dispatch('keydown', { key: 'ArrowLeft', preventDefault() {} });
+  assert.equal(env.client.state.split, 400);
+  env.elements.split.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+  assert.ok(env.body.classList.contains('agent-collapsed'));
+});
+
+test('expand hides the other pane and restores on the second press', () => {
+  const env = makeEnvironment({ sessions: [{ id: 'pty-1', label: 'app', cwd: '/app', closed: false }] });
+  env.client.wire();
+  env.client.setExpanded('term');
+  assert.ok(env.body.classList.contains('expanded'));
+  assert.equal(env.client.state.expanded, 'term');
+  env.client.setExpanded('term');
+  assert.ok(!env.body.classList.contains('expanded'), 'pressing again restores the layout');
+});
+
+test('on a phone the bar moves rows and the switch shows one pane', () => {
+  const env = makeEnvironment({
+    stacked: true,
+    sessions: [{ id: 'pty-1', label: 'app', cwd: '/app', closed: false }],
+  });
+  env.client.wire();
+  env.client.setSplit(220);
+  assert.equal(env.docVars['--agent-rows'], '220px', 'the height is set, not the width');
+  assert.equal(env.docVars['--split'], undefined);
+
+  env.client.showMobile('agent');
+  assert.ok(!env.body.classList.contains('agent-collapsed'), 'the agent is on screen');
+  env.client.showMobile('shell');
+  assert.ok(env.body.classList.contains('agent-collapsed'), 'and the terminal takes over');
 });

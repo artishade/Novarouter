@@ -58,13 +58,27 @@ python3 main.py
 
 ### The console
 
-Open `http://<terminal-host>:3100/` and you are in the workspace: session tabs
-along the top, a real shell (xterm.js — colour, cursor, `vim`, `top`), and
-Agentbox on the right. Click a tab to switch, double-click to rename, `×` to
-close, **new tab** for another shell. The terminal host serves this page itself,
-so a deployed terminal is usable with nothing else running; if the xterm CDN is
-unreachable the page falls back to a plain append-only viewer instead of
-rendering nothing.
+Open `http://<terminal-host>:3100/` and you are in the workspace: a panel header
+with the session strip under it, a real shell (xterm.js — colour, cursor, `vim`,
+`top`), and Agentbox on the right.
+
+- **Session tabs** — click to switch, double-click to rename, `×` to close, `+`
+  for a new shell. The strip scrolls when they pile up.
+- **The bar between the panes** — drag it to resize, click it to collapse the
+  chat pane (and click the switch's Agent button to bring it back). Arrow keys
+  nudge it 24px at a time when it has focus; `Enter` collapses it.
+- **Zoom** — the `−` / readout / `+` group, or `ctrl/cmd` + `-` / `+` / `0`.
+  The font size is applied to the terminal *and* told to the shell, so the
+  columns match what is on screen. It is remembered.
+- **Expand** — `⛶` gives the terminal the whole window; the chat panel has one
+  too. Press again to restore.
+- **Mobile** — below 860px the layout stacks, the bar moves rows instead of
+  columns, the icon buttons become 38px targets, and a Terminal / Agent switch
+  floats at the bottom so one pane owns the screen.
+
+The terminal host serves this page itself, so a deployed terminal is usable with
+nothing else running; if the xterm CDN is unreachable the page falls back to a
+plain append-only viewer instead of rendering nothing.
 
 If the host has a `NOVA_TERMINAL_TOKEN`, the page asks for it once (a browser
 navigation cannot send a header) and keeps it locally; every API call after that

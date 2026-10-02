@@ -268,7 +268,7 @@ async def anthropic_messages(request: Request):
             result = native
         else:
             try:
-                result, stage = await gw.pipeline_nonstream(db, requested, openai_msgs, temperature, pipeline_body)
+                result, stage, _plan = await gw.pipeline_nonstream(db, requested, openai_msgs, temperature, pipeline_body)
             except gw.HTTPError as err:
                 gw.write_log(db, model=requested, upstream_model="nova-engine",
                              provider_name="NovaFree Engine", endpoint="/v1/messages",
@@ -566,7 +566,14 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                     await res.aclose()
 
         if not committed:
-            rows = gw.resolve_pipeline(db, requested)
+            try:
+                rows = gw.resolve_pipeline(db, requested)
+            except gw.HTTPError as err:
+                # A blocked model must surface as a clean Anthropic error, not a
+                # half-open SSE stream the client has to guess at.
+                yield ev("error", {"type": "error", "error": {
+                    "type": "api_error", "message": err.message}})
+                return
             stage = 0
             for r in rows:
                 stage += 1
@@ -620,7 +627,10 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                 break
 
         if not committed:
-            stage = len(gw.resolve_pipeline(db, requested)) + 1
+            try:
+                stage = len(gw.resolve_pipeline(db, requested)) + 1
+            except gw.HTTPError:
+                stage = 1
             served = {"upstream_model": "nova-engine", "provider_name": "NovaFree Engine",
                       "via": "nova-engine", "stage": stage}
             try:

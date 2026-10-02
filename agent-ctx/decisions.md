@@ -60,6 +60,40 @@ with the user before overriding, or add a new dated entry explaining the pivot.
   and update `AGENTS.md`/`project-map.md` — that's the whole job of the
   `nova-memory-sync` skill.
 
+## 2026-10-02 — The routing brain is ported from OmniRoute
+- **The upstream model is OmniRoute's domain layer, not its code.** NovaRouter
+  stays Python; `nova/routing.py` re-implements `tagRouter`, `policyEngine`,
+  `accountFallback`/`lockoutPolicy`, `fallbackPolicy`, the combo strategies and
+  `routerStrategy` as pure functions over plain dicts, and `nova/catalog.py`
+  reads a generated JSON snapshot of the OmniRoute provider registry. Reason:
+  a Next.js tree-shaking/executor model does not port — but its *decisions* do,
+  and the decisions are the valuable part.
+- **Decisions live in `nova/`, never in `routers/gateway.py`.** The gateway only
+  supplies rows and records outcomes. Everything a routing change touches is a
+  pure function with a unit test in `tests/test_routing.py`.
+- **The catalogue is data, not code.** `nova/data/provider_registry.json` is a
+  generated snapshot (223 providers / 2325 active models) with the retired and
+  retiring models already dropped, per OmniRoute's vendor deprecation snapshot.
+  Regenerating it is a data step, not a code change.
+- **Seeding is additive and providers start disabled.** `bootstrap` inserts only
+  rows that are missing and never touches an existing one, so a provider the
+  operator already configured keeps its own base URL, prefix and priority, and a
+  model they disabled stays disabled. The registry providers ship `enabled=false`
+  because they have no key yet; the gateway already skips a provider with no
+  enabled key, so seeding cannot cause traffic to move. `NOVA_SEED_REGISTRY=off`
+  or `SystemConfig seed_registry_models=off` skips it entirely.
+- **One predicate, two chokepoints.** The exposure allow/deny list gates
+  `/v1/models` *and* candidate selection, so a hidden model can never re-enter
+  through a fallback chain — the exact mistake OmniRoute's `MODEL_EXPOSURE_LIST.md`
+  documents.
+- **Scopes are opt-in.** `has_scopes()` treats "no scopes declared" as permitted,
+  because the console and the agent run in-process with no scope table and
+  locking them out would be a regression. A credential that *does* declare scopes
+  gets them enforced.
+- **The tab lists are paged.** 200+ providers and 2300+ models are the intended
+  state, so the Providers and Models tabs render a bounded first page and say
+  "N of M"; search narrows to the rest.
+
 ## 2026-10-01 — Custom MCP servers are the console's plugin system
 - **One table (`McpServer`), two transports.** A plugin is either a streamable
   HTTP MCP endpoint or a local stdio process. Legacy HTTP+SSE (GET stream +

@@ -4,7 +4,7 @@
    typing on mobile. Also rendered standalone via
    GET /partials/models/list?region=results. #}
 <div id="models-results" class="space-y-4">
-  <p class="font-mono text-[11px] text-slate-500">{{ total }} shown</p>
+  <p class="font-mono text-[11px] text-slate-500">{{ rows | length }} of {{ total }} shown</p>
 
   {% if error %}
   <div class="rounded-xl border border-rose-900/60 bg-rose-950/20 p-10 text-center">

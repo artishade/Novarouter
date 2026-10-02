@@ -31,7 +31,8 @@ The base URL is also advertised live by `GET /api/admin/meta` (`base_url` field)
 | 💬 Nova Console | **One chatbox for everything** — questions → AI chat with fallback telemetry, `$ cmd` → sandbox shell, `! task` → agent execution |
 | 🔌 MCP plugins | Register your own **MCP servers** from the console (streamable HTTP or a local stdio plugin process) — their tools join the toolbox, the agent planner and a built-in "run this tool" form |
 | 🧠 Free AI providers | Built-in presets (OpenRouter, Groq, GitHub Models, Google AI Studio, Mistral, Ollama, …) with health checks, weights, cooldowns |
-| 🔀 Smart routing | Fallback chains, identity spoofing, request logs, analytics dashboards |
+| 🔀 Smart routing | Fallback chains, identity spoofing, request logs, analytics dashboards — plus a routing brain ported from [OmniRoute](https://github.com/diegosouzapw/OmniRoute): glob-matched access/routing/budget policies, `metadata.tags` steering, per-(provider, model) cooldowns, and 11 selection strategies (priority, weighted, round-robin, least-used, cost-optimized, latency, SLA, last-known-good…) |
+| 🗂️ Huge model catalogue | Every routable provider + active model from the OmniRoute registry (**223 providers / 2300+ models**) seeds into the Models tab on first boot, with real base URLs and capabilities. Enable a provider, add a key, and it's live |
 | 📡 OpenAI-spec API | `/v1/models`, `/v1/chat/completions` (**streaming SSE + non-streaming**), `/v1/completions` (legacy), `/v1/messages` (Anthropic format), `/v1/embeddings`, live discovery |
 | 🗄️ Storage manager | Firebase + free storage providers (Supabase, Backblaze B2, Cloudflare R2, GitHub…), dashboard sign-in/connect flows, file browser, backups |
 | ⚙️ Compute config | Gateway memory booster, in-terminal RAM booster, free compute providers (Colab, Kaggle…), **GPU pool config** (attach/detach, VRAM) |
@@ -139,6 +140,51 @@ Every free catalogue model is also callable directly by its real id (`qwen/qwen3
 | OVHcloud AI Endpoints | `OVH_AI_TOKEN` | keyless, frequently rate-limited |
 
 Refresh the bundled snapshot from upstream with `POST /api/admin/models/sync` (the built-in provider is synced from the catalogue, no network calls), or regenerate `engine/free-models.json` from `data/models.json` in the source repository. The engine degrades honestly: if no free route is reachable the gateway falls back to your configured upstreams instead of fabricating a reply.
+
+---
+
+## 🧭 Routing — the OmniRoute brain
+
+Routing, model routing, provider routing, fallback, MCP scopes, skills and the
+provider catalogue are ported from [**OmniRoute**](https://github.com/diegosouzapw/OmniRoute)
+into `nova/routing.py`, `nova/catalog.py`, `nova/mcp_tools.py` and
+`nova/router_settings.py`. Nothing has to be configured — the defaults reproduce
+the previous stage order exactly — but everything is tunable:
+
+```bash
+# what the router is doing right now, and what it is skipping (and why)
+curl -s localhost:3000/api/admin/routing
+
+# switch strategy + declare policies, fallback chains and the exposure lists
+curl -s -X POST localhost:3000/api/admin/routing -H 'content-type: application/json' -d '{
+  "strategy": "weighted",
+  "policies": [
+    {"id":"no-preview","name":"no preview models","type":"access","priority":1,
+     "conditions":{"model_pattern":"gpt-*"},"actions":{"block_model":["gpt-4o"]}},
+    {"id":"cap","name":"cap output","type":"budget","priority":9,"actions":{"max_tokens":4096}}
+  ],
+  "chains": {"my/model": [{"id":"groq/llama-3.3-70b","priority":0,"enabled":true}]},
+  "denylist": ["internal/*"]
+}'
+
+# the ported catalogue (223 providers, 2300+ active models) and the skill/MCP tables
+curl -s localhost:3000/api/admin/catalog
+curl -s localhost:3000/api/admin/catalog/anthropic
+curl -s localhost:3000/api/admin/skills
+curl -s localhost:3000/api/admin/mcp/scopes
+```
+
+| Knob | What it does |
+| --- | --- |
+| **Strategy** | `priority` (default, the old stage order), `weighted`, `round-robin`, `random`, `least-used`, `cost-optimized`, `rules` / `cost` / `latency` / `sla` / `lkgp` |
+| **Policies** | `access` blocks a model by glob (the request is refused, never silently served by something else), `routing` prefers providers, `budget` caps output tokens — each with a `conditions.model_pattern` glob and a `priority` |
+| **Tag routing** | Send `metadata: {"tags": ["eu"], "tag_match_mode": "any"}` and only providers tagged `eu` are eligible; an untagged request still reaches everyone |
+| **Cooldowns** | A (provider, model) that keeps failing is backed off exponentially and skipped until it recovers — a success clears it instantly. See `/api/admin/routing/availability` |
+| **Exposure lists** | Deny/allow globs hide a model from `/v1/models` **and** from every candidate pool, so it can never sneak back in through a fallback chain |
+| **MCP scopes** | `nova/mcp_tools.py` carries OmniRoute's scope table; a credential that declares scopes is held to them (undeclared = unrestricted) |
+
+Every chat response explains itself: `_nova.routing` carries the strategy, the
+ordered candidates, what was excluded and the reason for each exclusion.
 
 ---
 
@@ -309,7 +355,8 @@ curl -s -XPOST localhost:3000/api/build/providers \
 main.py            FastAPI entrypoint — 0.0.0.0:$PORT, CORS, /health, API routers, UI
 nova/              config, SQLAlchemy models (Prisma-layout compatible), bootstrap,
                    engine sidecar client, live discovery, model sync, terminal sandbox,
-                   agent runtime, storage lib, MCP client + plugin registry
+                   agent runtime, storage lib, MCP client + plugin registry,
+                   routing brain (catalog / routing / router_settings / mcp_tools)
 routers/           gateway (/v1), admin CRUD, admin misc, terminal, compute, storage, agent,
                    MCP plugin registry, build APIs (permanent cloud terminal config)
 ui/                the Python frontend module — shell + 9 dashboard tabs,
@@ -325,7 +372,7 @@ docker-compose.yml one-command deploy with persistent volume
 
 ## 🔒 A note on data
 
-No mock/demo data ships with the project: the dashboard starts empty (plus the built-in engine) and fills with **real** data as you add providers, sync live model catalogues, and use the gateway. Legacy deployments seeded with demo data are cleaned automatically on first boot.
+No mock/demo data ships with the project: the dashboard starts with the built-in engine and the real OmniRoute provider catalogue (disabled providers, no keys, nothing invented), and fills with **real** data as you enable providers, add keys, sync live model catalogues, and use the gateway. Everything else you add — providers, models, keys, routes, configs, logs, files — survives every restart and every `git push`.
 
 ## 📄 License
 

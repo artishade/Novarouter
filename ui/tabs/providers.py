@@ -33,6 +33,9 @@ from ui.render import form_dict, html, render, truthy
 
 router = APIRouter(tags=["ui:providers"])
 
+# Bounded first page of provider cards — the catalogue is large by design.
+PROVIDER_PAGE_SIZE = 60
+
 # Test results (mirrors the TSX `testResults` React state): provider id → last
 # probe payload. Module-level, so badges survive live re-renders like the
 # React state survived the 5s poll. Ephemeral by design (lost on restart).
@@ -148,7 +151,10 @@ async def _providers_ctx(request: Request) -> dict:
         keys = results[3]
 
     visible = _filter_providers(rows, q)
-    visible = [_decorate(p, q, expand) for p in visible]
+    visible_total = len(visible)
+    # The OmniRoute catalogue brings 200+ providers; the tab renders a bounded
+    # first page and the header says "N of M". Search narrows it to anything past.
+    visible = [_decorate(p, q, expand) for p in visible[:PROVIDER_PAGE_SIZE]]
     # "Test All" targets — same rule as ProvidersTab.tsx (enabled + has keys or builtin).
     test_ids = [
         p["id"] for p in rows
@@ -158,6 +164,7 @@ async def _providers_ctx(request: Request) -> dict:
     return {
         "rows": rows,
         "visible": visible,
+        "visible_total": visible_total,
         "test_ids": test_ids,
         "keys": keys,
         "q": q,

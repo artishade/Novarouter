@@ -12,17 +12,21 @@ Data-safety contract (the "git push wiped my data" fix):
      boot, not after a deploy, not ever. Providers, models, keys, routes,
      configs, logs and files survive every restart and every `git push` (as
      long as DATABASE_URL points at a persistent store). The only writes to an
-     existing database are strictly ADD-ONLY: missing SystemConfig keys and
-     missing built-in engine models are filled in, exactly like an additive
-     schema migration. Existing rows are never modified or deleted.
+     existing database are strictly ADD-ONLY: missing SystemConfig keys, missing
+     built-in engine models, and missing rows of the OmniRoute provider/model
+     catalogue are filled in, exactly like an additive schema migration.
+     Existing rows are never modified or deleted.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .catalog import providers as catalog_providers
 from .database import engine
 from .freemodels import nova_engine_models
 from .kv import get_config, set_config, set_config_json
@@ -104,6 +108,81 @@ def bootstrap_minimum(db: Session) -> None:
     if not db.scalar(select(func.count()).select_from(StorageProviderRow)):
         _seed_gpu_catalogue(db)
 
+    # OmniRoute catalogue: every routable provider + its active models. Strictly
+    # additive — providers the operator already has keep their own base URL,
+    # prefix, priority and colour, and models are only ever inserted, never
+    # updated or removed. Seeded providers start disabled: they have no key yet.
+    if get_config(db, "seed_registry_models") != "off" and os.environ.get("NOVA_SEED_REGISTRY") != "off":
+        seeded = ensure_registry_catalogue(db)
+        if seeded["providers"] or seeded["models"]:
+            log.info("OmniRoute catalogue: +%s provider(s), +%s model(s)",
+                     seeded["providers"], seeded["models"])
+
+
+def ensure_registry_catalogue(db: Session) -> dict[str, int]:
+    """ADDITIVE-ONLY: materialise the OmniRoute provider/model catalogue.
+
+    Never updates, reorders or deletes an existing row. A provider the operator
+    already configured (matching key) is left exactly as it is; only its
+    missing models are added, using that provider's own prefix.
+    """
+    by_key: dict[str, Provider] = {p.key: p for p in db.scalars(select(Provider)).all()}
+    known_models = {
+        (m.providerId, m.modelId)
+        for m in db.scalars(select(Model)).all()
+    }
+
+    added_providers = 0
+    added_models = 0
+
+    for entry in catalog_providers():
+        key = entry["key"]
+        provider = by_key.get(key)
+
+        if provider is None:
+            provider = Provider(
+                key=key,
+                name=entry["name"],
+                kind=entry["kind"],
+                baseUrl=entry["base_url"] or "",
+                prefix=f"{key}/",
+                enabled=False,          # no key yet — an operator turns it on
+                priority=int(entry.get("priority", 100)),
+                color=entry.get("color") or "#10b981",
+                requiresAuth=bool(entry.get("requires_key", True)),
+                docsUrl=entry.get("models_url") or None,
+            )
+            db.add(provider)
+            db.flush()
+            by_key[key] = provider
+            added_providers += 1
+
+        prefix = provider.prefix or f"{key}/"
+        for model in entry["models"]:
+            if (provider.id, model["id"]) in known_models:
+                continue
+            db.add(Model(
+                providerId=provider.id,
+                modelId=model["id"],
+                exposedId=f"{prefix}{model['id']}",
+                displayName=model.get("name") or model["id"],
+                isFree=False,  # unpriced until a sync or the operator says otherwise
+                contextLength=int(model.get("ctx", 0) or 0),
+                maxOutput=int(model.get("max_out", 0) or 0),
+                capabilities=json.dumps({
+                    "tools": bool(model.get("caps", {}).get("tools")),
+                    "vision": bool(model.get("caps", {}).get("vision")),
+                    "reasoning": bool(model.get("caps", {}).get("reasoning")),
+                }),
+                description=f"{entry['name']} · from the OmniRoute provider registry",
+            ))
+            known_models.add((provider.id, model["id"]))
+            added_models += 1
+
+    if added_providers or added_models:
+        db.commit()
+    return {"providers": added_providers, "models": added_models}
+
 
 def ensure_engine_models(db: Session, provider: Provider) -> int:
     """ADDITIVE-ONLY: insert engine models the provider is missing.
@@ -133,8 +212,6 @@ def ensure_engine_models(db: Session, provider: Provider) -> int:
 
 
 def _json_caps(caps: dict) -> str:
-    import json
-
     return json.dumps({"tools": False, "vision": False, "reasoning": False, **caps})
 
 
@@ -160,4 +237,4 @@ def run_bootstrap() -> None:
         bootstrap_minimum(db)
 
 
-__all__ = ["run_bootstrap", "create_schema", "ALL_TABLES"]
+__all__ = ["run_bootstrap", "create_schema", "ensure_registry_catalogue", "ALL_TABLES"]

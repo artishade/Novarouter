@@ -32,7 +32,10 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 | `config.py` | Env handling: `PORT`, `DATABASE_URL` normalization (Prisma-style `file:` / `postgres://` accepted), `IS_POSTGRES`, `PUBLIC_BASE_URL`/`public_base_url()`, `ENGINE_SIDECAR_PORT` (3099, steps aside if it collides with app port), `CORS_ALLOW_ORIGINS`, `slugify()` |
 | `database.py` | SQLAlchemy engine + `SessionLocal`; `get_db()` FastAPI dependency; `ping()`; `ensure_sqlite_dir()` |
 | `models.py` | All ORM rows (single source of schema truth): Provider, ProviderKey, Model, ModelRoute, ClientKey, RequestLog, TerminalCommand, SystemConfig (KV), StorageProviderRow, StorageFile, AgentTask, AgentStep, ProviderSession, McpServer. `utcnow()` helper |
-| `bootstrap.py` | First-boot: additive table creation + seeds NovaFree engine + gateway config. Never destructive, never mock data |
+| `bootstrap.py` | First-boot: additive table creation + seeds NovaFree engine + gateway config + the OmniRoute provider/model catalogue. Never destructive, never mock data |
+| `catalog.py` | Read-only accessor over `nova/data/provider_registry.json` (the OmniRoute registry, ported): provider/model lookup, `resolve()` (exact → basename → longest-prefix), capabilities, `glob_match()`, and the model exposure allow/deny predicate. Database-free, JSON loaded lazily |
+| `routing.py` | The routing brain, ported from the OmniRoute domain/autoCombo layer: `tagRouter` (request `metadata.tags`), `policyEngine` (access/routing/budget, glob-matched), `accountFallback` + `lockoutPolicy` (`LockoutRegistry`, `ClientLockouts`), `fallbackPolicy` (per-model chains with priority + exclusion), combo strategies (priority/weighted/round-robin/random/least-used/cost-optimized), router strategies (rules/cost/latency/sla/lkgp), weighted `score_candidates`, and `build_plan()` which folds all of it into a dispatch plan plus an audit trail. Pure functions, no I/O |
+| `router_settings.py` | The persisted half of the router: `RouterSettings` loaded from / saved to `SystemConfig` (strategy, weights, lockout tuning, policies, chains, exposure lists) + lockout flush/load |
 | `kv.py` | SystemConfig KV helpers: `get_config`, `set_config`, `get_config_number`, `get_gpu_providers`, `set_gpu_providers` |
 | `engine.py` | Sidecar lifecycle: `start_sidecar()` / `stop_sidecar()` / `health_check()`; spawns bun/node `engine/index.js`; degrades honestly if absent |
 | `provider_transport.py` | Wire-format translators: `openai_to_anthropic`, `anthropic_to_openai`, `anthropic_url`, `anthropic_headers` (incl. tool calls/results) |
@@ -45,6 +48,7 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 | `storage_lib.py` | Storage providers (Firebase/Supabase/B2/R2/GitHub…), backups, file ops |
 | `mcp_client.py` | Transport-only MCP client: `list_tools` / `call_tool` / `probe`, streamable HTTP (JSON or SSE-framed, `Mcp-Session-Id` echo) + stdio plugin processes (argv-split, cached per server, capped at 8, `close_all()` on shutdown). Helpers: `parse_call` (`server::tool {json}`), `mask_headers` |
 | `mcp_registry.py` | The user's plugins: CRUD over `McpServer` (validated, slugged, secrets preserved across a masked re-save), `refresh()` caches `tools/list` + status, `tool_catalogue()` feeds the agent prompt and `/api/agent/tools`, `invoke()` dispatches a call |
+| `mcp_tools.py` | Ported from the OmniRoute MCP surface: the scope table (`scopes`/`tool_scopes`/`has_scopes`/`filter_by_scope`, least-privilege) and the ReDoS-safe lexical `search_tools()` used to pick which plugin tools to surface, plus the 46-entry curated agent-skill catalogue from `nova/data/agent_skills.json` |
 | `gwlog.py` | `record_request()` — compact RequestLog writes from the gateway middleware |
 | `synclog.py` | Catalogue-sync audit logging |
 
@@ -64,6 +68,7 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 | `admin_storage.py` | `/api/admin/storage` | Providers, connect/disconnect, files, backup |
 | `admin_misc.py` | `/api/admin` | meta, stats, analytics, logs, and other misc |
 | `admin_mcp.py` | `/api/admin/mcp` | Custom MCP servers: `/servers` (CRUD), `/servers/{delete,toggle,test,refresh,call}`, `/tools`. Header values are stored, never returned |
+| `admin_routing.py` | `/api/admin` | Routing brain + catalogue surface: `/routing` (GET/POST settings), `/routing/availability[/clear]`, `/catalog` (+`/{key}`, `?q=` search), `/skills`, `/mcp/scopes` |
 | `agent_api.py` | `/api/agent` | Task create/list/get/cancel + tools list |
 | `_common.py` | (helpers) | `json_body`, `as_str`, `as_num`, `parse_int`, `epoch_ms`, `mask_key`, `not_found`, `invalid_id` |
 
@@ -86,6 +91,8 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 
 **Agent task:** `POST /api/agent/tasks` → BackgroundTasks → `nova/agent.py` loop → steps streamed/persisted → summary.
 
+**Gateway request:** `POST /v1/chat/completions` → `route_request()` (`routers/gateway.py`) loads `RouterSettings` from `SystemConfig` → `nova.routing.build_plan()` (policy verdict → exposure lists → tag routing → lockouts → selection strategy) → ordered `Model` rows → each attempt feeds `note_attempt()` back into the `LockoutRegistry` → the `_nova.routing` block reports the strategy, the ordering and every dropped candidate.
+
 ## Extension points (where to add things)
 
 - **New admin JSON endpoint** → `routers/admin_<domain>.py`; mount prefix in `main.py` (admin_router section). Reuse `_common.py` helpers.
@@ -93,5 +100,6 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 - **New dashboard tab** → `ui/tabs/<key>.py` (export `router`, `GET /partials/tab/<key>`), register in `ui/tabs/__init__.py`, template `templates/tabs/<key>.html`, partials in `templates/partials/`.
 - **New DB entity** → class in `nova/models.py` (bootstrap creates missing tables additively); KV-only values can just use `nova/kv.py` SystemConfig helpers instead.
 - **New free provider/model source** → `engine/free-models.json` + `nova/freemodels.py`.
+- **New routing behaviour** → `nova/routing.py` (pure, unit-tested) plus the `SystemConfig` knobs in `nova/router_settings.py`; never inline a decision in `routers/gateway.py`. A new catalogue source goes in `nova/data/` behind a `nova/catalog.py` accessor.
 - **New agent tool** → action in `nova/agent.py` `ALLOWED_ACTIONS` + executor branch + tools list in `routers/agent_api.py`.
 - **New plugin/MCP server** → a row in `McpServer` (additive table) via `nova/mcp_registry.py`; nothing else needs touching — the console drawer and the agent catalogue read the same registry.

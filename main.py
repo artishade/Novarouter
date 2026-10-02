@@ -233,6 +233,7 @@ from routers import (  # noqa: E402
     admin_models,
     admin_providers,
     admin_routes,
+    admin_routing,
     admin_storage,
     admin_terminal,
     agent_api,
@@ -245,6 +246,7 @@ admin_router.include_router(admin_providers.router, prefix="/providers", tags=["
 admin_router.include_router(admin_models.router, prefix="/models", tags=["models"])
 admin_router.include_router(admin_keys.router, prefix="/keys", tags=["keys"])
 admin_router.include_router(admin_routes.router, prefix="/routes", tags=["routes"])
+admin_router.include_router(admin_routing.router, tags=["routing"])
 admin_router.include_router(admin_client_keys.router, prefix="/client-keys", tags=["client-keys"])
 admin_router.include_router(admin_terminal.router, prefix="/terminal", tags=["terminal"])
 admin_router.include_router(admin_compute.router, prefix="/compute", tags=["compute"])

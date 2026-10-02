@@ -8,10 +8,17 @@ Endpoints (requirement #3):
   POST /v1/messages/count_tokens  Claude Code pre-flight token count
   POST /v1/embeddings           embeddings via upstream providers
 
-Routing pipeline (parity with the previous TypeScript implementation):
+Routing pipeline:
   Stage 1     — direct upstream (requested model, enabled key)
-  Stage 2..N  — explicit fallback chain (ModelRoute publicId match, else '*')
+  Stage 2..N  — fallback chain: the ModelRoute `fallbacks` list first (publicId
+                match, else '*'), then any richer declarative chains registered
+                in `routing_fallback_chains`
   Final stage — NovaFree engine (free-ai-models catalogue, no key required)
+
+The order of those stages is produced by `nova.routing` (the OmniRoute domain
+layer, ported): policy engine → exposure lists → tag routing → per-(provider,
+model) lockouts → selection strategy. Every exclusion is recorded so `_nova`
+can explain why a request did not use the provider the operator expected.
 
 The response `model` field is ALWAYS the requested id (identity spoofing);
 `_nova` metadata exposes what actually served the request. Every request is
@@ -32,10 +39,13 @@ from typing import Any, AsyncIterator
 import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from nova import engine as nova_engine
+from nova import catalog as nova_catalog
+from nova import routing as nova_routing
+from nova import router_settings
 from nova.discovery import aggregate_discovery, discover_provider_models
 from nova.models import ClientKey, Model as ModelRow, ModelRoute, Provider, RequestLog
 from nova.provider_transport import anthropic_headers, anthropic_to_openai, anthropic_url, openai_to_anthropic
@@ -67,6 +77,9 @@ NONSTREAM_CLIENT = httpx.AsyncClient(
 # Provider-key cache — avoids a DB roundtrip per upstream attempt.
 _KEY_CACHE: dict[int, tuple[float, dict | None]] = {}
 _KEY_CACHE_TTL = 30.0
+
+# Lockouts are flushed to SystemConfig at most once a minute.
+_LOCKOUT_FLUSH_TS = 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -313,8 +326,9 @@ def write_log(db: Session, **p) -> None:
         db.rollback()
 
 
-def nova_meta(upstream_model: str, provider_name: str, stage: int, requested: str, fallback: bool) -> dict:
-    return {
+def nova_meta(upstream_model: str, provider_name: str, stage: int, requested: str,
+              fallback: bool, routing_block: dict | None = None) -> dict:
+    meta = {
         "upstream_model": upstream_model,
         "provider": provider_name,
         "fallback": fallback,
@@ -323,6 +337,9 @@ def nova_meta(upstream_model: str, provider_name: str, stage: int, requested: st
         "spoofed": requested != upstream_model,
         "stage": stage,
     }
+    if routing_block:
+        meta["routing"] = routing_block
+    return meta
 
 
 def build_headers() -> dict:
@@ -543,8 +560,79 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
 # --------------------------------------------------------------------------- #
 
 def resolve_pipeline(db: Session, requested: str) -> list[ModelRow]:
-    """Stage 1 row (direct) + stage 2..N rows (fallback chain)."""
-    chain_ids = [f for f in resolve_chain(db, requested) if f != requested]
+    """Stage 1 row (direct) + stage 2..N rows, already ordered by the router.
+
+    Kept as a list-returning wrapper so the Anthropic adapter and the legacy
+    completions path keep working unchanged; both just need the order.
+    """
+    rows, _plan = route_request(db, requested)
+    return rows
+
+
+# --------------------------------------------------------------------------- #
+# Routing — nova.routing wired to the database
+# --------------------------------------------------------------------------- #
+
+def _provider_tags(db: Session) -> dict[str, list[str]]:
+    """Per-provider routing tags, stored as `provider_tags` in SystemConfig.
+
+    Kept in config rather than a new column so the schema stays exactly as
+    documented in `nova/models.py`; an unset key simply means "no tags".
+    """
+    from nova.kv import get_config_json
+
+    raw = get_config_json(db, "provider_tags", {}) or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): nova_routing.normalize_tags(v) for k, v in raw.items()}
+
+
+def _usage_counts(db: Session) -> dict[str, int]:
+    """Requests served per provider name. Only loaded for the `least-used` strategy."""
+    rows = db.execute(
+        select(RequestLog.providerName, func.count())
+        .where(RequestLog.providerName != "")
+        .group_by(RequestLog.providerName)
+    ).all()
+    return {str(name): int(count) for name, count in rows}
+
+
+def _candidate(row: ModelRow, stage: int, requested: str,
+               tags: dict[str, list[str]], counts: dict[str, int]) -> dict:
+    """Flatten a Model row into the plain dict `nova.routing` scores."""
+    provider = row.provider
+    return {
+        "row": row,
+        "exposed_id": row.exposedId,
+        "model_id": row.modelId,
+        "provider_key": provider.key if provider else "",
+        "provider_name": provider.name if provider else "",
+        "provider_priority": provider.priority if provider else 100,
+        "stage": stage,
+        "chain_depth": stage,
+        "requested": requested,
+        "tags": tags.get(provider.key, []) if provider else [],
+        "status": row.status or "unknown",
+        "latency_ms": int(row.latencyMs or 0),
+        "cost_per_1m": max(float(row.priceIn or 0.0), float(row.priceOut or 0.0)) * 1_000_000,
+        "req_count": counts.get(provider.name, 0) if provider else 0,
+    }
+
+
+def _pipeline_rows(db: Session, requested: str,
+                   settings: router_settings.RouterSettings) -> list[ModelRow]:
+    """Direct row, then ModelRoute fallbacks, then declarative routing chains."""
+    seen: set[str] = {requested}
+    chain_ids: list[str] = []
+    for cid in resolve_chain(db, requested):
+        if cid and cid not in seen:
+            seen.add(cid)
+            chain_ids.append(cid)
+    for entry in nova_routing.resolve_chain(settings.chains, requested, exclude=seen):
+        if entry["id"] not in seen:
+            seen.add(entry["id"])
+            chain_ids.append(entry["id"])
+
     rows: list[ModelRow] = []
     direct = find_model(db, requested)
     if direct is not None:
@@ -556,17 +644,97 @@ def resolve_pipeline(db: Session, requested: str) -> list[ModelRow]:
     return rows
 
 
+def route_request(db: Session, requested: str, body: dict | None = None) -> tuple[list[ModelRow], dict]:
+    """Order the candidate pool for one request and explain the decision.
+
+    Returns `(rows, plan)`. `plan` carries the strategy that ran, the policy
+    verdict, and one entry per dropped candidate so the dashboard can answer
+    "why didn't it use X?" without re-deriving anything.
+    """
+    settings = router_settings.load(db)
+    rows = _pipeline_rows(db, requested, settings)
+    tags = _provider_tags(db)
+    counts = _usage_counts(db) if settings.strategy == "least-used" else {}
+
+    candidates = [
+        _candidate(row, stage, requested, tags, counts)
+        for stage, row in enumerate(rows, start=1)
+    ]
+    request_tags, tag_mode = nova_routing.request_tags(body or {})
+
+    plan = nova_routing.build_plan(
+        candidates,
+        requested=requested,
+        strategy=settings.strategy,
+        weights=settings.weights,
+        policies=settings.policies,
+        chains=settings.chains,
+        denylist=settings.denylist,
+        allowlist=settings.allowlist,
+        lockouts=nova_routing.LOCKOUTS,
+        request_tags_=request_tags,
+        tag_mode=tag_mode,
+        last_known_good=settings.last_known_good,
+        sla=settings.sla,
+    )
+
+    if not plan["allowed"]:
+        raise HTTPError(403, plan["verdict"].get("reason") or "Blocked by a routing policy")
+
+    plan["rows"] = [c["row"] for c in plan["candidates"]]
+    plan["considered"] = len(candidates)
+    return plan["rows"], plan
+
+
+def routing_summary(plan: dict) -> dict:
+    """The `_nova.routing` block: what ran, what it skipped, and why."""
+    return {
+        "strategy": plan.get("strategy", "priority"),
+        "considered": plan.get("considered", 0),
+        "ordered": [c.get("exposed_id", "") for c in plan.get("candidates", [])],
+        "excluded": plan.get("excluded", {}),
+        "steps": plan.get("steps", [])[:8],
+        "policies": (plan.get("verdict") or {}).get("applied", []),
+    }
+
+
+def note_attempt(row: ModelRow, ok: bool, reason: str = "") -> None:
+    """Feed one upstream attempt back into the lockout registry.
+
+    Repeated failures on the same (provider, model) back the candidate off for
+    a while instead of burning a key on every request; a single success clears
+    the record so a recovered provider rejoins the pool immediately.
+    """
+    provider = row.provider
+    if not provider:
+        return
+    if ok:
+        nova_routing.LOCKOUTS.record_success(provider.key, row.modelId)
+    else:
+        nova_routing.LOCKOUTS.record_failure(provider.key, row.modelId, reason or "upstream attempt failed")
+
+
+def persist_lockouts(db: Session, force: bool = False) -> None:
+    """Flush lockout state to SystemConfig, throttled to once a minute."""
+    now = time.time()
+    if not force and now - _LOCKOUT_FLUSH_TS < 60.0:
+        return
+    _LOCKOUT_FLUSH_TS = now
+    router_settings.save_lockouts(db, nova_routing.LOCKOUTS)
+
+
 async def pipeline_nonstream(db: Session, requested: str, messages: list[dict], temperature: float | None, original_body: dict | None = None):
-    """Returns (result_dict, stage) or (None, final_stage)."""
+    """Returns (result_dict, stage, plan) — walking the router's ordering."""
     started = now_ms()
-    rows = resolve_pipeline(db, requested)
+    rows, plan = route_request(db, requested, original_body)
     stage = 0
     for row in rows:
         stage += 1
         result = await attempt_upstream(row, messages, temperature, original_body)
+        note_attempt(row, result is not None)
         if result is not None:
             result["stage"] = stage
-            return result, stage
+            return result, stage, plan
 
     # Final stage: NovaFree engine (free-ai-models base, non-streaming)
     stage = len(rows) + 1
@@ -602,7 +770,7 @@ async def pipeline_nonstream(db: Session, requested: str, messages: list[dict], 
             "via": "nova-engine",
             "usage": {"prompt_tokens": None, "completion_tokens": None},
             "stage": stage,
-        }, stage
+        }, stage, plan
     except nova_engine.EngineUnavailable as err:
         raise HTTPError(502, f"All routing stages failed: {err}") from err
 
@@ -642,6 +810,11 @@ async def list_models(request: Request, discover: str = "", provider: str = "", 
         for m in rows:
             if not m.provider.enabled:
                 continue
+            # Exposure allow/deny globs gate advertisement here AND dispatch in
+            # nova.routing — one predicate, both chokepoints, so a hidden model
+            # can never sneak into a fallback chain either.
+            if not nova_routing.is_exposure_allowed(m.exposedId, m.provider.key):
+                continue
             try:
                 capabilities = json.loads(m.capabilities)
                 if not isinstance(capabilities, dict):
@@ -657,7 +830,11 @@ async def list_models(request: Request, discover: str = "", provider: str = "", 
                 "is_free": m.isFree,
                 "status": m.status,
             })
-        return JSONResponse({"object": "list", "data": data})
+        return JSONResponse({
+            "object": "list",
+            "data": data,
+            "_nova": {"catalog": nova_catalog.source()},
+        })
 
 
 # --------------------------------------------------------------------------- #
@@ -697,13 +874,14 @@ async def chat_completions(request: Request):
 
     with SessionLocal() as db:
         try:
-            result, stage = await pipeline_nonstream(db, requested, messages, temperature, body)
+            result, stage, plan = await pipeline_nonstream(db, requested, messages, temperature, body)
         except HTTPError as err:
             write_log(db, model=requested, upstream_model="nova-engine",
                       provider_name="NovaFree Engine", endpoint="/v1/chat/completions",
                       status=err.status, latency_ms=now_ms() - started, via="nova-engine",
                       error=err.message)
             return JSONResponse({"error": err.message}, status_code=err.status)
+        persist_lockouts(db)
 
         completion_text = strip_think_blocks(result.get("content") or "") or ""
         prompt_tokens = result["usage"]["prompt_tokens"] or tokens_in
@@ -711,7 +889,7 @@ async def chat_completions(request: Request):
         usage = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                  "total_tokens": prompt_tokens + completion_tokens}
         meta = nova_meta(result["upstream_model"], result["provider_name"], result["stage"], requested,
-                         result["stage"] > 1)
+                         result["stage"] > 1, routing_summary(plan))
         write_log(db, model=requested, upstream_model=result["upstream_model"],
                   provider_name=result["provider_name"], status=200,
                   latency_ms=now_ms() - started, tokens_in=prompt_tokens,
@@ -755,13 +933,20 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
     served = {"upstream_model": "nova-engine", "provider_name": "NovaFree Engine", "via": "nova-engine", "stage": 0}
     think_filter = ThinkStreamFilter()
     try:
-        rows = resolve_pipeline(db, requested)
+        try:
+            rows, plan = route_request(db, requested, original_body)
+        except HTTPError as err:
+            yield sse_chunk({"error": {"message": err.message, "type": "gateway_error",
+                                       "code": err.status}})
+            yield b"data: [DONE]\n\n"
+            return
         stage = 0
         for row in rows:
             stage += 1
             try:
                 stream, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature, original_body)
             except UpstreamFailure as err:
+                note_attempt(row, False, err.detail)
                 log.info("stream stage %s failed: %s", stage, err)
                 continue
 
@@ -780,6 +965,7 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
                 continue
 
             committed = True
+            note_attempt(row, True)
             served = {"upstream_model": upstream_model, "provider_name": provider_name,
                       "via": "upstream", "stage": stage}
             # Track tool_calls for streaming passthrough
@@ -882,6 +1068,7 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
                 yield b"data: [DONE]\n\n"
     finally:
         content = "".join(assembled)
+        persist_lockouts(db)
         if committed or assembled:
             write_log(db, model=requested, upstream_model=served["upstream_model"],
                       provider_name=served["provider_name"], status=200,
@@ -935,7 +1122,7 @@ async def legacy_completions(request: Request):
         for i, p in enumerate(prompts):
             messages = normalize_messages([{"role": "user", "content": p}])
             try:
-                result, stage = await pipeline_nonstream(db, requested, messages, temperature)
+                result, stage, plan = await pipeline_nonstream(db, requested, messages, temperature)
             except HTTPError as err:
                 write_log(db, model=requested, upstream_model="nova-engine",
                           provider_name="NovaFree Engine", endpoint="/v1/completions",
@@ -954,6 +1141,7 @@ async def legacy_completions(request: Request):
                   status=200, latency_ms=now_ms() - started, tokens_in=total_in,
                   tokens_out=total_out, via=served["via"],
                   spoofed=requested != served["upstream_model"])
+        persist_lockouts(db)
 
     return JSONResponse({
         "id": f"cmpl-{uuid.uuid4().hex[:24]}",
@@ -963,7 +1151,8 @@ async def legacy_completions(request: Request):
         "choices": choices,
         "usage": {"prompt_tokens": total_in, "completion_tokens": total_out,
                   "total_tokens": total_in + total_out},
-        "_nova": nova_meta(served["upstream_model"], served["provider_name"], served["stage"], requested, served["stage"] > 1),
+        "_nova": nova_meta(served["upstream_model"], served["provider_name"], served["stage"], requested,
+                           served["stage"] > 1, routing_summary(plan)),
     })
 
 

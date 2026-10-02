@@ -17,6 +17,9 @@
     {{ 'No providers yet — add your first upstream.' if rows | length == 0 else 'No providers match your search.' }}
   </div>
 {% else %}
+  {% if visible_total and visible_total > (visible | length) %}
+  <p class="font-mono text-[11px] text-slate-500">{{ visible | length }} of {{ visible_total }} providers — search to narrow the list</p>
+  {% endif %}
   <div class="nova-scroll max-h-[calc(100vh-330px)] space-y-4 overflow-y-auto pr-1">
     {% for p in visible %}
     <div class="overflow-hidden rounded-xl border border-slate-800 bg-[#0d1322]/80" style="border-left: 3px solid {{ p.color or '#10b981' }}">

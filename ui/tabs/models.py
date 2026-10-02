@@ -36,6 +36,10 @@ STATUS_STYLES: dict[str, dict[str, str]] = {
 }
 
 HEALTH_PAGE_SIZE = 200
+# The OmniRoute catalogue brings thousands of models, so the tab renders a
+# bounded first page and the header says "N of M". Narrow it down with the
+# search box or the provider filter to reach anything past the page.
+LIST_PAGE_SIZE = 250
 
 # --------------------------------------------------------------------------- #
 # Small helpers
@@ -84,6 +88,7 @@ def _api_params(f: dict) -> dict:
         params["capability"] = f["capability"]
     if f["free"]:
         params["free"] = "true"
+    params["limit"] = LIST_PAGE_SIZE
     return params
 
 

@@ -382,8 +382,11 @@ class StandaloneConsoleTests(unittest.TestCase):
         res = self.client.get("/")
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.headers["content-type"].startswith("text/html"))
-        self.assertIn("AGENTBOX", res.text)
-        self.assertIn("/static/console.js", res.text)
+        # The chrome a terminal host has to offer on its own: session strip,
+        # the draggable bar, zoom, expand, and the client that drives them.
+        for needle in ('id="tabs"', 'id="split"', 'id="zoomIn"', 'id="expand"',
+                       'class="mobile-switch"', "/static/console.js"):
+            self.assertIn(needle, res.text, needle)
 
     def test_the_agent_url_is_the_same_console(self):
         # `/agent` is where the docs send people; it must not 404 either.

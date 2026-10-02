@@ -30,7 +30,15 @@
     provider: '',
     pending: null,
     max: 8,
+    font: 13,          // terminal text size, adjustable
+    split: 380,        // chat pane width in px (desktop) / height (phone)
+    stacked: false,    // phone layout: the splitter moves rows, not columns
+    expanded: '',
   };
+
+  const ZOOM = { min: 9, max: 24, step: 1 };
+  const SPLIT = { min: 260, gutter: 6 };
+  const PHONE = 860;    // the same breakpoint the stylesheet stacks at
 
   // ---- tiny DOM helper -----------------------------------------------------
 
@@ -40,6 +48,8 @@
   function say(who, text, cls) {
     const box = $('log');
     if (!box) return null;
+    const empty = document.querySelector ? document.querySelector('#log .empty') : null;
+    if (empty && empty.parentNode) empty.parentNode.removeChild(empty);
     const el = document.createElement('div');
     el.className = 'msg ' + (cls || '');
     const label = document.createElement('span');
@@ -50,6 +60,233 @@
     box.appendChild(el);
     box.scrollTop = box.scrollHeight;
     return el;
+  }
+
+  function showEmpty() {
+    const box = $('log');
+    if (!box || box.children.length) return;
+    const el = document.createElement('div');
+    el.className = 'empty';
+    const strong = document.createElement('strong');
+    strong.textContent = 'Agentbox';
+    el.appendChild(strong);
+    el.appendChild(document.createTextNode(
+      state.providers.length
+        ? 'Ask for a task. Every command it runs appears in a terminal tab.'
+        : 'No provider yet — set NOVA_AGENTBOX_BASE_URL, or add one under providers.'));
+    box.appendChild(el);
+  }
+
+  // ---- settings that survive a reload -------------------------------------
+
+  function readSetting(key, fallback) {
+    try {
+      const raw = (global.localStorage && global.localStorage.getItem('nova_' + key)) || '';
+      return raw === '' ? fallback : JSON.parse(raw);
+    } catch (e) { return fallback; }
+  }
+
+  function writeSetting(key, value) {
+    try {
+      if (global.localStorage) global.localStorage.setItem('nova_' + key, JSON.stringify(value));
+    } catch (e) { /* private mode: the setting just will not persist */ }
+  }
+
+  // ---- text size ------------------------------------------------------------
+
+  function isStacked() {
+    if (global.matchMedia) return global.matchMedia(`(max-width: ${PHONE}px)`).matches;
+    return state.stacked;
+  }
+
+  function applyFont() {
+    state.font = Math.max(ZOOM.min, Math.min(ZOOM.max, Math.round(state.font)));
+    if (screen.term && screen.term.options) screen.term.options.fontSize = state.font;
+    if (screen.plain) screen.plain.style.fontSize = state.font + 'px';
+    const read = $('zoomRead');
+    if (read) read.textContent = state.font + 'px';
+    writeSetting('font', state.font);
+    screen.fit();          // a bigger font means fewer columns: refit and tell the shell
+    postResize();
+  }
+
+  function zoom(delta) {
+    state.font += delta;
+    applyFont();
+  }
+
+  // ---- the draggable bar ----------------------------------------------------
+
+  function viewport() {
+    const doc = global.document || {};
+    return Math.max(320, (doc.documentElement && doc.documentElement.clientWidth) || 1024);
+  }
+
+  /** Pure: how wide the chat pane should be, given a pointer position. */
+  function splitFromPointer(at) {
+    const stacked = isStacked();
+    const total = stacked ? viewportH() : viewport();
+    // Stacked: the bar is horizontal, so the pane is measured from the bottom.
+    const raw = stacked ? total - at.clientY : total - at.clientX;
+    const min = stacked ? 140 : SPLIT.min;
+    const max = stacked ? total - 140 : total - 200;
+    return Math.max(min, Math.min(max, Math.round(raw - SPLIT.gutter / 2)));
+  }
+
+  function viewportH() {
+    const doc = global.document || {};
+    return Math.max(320, (doc.documentElement && doc.documentElement.clientHeight) || 720);
+  }
+
+  function applySplit() {
+    const doc = global.document || {};
+    const root = (doc.documentElement && doc.documentElement.style) || null;
+    if (!root) return;
+    if (isStacked()) root.setProperty('--agent-rows', state.split + 'px');
+    else root.setProperty('--split', state.split + 'px');
+    const bar = $('split');
+    if (bar) {
+      bar.setAttribute('aria-valuenow', String(state.split));
+      bar.setAttribute('aria-orientation', isStacked() ? 'horizontal' : 'vertical');
+    }
+    writeSetting('split', state.split);
+    screen.fit();
+    postResize();
+  }
+
+  function setSplit(px) {
+    state.split = px;
+    applySplit();
+  }
+
+  function startDrag(event) {
+    const bar = $('split');
+    if (!bar) return;
+    const point = (e) => (e && ((e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e));
+    const start = point(event) || {};
+    let moved = false;
+    bar.classList.add('dragging');
+    if (start.pointerId != null && bar.setPointerCapture) {
+      try { bar.setPointerCapture(start.pointerId); } catch (e) { /* older Safari */ }
+    }
+
+    const move = (e) => {
+      const at = point(e);
+      if (!at) return;
+      const along = isStacked() ? at.clientY - start.clientY : at.clientX - start.clientX;
+      if (Math.abs(along) > 3) moved = true;
+      if (moved && e && e.preventDefault && e.cancelable !== false) e.preventDefault();
+      setSplit(splitFromPointer(at));
+    };
+    const up = () => {
+      bar.classList.remove('dragging');
+      if (global.removeEventListener) {
+        global.removeEventListener('mousemove', move);
+        global.removeEventListener('mouseup', up);
+        global.removeEventListener('touchmove', move);
+        global.removeEventListener('touchend', up);
+      }
+      if (!moved) togglePane('agent');   // a click, not a drag: collapse it
+    };
+    if (global.addEventListener) {
+      global.addEventListener('mousemove', move);
+      global.addEventListener('mouseup', up);
+      global.addEventListener('touchmove', move, { passive: false });
+      global.addEventListener('touchend', up);
+    }
+  }
+
+  function nudgeSplit(step) {
+    setSplit(Math.max(isStacked() ? 140 : SPLIT.min, state.split + step));
+  }
+
+  // ---- panels ---------------------------------------------------------------
+
+  function body() {
+    return (global.document && global.document.body) || null;
+  }
+
+  function collapsedClass(which) {
+    return which === 'agent' ? 'agent-collapsed' : 'term-collapsed';
+  }
+
+  /** The one place a pane's visibility changes — so the phone switch, the
+      chrome buttons and the drag bar can never disagree. */
+  function setCollapsed(which, on) {
+    const el = body();
+    if (!el) return;
+    const key = collapsedClass(which);
+    el.classList.toggle(key, !!on);
+    writeSetting(key, !!on);
+  }
+
+  function isCollapsed(which) {
+    const el = body();
+    return !!el && el.classList.contains(collapsedClass(which));
+  }
+
+  function markMobile(pane) {
+    const box = $('mobileSwitch');
+    if (!box) return;
+    Array.prototype.forEach.call(box.children, (btn) => {
+      const on = !!pane && btn.dataset && btn.dataset.pane === pane;
+      btn.classList.toggle('on', on);
+      btn.setAttribute('aria-selected', String(on));
+    });
+  }
+
+  /** `open` is the *visible* state — the inverse of the class name. */
+  function setPane(which, open) {
+    setCollapsed(which, !open);
+    // On a phone one pane is the other pane's absence, so keep the switch honest.
+    if (isStacked()) markMobile(open ? which : null);
+    setTimeout(() => { screen.fit(); postResize(); }, 180);
+  }
+
+  function togglePane(which) {
+    setPane(which, isCollapsed(which));
+  }
+
+  function setExpanded(which) {
+    const el = body();
+    if (!el) return;
+    const next = state.expanded === which ? '' : which;
+    state.expanded = next;
+    el.classList.toggle('expanded', !!next);
+    const tBtn = $('expand');
+    const aBtn = $('expandAgent');
+    if (tBtn) {
+      tBtn.setAttribute('aria-pressed', String(next === 'term'));
+      tBtn.setAttribute('aria-label', next === 'term' ? 'restore the layout' : 'expand the terminal');
+    }
+    if (aBtn) {
+      aBtn.setAttribute('aria-pressed', String(next === 'agent'));
+      aBtn.setAttribute('aria-label', next === 'agent' ? 'restore the layout' : 'expand the chat panel');
+    }
+    writeSetting('expanded', next);
+    setTimeout(() => { screen.fit(); postResize(); }, 180);
+  }
+
+  /** The phone's Terminal / Agent switch. */
+  function showMobile(pane) {
+    markMobile(pane);
+    if (!isStacked()) return;
+    setCollapsed('agent', pane !== 'agent');
+    setCollapsed('term', false);
+    setTimeout(() => { screen.fit(); postResize(); }, 180);
+  }
+
+  function copyScreen() {
+    let text = '';
+    if (screen.term && screen.term.getSelection) text = screen.term.getSelection();
+    if (!text && screen.plain) text = screen.plain.textContent;
+    if (!text) { say('TERMINAL', 'nothing selected to copy', 'err'); return; }
+    const done = () => say('TERMINAL', 'copied the visible screen');
+    if (global.navigator && global.navigator.clipboard && global.navigator.clipboard.writeText) {
+      global.navigator.clipboard.writeText(text).then(done, () => say('TERMINAL', 'the browser refused the clipboard', 'err'));
+    } else {
+      say('TERMINAL', 'this browser has no clipboard access', 'err');
+    }
   }
 
   // ---- transport -----------------------------------------------------------
@@ -217,25 +454,30 @@
     state.sessions.forEach((s) => {
       const tab = document.createElement('button');
       tab.type = 'button';
-      tab.className = 'tab' + (s.id === state.active ? ' active' : '');
+      tab.className = 'tab' + (s.id === state.active ? ' on' : '');
       tab.setAttribute('role', 'tab');
       tab.setAttribute('aria-selected', String(s.id === state.active));
+      tab.setAttribute('aria-label', 'session ' + (s.label || s.id));
 
-      const name = document.createElement('span');
-      name.textContent = s.label || s.id;
-      tab.appendChild(name);
+      const lbl = document.createElement('span');
+      lbl.className = 'lbl';
+      lbl.textContent = s.label || s.id;
+      tab.appendChild(lbl);
 
-      const cwd = document.createElement('em');
-      cwd.textContent = s.cwd || '';
-      tab.appendChild(cwd);
+      if (s.cwd) {
+        const cwd = document.createElement('span');
+        cwd.className = 'cwd';
+        cwd.textContent = s.cwd;
+        tab.appendChild(cwd);
+      }
 
-      const close = document.createElement('span');
-      close.className = 'x';
-      close.textContent = '×';
-      close.setAttribute('role', 'button');
-      close.setAttribute('aria-label', 'close ' + (s.label || s.id));
-      close.onclick = (e) => { e.stopPropagation(); closeSession(s.id); };
-      tab.appendChild(close);
+      const kill = document.createElement('span');
+      kill.className = 'kill';
+      kill.textContent = '×';
+      kill.setAttribute('role', 'button');
+      kill.setAttribute('aria-label', 'close ' + (s.label || s.id));
+      kill.onclick = (e) => { e.stopPropagation(); closeSession(s.id); };
+      tab.appendChild(kill);
 
       tab.onclick = () => {
         api(`${API}/activate`, { method: 'POST', body: JSON.stringify({ session: s.id }) }).catch(() => {});
@@ -244,8 +486,25 @@
       tab.ondblclick = () => renameSession(s);
       box.appendChild(tab);
     });
-    const count = $('count');
-    if (count) count.textContent = `${state.sessions.length}/${state.max || 8}`;
+
+    const sep = document.createElement('span');
+    sep.className = 'sep';
+    box.appendChild(sep);
+
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'icon';
+    add.setAttribute('aria-label', 'new session');
+    add.textContent = '+';
+    add.onclick = newSession;
+    box.appendChild(add);
+
+    const count = document.createElement('span');
+    count.className = 'cwd';
+    count.id = 'count';
+    count.style.padding = '0 8px';
+    count.textContent = `${state.sessions.length}/${state.max || 8}`;
+    box.appendChild(count);
   }
 
   function select(id) {
@@ -416,7 +675,46 @@
   // ---- wiring --------------------------------------------------------------
 
   function wire() {
+    // panel chrome
     on($('new'), 'click', newSession);
+    on($('rename'), 'click', () => {
+      const here = state.sessions.find((s) => s.id === state.active);
+      if (here) renameSession(here);
+    });
+    on($('copy'), 'click', copyScreen);
+    on($('menu'), 'click', () => {
+      const here = state.sessions.find((s) => s.id === state.active);
+      say('TERMINAL', [
+        `session: ${here ? (here.label || here.id) : 'none'}`,
+        `text size: ${state.font}px`,
+        'drag or click the bar to resize the chat pane',
+        'ctrl/cmd + - and + change the text size',
+      ].join('\n'), 'tool');
+    });
+    on($('expand'), 'click', () => setExpanded('term'));
+    on($('closePanel'), 'click', () => togglePane('term'));
+    on($('zoomIn'), 'click', () => zoom(1));
+    on($('zoomOut'), 'click', () => zoom(-1));
+    on($('zoomReset'), 'click', () => { state.font = 13; applyFont(); });
+
+    // the draggable bar
+    on($('split'), 'mousedown', startDrag);
+    on($('split'), 'touchstart', startDrag, { passive: false });
+    on($('split'), 'keydown', (e) => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { nudgeSplit(-24); e.preventDefault(); }
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { nudgeSplit(24); e.preventDefault(); }
+      if (e.key === 'Enter' || e.key === ' ') { togglePane('agent'); e.preventDefault(); }
+    });
+
+    // agent
+    on($('newChat'), 'click', () => {
+      state.history = [];
+      const log = $('log');
+      if (log) log.textContent = '';
+      showEmpty();
+    });
+    on($('expandAgent'), 'click', () => setExpanded('agent'));
+    on($('closeAgent'), 'click', () => togglePane('agent'));
     on($('manage'), 'click', () => {
       const box = $('providerBox');
       box.hidden = !box.hidden;
@@ -435,14 +733,42 @@
     on($('input'), 'keydown', (e) => {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $('composer').requestSubmit();
     });
-    on($('clear'), 'click', () => screen.clear());
-    on(global, 'resize', () => { screen.fit(); postResize(); });
+
+    const box = $('mobileSwitch');
+    if (box) {
+      Array.prototype.forEach.call(box.children, (btn) => {
+        on(btn, 'click', () => showMobile(btn.dataset.pane));
+      });
+    }
+
+    // keyboard: the same shortcuts an editor gives you
+    on(global, 'keydown', (e) => {
+      const acc = e.ctrlKey || e.metaKey;
+      if (!acc) return;
+      if (e.key === '=' || e.key === '+') { zoom(1); e.preventDefault(); }
+      else if (e.key === '-' || e.key === '_') { zoom(-1); e.preventDefault(); }
+      else if (e.key === '0') { state.font = 13; applyFont(); e.preventDefault(); }
+    });
+    on(global, 'resize', () => { state.stacked = isStacked(); screen.fit(); applySplit(); });
+  }
+
+  function restoreSettings() {
+    rememberToken();
+    state.font = readSetting('font', 13);
+    state.split = readSetting('split', 380);
+    applyFont();
+    state.stacked = isStacked();
+    applySplit();
+    if (readSetting('agent-collapsed', false)) setCollapsed('agent', true);
+    if (readSetting('term-collapsed', false)) setCollapsed('term', true);
+    setExpanded(readSetting('expanded', ''));
   }
 
   async function boot() {
-    rememberToken();
+    restoreSettings();
     wire();
     buildTerminal();
+    showEmpty();
     try {
       await loadSessions();
       if (!state.sessions.length) await newSession();
@@ -458,6 +784,9 @@
     loadSessions, renderTabs, select, attach, onChunk,
     newSession, closeSession, renameSession, send, postResize, buildTerminal,
     loadProviders, renderProviders, saveProvider, ask, boot, say,
+    applyFont, zoom, applySplit, setSplit, splitFromPointer, startDrag, nudgeSplit,
+    togglePane, setPane, setCollapsed, isCollapsed, markMobile, setExpanded, showMobile,
+    copyScreen, restoreSettings, showEmpty, readSetting, wire,
   };
 
   global.NovaTerminalConsole = NovaTerminalConsole;

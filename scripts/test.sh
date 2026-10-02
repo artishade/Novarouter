@@ -15,7 +15,7 @@ echo "[novarouter] test: installing python dependencies"
   || "$PY" -m pip install --no-cache-dir --disable-pip-version-check --quiet --user -r requirements.txt
 
 echo "[novarouter] test: byte-compiling"
-"$PY" -m compileall -q main.py maintenance.py nova routers ui && echo "lint ok"
+"$PY" -m compileall -q main.py maintenance.py nova routers ui terminal && echo "lint ok"
 
 echo "[novarouter] test: python suite"
 "$PY" -m unittest discover -s tests -p "test_*.py" -v

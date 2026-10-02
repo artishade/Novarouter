@@ -109,6 +109,7 @@ python3 main.py             # http://localhost:3000 — UI + API in one process
 | --- | --- |
 | `bun run install:py` | Install `requirements.txt` (the only dependency step the project needs) |
 | `bun run preview` | Install dependencies if needed, then start the server on `0.0.0.0:$PORT` |
+| `bun run terminal` | Start the terminal **as its own service** on `0.0.0.0:$NOVA_TERMINAL_PORT` (see below) |
 | `bun run test` | Byte-compile, then the Python suite (`tests/test_*.py`) and the dashboard JS suite |
 | `bun run dev` / `bun run start` | Start the server and tee the log to `dev.log` / `server.log` |
 | `bun run lint` | `compileall` syntax check |
@@ -349,16 +350,87 @@ curl -s -XPOST localhost:3000/api/build/providers \
 
 ---
 
+## 🏗️ Hosting the terminal separately
+
+The terminal is the one part of NovaRouter that often wants its own machine:
+it hands out **real root shells**, so it can be sized, restarted and
+network-isolated independently of the gateway.
+
+**The whole terminal is one directory: `terminal/`.** Nothing terminal-related
+lives anywhere else in the project, and the rest of the app reaches it only
+through `terminal.*` imports (`from terminal import link`, `from terminal.api
+import router`, `from terminal.sandbox import execute_command`). So hosting the
+terminal separately is a deployment decision, not a code change.
+
+**Nothing to do by default.** With `NOVA_TERMINAL_URL` unset the terminal runs
+in-process, exactly as before: one service, no extra configuration.
+
+**To host it on its own**, run the terminal service and point the app at it:
+
+```bash
+# 1. the terminal, on its own host (binds 0.0.0.0:$NOVA_TERMINAL_PORT, default 3100)
+bun run terminal          # → sh ./terminal/run.sh → python3 -m terminal.service
+
+# 2. the project, connected to that terminal
+NOVA_TERMINAL_URL=http://terminal-host:3100 \
+NOVA_TERMINAL_TOKEN=<shared secret> \
+bun run dev
+```
+
+`docker compose up` already runs both that way — a `terminal` service and a
+gateway that forwards to it.
+
+| Variable | Where | What it does |
+| --- | --- | --- |
+| `NOVA_TERMINAL_URL` | gateway | Set it to host the terminal separately. Unset = in-process. |
+| `NOVA_TERMINAL_TOKEN` | **both** | Shared secret for `X-Nova-Terminal-Token`. Gates real root shells — always set it before exposing the terminal beyond loopback. |
+| `NOVA_TERMINAL_PORT` | terminal | The terminal's own port (default `3100`). Never the app's port. |
+| `NOVA_BUILD_ROOT` | terminal | Where shells start (default `/app/build`). Point both hosts at the same shared workspace. |
+
+Read in `terminal/config.py` (the terminal owns its own settings) — see also
+[`terminal/README.md`](terminal/README.md).
+
+**Why the project stays connected.** The gateway and the service mount the
+*same* routes (`terminal/api.py`) — the split changes where the PTYs
+live, not the API. So the dashboard, the JSON API, the agent's shell steps and
+every `curl` above keep working unchanged, including the SSE output stream.
+`terminal/link.py` is the seam: `LocalLink` in-process, `RemoteLink` over
+HTTP, chosen by configuration alone.
+
+```bash
+curl -s localhost:3100/health                    # the terminal service's own health
+curl -s localhost:3000/health | grep -A3 terminal # mode: local | remote
+```
+
+A few behaviours worth knowing:
+
+- **Sessions outlive the gateway.** Restarting or redeploying the app does not
+  kill shells on the terminal host — that is the point of splitting it.
+- **A dead terminal doesn't take the app down.** `/health` reports the terminal
+  as degraded, `/history` still answers with OS stats, and the agent falls back
+  to its one-shot executor rather than failing the task.
+- **The service always owns its shells.** A stray `NOVA_TERMINAL_URL` in its
+  own environment can't make it proxy to itself.
+
+---
+
 ## 🗂️ Project Structure
 
 ```
 main.py            FastAPI entrypoint — 0.0.0.0:$PORT, CORS, /health, API routers, UI
+terminal/          the ENTIRE terminal feature, one path, hostable on its own:
+                   pty (real PTY sessions) · sandbox (allowlist exec) · link
+                   (in-process vs separately hosted) · api (the contract, mounted by
+                   BOTH hosts) · service (the standalone host) · config · run.sh
+                   (the rest of the app imports it as `terminal.*`; nothing terminal
+                   lives outside this directory)
 nova/              config, SQLAlchemy models (Prisma-layout compatible), bootstrap,
-                   engine sidecar client, live discovery, model sync, terminal sandbox,
+                   engine sidecar client, live discovery, model sync, build registry,
                    agent runtime, storage lib, MCP client + plugin registry,
                    routing brain (catalog / routing / router_settings / mcp_tools)
-routers/           gateway (/v1), admin CRUD, admin misc, terminal, compute, storage, agent,
-                   MCP plugin registry, build APIs (permanent cloud terminal config)
+routers/           gateway (/v1), admin CRUD, admin misc, terminal (glue: exec history,
+                   OS telemetry, and the terminal's routes mounted at /pty), compute,
+                   storage, agent, MCP plugin registry, build APIs
 ui/                the Python frontend module — shell + 9 dashboard tabs,
                    server-rendered fragments consumed by HTMX (BFF over the JSON API)
 templates/         Jinja2 templates (base shell, tab fragments, partials)
@@ -367,7 +439,7 @@ engine/            NovaFree engine sidecar (bun/node, zero npm deps) — routes 
                    free-ai-models catalogue (free-models.json): chat stream, search, reader
 db/                SQLite database file (bootstrap at first boot)
 Dockerfile         python:3.12-slim runtime + bun sidecar (UI is pure Python — no node build)
-docker-compose.yml one-command deploy with persistent volume
+docker-compose.yml one-command deploy with persistent volume — gateway + terminal host
 ```
 
 ## 🔒 A note on data

@@ -2,9 +2,10 @@
   "name": "novarouter",
   "version": "2.0.0",
   "private": true,
-  "description": "NovaRouter — AI gateway (FastAPI + Jinja2 UI). `bun run dev` starts the Python server; bun itself hosts only the NovaFree engine sidecar.",
+  "description": "NovaRouter — AI gateway (FastAPI + Jinja2 UI). `bun run dev` starts the Python server; bun itself hosts only the NovaFree engine sidecar. The Root@Build terminal runs in-process by default and can be hosted on its own with `bun run terminal`.",
   "scripts": {
     "preview": "sh ./scripts/preview.sh",
+    "terminal": "sh ./terminal/run.sh",
     "install:py": "python3 -m pip install --no-cache-dir --disable-pip-version-check -r requirements.txt",
     "test": "sh ./scripts/test.sh",
     "test:python": "python3 -m unittest discover -s tests -p 'test_*.py'",
@@ -12,6 +13,6 @@
     "dev:python": "python3 main.py",
     "start": "python3 main.py 2>&1 | tee server.log",
     "db:push": "python3 -c \"from nova.bootstrap import run_bootstrap; run_bootstrap()\"",
-    "lint": "python3 -m compileall -q main.py nova routers ui && echo lint-ok"
+    "lint": "python3 -m compileall -q main.py nova routers ui terminal && echo lint-ok"
   }
 }

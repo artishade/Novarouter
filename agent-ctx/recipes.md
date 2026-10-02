@@ -75,7 +75,7 @@ then `sh scripts/test.sh`.
 
 ## 7. Extend the sandbox terminal (command mode)
 
-1. All in `nova/terminal.py` (simulated executor):
+1. All in `terminal/sandbox.py` (simulated executor):
    - allowlist addition → policy section at the top;
    - realistic output → command implementation from OS telemetry (/proc,
      platform, shutil) + live DB state (models/kv) — no subprocess;
@@ -84,8 +84,8 @@ then `sh scripts/test.sh`.
 2. Remember: dangerous tokens → exit 126, unknown → exit 127, persist
    TerminalCommand (cap 200).
 3. If it must run a REAL process, it belongs in PTY sessions
-   (`nova/pty_session.py`) instead — but never bypass the allowlist in the
-   command executor.
+   (`terminal/pty.py`, reached through `terminal/link.py`) instead — but never
+   bypass the allowlist in the command executor.
 
 ## 8. Storage provider integration
 

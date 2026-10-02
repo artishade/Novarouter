@@ -1,5 +1,8 @@
 """NovaRouter safe sandbox executor — port of src/lib/server/terminal-exec.ts.
 
+Lives in `terminal/` with the rest of the terminal feature (see
+`terminal/__init__.py`); imported as `terminal.sandbox`.
+
 No child processes are ever spawned for shell semantics — every command is
 simulated from real OS telemetry (/proc, shutil, platform, os) plus live DB
 state. The ONLY subprocess ever executed is a `--version` probe of a JS
@@ -27,9 +30,9 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .config import PROJECT_ROOT
-from .kv import get_config, get_config_number, get_gpu_providers, set_config, set_gpu_providers
-from .models import (
+from nova.config import PROJECT_ROOT
+from nova.kv import get_config, get_config_number, get_gpu_providers, set_config, set_gpu_providers
+from nova.models import (
     AgentTask,
     ClientKey,
     ModelRoute,
@@ -69,7 +72,7 @@ def _builder_base() -> pathlib.Path:
     separate from the NovaRouter source tree so agent file writes and shell
     builds can never touch the gateway's own code."""
     try:
-        from .build_registry import build_root
+        from nova.build_registry import build_root
         return pathlib.Path(build_root())
     except Exception:
         return PROJECT_ROOT
@@ -688,7 +691,7 @@ def run_cat(db: Session, args: list[str]) -> dict:
         return _ok(json.dumps(obj, indent=2))
     if f == ".env":
         # Real environment (masked) — not a fabricated sample file.
-        from .config import DATABASE_URL, PORT
+        from nova.config import DATABASE_URL, PORT
 
         token = get_config(db, "admin_token")
         active_row = db.scalars(

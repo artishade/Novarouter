@@ -11,6 +11,10 @@ Owns:
 
 The frontend module is Python: `ui/` renders templates server-side and calls
 this same JSON API (self-BFF), so UI behaviour always matches the gateway.
+
+Terminal: nothing terminal lives in this file. Everything terminal-related is
+under `terminal/`, imported here as `terminal.link` — so the interactive
+terminal can be deployed separately (see `terminal/README.md`).
 """
 from __future__ import annotations
 
@@ -30,6 +34,9 @@ from maintenance import periodic_maintenance
 from nova.bootstrap import run_bootstrap
 from nova.config import CORS_ALLOW_ORIGINS, IS_POSTGRES, PORT, PROJECT_ROOT
 from nova.database import ensure_sqlite_dir, ping
+# The terminal is a separate feature under `terminal/` — in-process by default,
+# or a service of its own when NOVA_TERMINAL_URL points at one.
+from terminal import link as terminal_link
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("nova.main")
@@ -67,8 +74,8 @@ async def lifespan(_app: FastAPI):
     except Exception as err:  # never block boot on registry bookkeeping
         log.warning("build registry warmup skipped: %s", err)
     try:
-        from nova import pty_session
-        pty_session.ensure_default()
+        from terminal import link as terminal_link
+        await terminal_link.current().ensure_default()
     except Exception as err:
         log.warning("default cloud shell warmup skipped: %s", err)
     await nova_engine.start_sidecar()
@@ -82,8 +89,9 @@ async def lifespan(_app: FastAPI):
     except Exception:
         pass
     try:
-        from nova import pty_session
-        pty_session.stop_all()
+        from terminal import link as terminal_link
+        await terminal_link.current().close_all()
+        await terminal_link.current().aclose()
     except Exception:
         pass
     try:
@@ -192,21 +200,44 @@ async def gateway_request_log(request: Request, call_next):
 async def health_payload() -> dict:
     db_ok = await asyncio.to_thread(ping)
     engine_ok = await nova_engine.health_check(timeout=1.0)
+    terminal_ok, terminal_host = await _terminal_health()
     return {
-        "ok": db_ok,
-        "status": "healthy" if db_ok else "degraded",
+        "ok": db_ok and terminal_ok,
+        "status": "healthy" if db_ok and terminal_ok else "degraded",
         "service": "novarouter",
         "runtime": "python",
         "version": "2.0.0",
         "uptime_s": int(time.time() - STARTED_AT),
         "db": "ok" if db_ok else "error",
         "engine": "up" if engine_ok else "down",
+        "terminal": {
+            "ok": terminal_ok,
+            # "local" = this process; "remote" = a separately hosted service.
+            "mode": "remote" if terminal_link.is_remote() else "local",
+            "host": terminal_host,
+        },
         "storage": {
             "driver": "postgres" if IS_POSTGRES else "sqlite",
             "persistent": IS_POSTGRES,
             "warning": None if IS_POSTGRES else EPHEMERAL_DB_WARNING,
         },
     }
+
+
+async def _terminal_health() -> tuple[bool, str]:
+    """Is the terminal reachable? The gateway is healthy with a terminal on
+    another host, but not one that is configured and refusing to answer."""
+    from terminal import link as terminal_link
+    from terminal.config import TERMINAL_SERVICE_URL
+
+    if not terminal_link.is_remote():
+        return True, "in-process"
+    try:
+        await terminal_link.current().snapshot()
+        return True, TERMINAL_SERVICE_URL
+    except Exception as err:
+        log.warning("terminal service %s unreachable: %s", TERMINAL_SERVICE_URL, err)
+        return False, TERMINAL_SERVICE_URL
 
 
 @app.get("/health")

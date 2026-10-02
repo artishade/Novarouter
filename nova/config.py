@@ -3,6 +3,9 @@
 The server binds to 0.0.0.0:$PORT (Render assigns PORT dynamically — never
 hardcoded). DATABASE_URL accepts Prisma-style values (`file:…`, `postgres://`,
 pgbouncer query params) and normalizes them for SQLAlchemy.
+
+Terminal configuration is not here: everything terminal-related lives under
+`terminal/` and is imported from there (`terminal.config`, `terminal.link`, …).
 """
 from __future__ import annotations
 
@@ -121,6 +124,10 @@ CORS_ALLOW_ORIGINS = [
     for o in os.environ.get("CORS_ALLOW_ORIGINS", "*").split(",")
     if o.strip()
 ]
+
+# NOTE: the terminal's own knobs (NOVA_TERMINAL_PORT / _URL / _TOKEN) live in
+# `terminal/config.py` — the terminal can be hosted separately, so its settings
+# belong to the terminal, not to the app that connects to it.
 
 def engine_runtime() -> str | None:
     """Locate a JS runtime able to host the dependency-free engine sidecar."""

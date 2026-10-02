@@ -71,14 +71,19 @@ Rules that keep changes consistent. Break these only with a documented reason
 ## Terminal duality (easy to confuse)
 
 22. **Command mode** (one-shot exec, history, `$ cmd` in console) =
-    `nova/terminal.py` — simulated allowlist executor, NO child processes
+    `terminal/sandbox.py` — simulated allowlist executor, NO child processes
     (only exception: `--version` probes of node/bun/npm binaries on PATH).
     Dangerous tokens exit 126, unknown exit 127, history capped at 200 rows.
-23. **Session tabs** (interactive bash, ssh, vim) = `nova/pty_session.py` —
-    real PTYs, max 8 concurrent, 30-min idle reap, `stop_all()` on shutdown.
+23. **Session tabs** (interactive bash, ssh, vim) = `terminal/pty.py` —
+    real PTYs, max 8 concurrent, 30-min idle reap, `close_all()` on shutdown.
 24. When touching terminal behavior, first decide which of the two it belongs
-    to. Sandbox policy changes go in `nova/terminal.py`; session lifecycle in
-    `nova/pty_session.py` + `routers/admin_terminal.py`.
+    to. Sandbox policy changes go in `terminal/sandbox.py`; session lifecycle in
+    `terminal/pty.py` + `terminal/link.py` (the dashboard glue in
+    `routers/admin_terminal.py` just mounts those routes and adds DB history).
+25. **Everything terminal lives under `terminal/`**, imported from there as
+    `terminal.*`. `terminal/` may use `nova`'s pure config/model helpers, never
+    the reverse — that one-way dependency is what lets the terminal be hosted on
+    its own (`python3 -m terminal.service`, `terminal/README.md`).
 
 ## Testing & verification
 

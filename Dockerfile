@@ -36,6 +36,11 @@ COPY engine /app/engine
 # Python application: API + frontend module (Jinja2 templates + static assets)
 COPY main.py ./
 COPY maintenance.py ./
+# The same image also runs the terminal on its own (`python3 -m
+# terminal.service`), so the Root@Build shells can be hosted separately from
+# the gateway. `terminal/` is the whole feature — nothing terminal-specific
+# lives outside it.
+COPY terminal ./terminal
 COPY nova ./nova
 COPY routers ./routers
 COPY ui ./ui
@@ -50,6 +55,9 @@ ENV PYTHONUNBUFFERED=1 \
     ENGINE_PORT=3099
 
 EXPOSE 3000
+# The terminal service's own port — never the app's, for the same reason the
+# engine sidecar never shares it.
+EXPOSE 3100
 
 # requirement #1: main.py binds 0.0.0.0:$PORT — PORT comes from the
 # environment (Render injects it dynamically; default 3000 locally).

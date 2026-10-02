@@ -24,7 +24,8 @@ NovaRouter gateway pointing at it.
 | `link.py` | The seam. `LocalLink` (shells in this process) / `RemoteLink` (HTTP + SSE to another host), chosen by configuration |
 | `api.py` | The HTTP contract — mounted by **both** hosts, so they cannot drift |
 | `agentbox.py` | **Agentbox**, the AI agent that ships with the terminal (`/agent/*`) |
-| `agentbox.html` | Its browser page: shell tabs and the chat side by side |
+| `web/console.html` | **The console page** — shell tabs on one side, the agent on the other. Served at `/` |
+| `web/console.js` | Its client: session tabs, SSE stream, xterm.js (with a plain-viewer fallback), chat, providers |
 | `service.py` | The standalone host: `python3 -m terminal.service` |
 | `config.py` | Every `NOVA_TERMINAL_*` / `NOVA_AGENTBOX_*` knob |
 | `Dockerfile` | Builds this directory **alone** — no gateway, no database, no UI |
@@ -54,6 +55,20 @@ NOVA_TERMINAL_URL=http://terminal-host:3100 \
 NOVA_TERMINAL_TOKEN=<same secret> \
 python3 main.py
 ```
+
+### The console
+
+Open `http://<terminal-host>:3100/` and you are in the workspace: session tabs
+along the top, a real shell (xterm.js — colour, cursor, `vim`, `top`), and
+Agentbox on the right. Click a tab to switch, double-click to rename, `×` to
+close, **new tab** for another shell. The terminal host serves this page itself,
+so a deployed terminal is usable with nothing else running; if the xterm CDN is
+unreachable the page falls back to a plain append-only viewer instead of
+rendering nothing.
+
+If the host has a `NOVA_TERMINAL_TOKEN`, the page asks for it once (a browser
+navigation cannot send a header) and keeps it locally; every API call after that
+carries it. `/health` and the page itself stay open — they leak nothing.
 
 `NOVA_TERMINAL_URL` unset (the default) means the app keeps the terminal
 in-process and none of this is run — same shells, same routes, one process.

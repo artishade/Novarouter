@@ -365,5 +365,56 @@ class AgentOverTheLinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await agent.run_in_live_terminal("echo hi"))
 
 
+class StandaloneConsoleTests(unittest.TestCase):
+    """A terminal hosted on its own has to be usable in a browser.
+
+    The symptom this pins is a deployed terminal whose homepage answered
+    {"detail": "Not Found"}: the host had every API route and no page at all.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from terminal.service import app
+
+        cls.client = TestClient(app)
+
+    def test_the_root_serves_the_console(self):
+        res = self.client.get("/")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.headers["content-type"].startswith("text/html"))
+        self.assertIn("AGENTBOX", res.text)
+        self.assertIn("/static/console.js", res.text)
+
+    def test_the_agent_url_is_the_same_console(self):
+        # `/agent` is where the docs send people; it must not 404 either.
+        self.assertEqual(self.client.get("/agent").status_code, 200)
+
+    def test_the_client_is_served_and_readable(self):
+        res = self.client.get("/static/console.js")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("application/javascript", res.headers["content-type"])
+        self.assertIn("EventSource", res.text)
+
+    def test_the_page_is_open_but_the_shells_are_not(self):
+        self.assertEqual(self.client.get("/").status_code, 200)     # static html
+        self.assertEqual(self.client.get("/terminal/pty/sessions").status_code,
+                         200 if not service_module().TERMINAL_SERVICE_TOKEN else 401)
+
+    def test_a_dead_session_says_so_instead_of_a_bare_404(self):
+        # The console streams through this route; a blank stream would leave
+        # the browser staring at an empty pane forever.
+        with TestClient(_app()) as service:
+            res = service.get("/terminal/pty/stream", params={"session": "pty-gone"})
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(res.json()["code"], "session_gone")
+
+
+def service_module():
+    """The service module, imported late so env patches in other tests apply."""
+    from terminal import service
+
+    return service
+
+
 if __name__ == "__main__":
     unittest.main()

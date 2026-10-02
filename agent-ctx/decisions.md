@@ -20,10 +20,10 @@ with the user before overriding, or add a new dated entry explaining the pivot.
 
 ## Tricky tradeoffs worth remembering
 
-- **Simulated sandbox executor** (`nova/terminal.py`): no child processes by
+- **Simulated sandbox executor** (`terminal/sandbox.py`): no child processes by
   design; outputs are synthesized from real OS telemetry + DB state. The only
   allowed subprocess is a `--version` probe of node/bun/npm. Interactive work
-  goes through real PTYs (`nova/pty_session.py`) instead. Don't "fix" the
+  goes through real PTYs (`terminal/pty.py`) instead. Don't "fix" the
   executor by spawning shells — that's the vulnerability it exists to avoid.
 - **Upstream read timeout is 600s** (`NOVA_UPSTREAM_READ_TIMEOUT`): long
   thinking runs legally sit silent for minutes; a 60s timeout caused
@@ -59,6 +59,30 @@ with the user before overriding, or add a new dated entry explaining the pivot.
 - When a decision is reversed or a big feature lands, append a dated entry here
   and update `AGENTS.md`/`project-map.md` — that's the whole job of the
   `nova-memory-sync` skill.
+
+## 2026-10-02 — The terminal is one path, and hostable on its own
+- **Everything terminal lives under `terminal/`.** `pty.py` (real shells),
+  `sandbox.py` (allowlist exec), `link.py` (the seam), `api.py` (the HTTP
+  contract), `service.py` (the standalone host), `config.py`, `run.sh`. Reason:
+  the interactive terminal hands out root shells, so it has to be sizeable,
+  restartable and network-isolable on its own — that is only possible if the
+  feature is one directory instead of four spread across `nova/` and `routers/`.
+- **The app imports the terminal by path, never the reverse.** `main.py`,
+  `routers/admin_terminal.py` and `nova/agent.py` all do `from terminal import
+  link` / `from terminal.api import router` / `from terminal.sandbox import …`.
+  `terminal/` may use `nova`'s pure config/model/telemetry helpers, never the
+  other way round; `terminal/__init__.py` re-exports the seam but deliberately
+  not `api` (FastAPI) or `sandbox` (SQLAlchemy), so importing it stays cheap.
+- **One contract, two hosts.** `terminal/api.py` is mounted by the gateway
+  (`/api/admin/terminal/pty/*`) *and* by the service (`/terminal/pty/*`), so a
+  separately hosted terminal can't drift from the local one. `link.py` picks
+  `LocalLink` or `RemoteLink` from `NOVA_TERMINAL_URL` alone.
+- **Errors carry a stable `code`** (`session_gone`, `session_limit`,
+  `link_unavailable`, …) so a remote failure reads the same as a local one.
+  `routers/admin_terminal.py` keeps only the dashboard glue (DB history, OS
+  telemetry) and mounts the terminal's router at `/pty`.
+- **Terminal settings live in `terminal/config.py`, not `nova/config.py`** — a
+  host that deploys only `terminal/` still has to read `NOVA_TERMINAL_*`.
 
 ## 2026-10-02 — The routing brain is ported from OmniRoute
 - **The upstream model is OmniRoute's domain layer, not its code.** NovaRouter
@@ -107,7 +131,8 @@ with the user before overriding, or add a new dated entry explaining the pivot.
 - **stdio children are cached (max 8), argv-split, `shell=False`.** A plugin
   boots in ~350 ms; reusing the child keeps repeated agent steps cheap. Nothing
   runs through a shell — `shlex.split` + `create_subprocess_exec` only.
-  `mcp_client.close_all()` runs on shutdown, next to `pty_session.stop_all()`.
+  `mcp_client.close_all()` runs on shutdown, next to `terminal.pty`'s
+  `close_all()`.
 - **Header values are credentials.** They are stored, masked on every read, and
   a re-save whose value is still masked keeps the stored one — the browser
   never holds the real token, so rotating it means typing a new one.

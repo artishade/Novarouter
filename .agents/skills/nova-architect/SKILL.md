@@ -49,8 +49,8 @@ Map the user's ask to exactly one primary area (and list secondary ones):
 | Providers/models/keys | `routers/admin_providers.py`, `admin_models.py`, `admin_keys.py`, `nova/discovery.py`, `nova/syncengine.py` | §3–4 |
 | Routing/fallbacks | `routers/gateway.py` + `routers/admin_routes.py` | §6 |
 | Agent | `nova/agent.py`, `routers/agent_api.py` | §5 |
-| Terminal (command mode) | `nova/terminal.py` | §7 |
-| Terminal (sessions/PTY) | `nova/pty_session.py`, `routers/admin_terminal.py` | §7 note |
+| Terminal (command mode) | `terminal/sandbox.py` | §7 |
+| Terminal (sessions/PTY) | `terminal/pty.py`, `terminal/link.py`, `terminal/api.py`, `terminal/service.py` (the whole feature lives in `terminal/`), `routers/admin_terminal.py` | §7 note |
 | Storage | `nova/storage_lib.py`, `routers/admin_storage.py` | §8 |
 | Free engine / tiers | `engine/index.js`, `engine/free-models.json`, `nova/freemodels.py`, `nova/engine.py` | §9 |
 | Config | `nova/config.py`, `nova/kv.py`, `routers/admin_misc.py` (meta) | §10 |
@@ -73,8 +73,9 @@ verification you'll run. Then implement. Trivial one-liners can skip the plan.
   `/api/v1/*`; reuse pooled httpx clients; never fresh clients per request.
 - **UI**: fragments via HTMX (not JSON), emerald/slate theme, no blue/indigo,
   no emojis, aria-labels on icon buttons.
-- **Never** spawn shells in `nova/terminal.py` (simulated executor by design);
-  interactive shells belong to `nova/pty_session.py`.
+- **Never** spawn shells in `terminal/sandbox.py` (simulated executor by design);
+  interactive shells belong to `terminal/pty.py`. Keep every terminal change
+  inside `terminal/` and import it elsewhere as `terminal.*`.
 - Reuse `routers/_common.py` helpers and `nova/kv.py` instead of reinventing.
 - Mount new routers in `main.py`; register new tabs in `ui/tabs/__init__.py`.
 

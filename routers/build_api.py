@@ -22,7 +22,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
-from nova import pty_session
 from nova.build_registry import BUILD_PROVIDER_BY_ID, BUILD_PROVIDERS, ensure_build_providers
 from nova.database import get_db
 from nova.models import StorageProviderRow

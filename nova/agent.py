@@ -58,7 +58,8 @@ _ACTIVE_AGENT_LABEL: str | None = None
 
 
 def agent_label_for(goal: str) -> str:
-    from .pty_session import agent_label  # noqa: PLC0415 - avoids an import cycle
+    from terminal.link import shell_hint_for  # noqa: PLC0415 - avoids an import cycle
+    from terminal.pty import agent_label  # noqa: PLC0415 - avoids an import cycle
     return agent_label(goal)
 
 
@@ -421,7 +422,7 @@ async def tool_read_url(url: str) -> str:
 
 
 def fallback_system_stats(command: str) -> str:
-    """OS-level diagnostics when the safe executor module (nova.terminal,
+    """OS-level diagnostics when the safe executor module (terminal.sandbox,
     written by agent 2-c) is not importable yet — port of fallbackSystemStats."""
     try:
         total_mb = round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024 * 1024))
@@ -485,28 +486,29 @@ async def run_in_live_terminal(command: str, timeout: int = 45,
     its original one-shot executor — the agent never loses the ability to run
     a command just because nobody is watching.
 
+    Goes through `terminal.link`, so this works unchanged when the terminal is
+    hosted as its own service: the step still lands in a visible tab there.
+
     Off-thread on purpose: run_agent_task is an async callable handed to
     FastAPI BackgroundTasks, so it executes on the event loop.
     """
-    try:
-        from .pty_session import agent_session, run_in_session  # noqa: PLC0415
-    except Exception:
-        return None
-    try:
-        session = await asyncio.to_thread(
-            agent_session, label if label is not None else _ACTIVE_AGENT_LABEL)
-    except Exception:
-        return None
-    if session is None or getattr(session, "closed", True):
-        return None
+    from terminal.link import TerminalError, current  # noqa: PLC0415
+
     cmd = (command or "").strip()
     if not cmd:
         return None
     try:
-        out, code = await asyncio.to_thread(run_in_session, session, cmd, timeout)
+        result = await current().run_command(
+            cmd, label if label is not None else _ACTIVE_AGENT_LABEL, timeout)
+    except TerminalError as exc:
+        logging.getLogger("nova.agent").warning("live terminal step failed: %s", exc)
+        return None
     except Exception as exc:  # pragma: no cover — defensive
         logging.getLogger("nova.agent").warning("live terminal step failed: %s", exc)
         return None
+    if result is None:
+        return None
+    out, code = result
     if code == -1:
         return f"$ {cmd}\n{out or '(no output)'}\n[still running or timed out — check the agent terminal tab]"
     tail = "" if code == 0 else f"\n[exit {code}]"
@@ -514,7 +516,7 @@ async def run_in_live_terminal(command: str, timeout: int = 45,
 
 
 async def tool_terminal(command: str) -> str:
-    """Run a command through agent 2-c's safe executor. nova.terminal is
+    """Run a command through agent 2-c's safe executor. terminal.sandbox is
     imported LAZILY inside this function (it may not exist yet while 2-c works
     concurrently); if it is unavailable we degrade to honest OS stats, exactly
     like the TypeScript fallback."""
@@ -523,7 +525,7 @@ async def tool_terminal(command: str) -> str:
     if live is not None:
         return live
     try:
-        from nova.terminal import execute_command  # noqa: PLC0415 — lazy by design
+        from terminal.sandbox import execute_command  # noqa: PLC0415 — lazy by design
     except Exception:
         return fallback_system_stats(cmd)
 
@@ -629,7 +631,7 @@ async def tool_write_file(arg: str) -> str:
     path=path.strip(); content=content.lstrip("\n")
     if not path: return "write_file error: empty path"
     try:
-        from .terminal import builder_write
+        from terminal.sandbox import builder_write
         res = builder_write(path, content)
         return (res.get("output") or str(res))[:2000]
     except Exception as e: return f"write_file failed: {e}"
@@ -637,7 +639,7 @@ async def tool_read_file(arg: str) -> str:
     path=(arg or "").strip()
     if not path: return "read_file error: empty path"
     try:
-        from .terminal import builder_read
+        from terminal.sandbox import builder_read
         res = builder_read(path)
         return (res.get("output") or str(res))[:2000]
     except Exception as e: return f"read_file failed: {e}"
@@ -646,7 +648,7 @@ async def tool_edit_file(arg: str) -> str:
     if len(parts)!=3: return 'edit_file error: need <path> ||| <old> ||| <new> got: '+arg[:200]
     path,old,new=parts[0].strip(),parts[1],parts[2]
     try:
-        from .terminal import builder_edit
+        from terminal.sandbox import builder_edit
         res = builder_edit(path, old, new)
         return (res.get("output") or str(res))[:2000]
     except Exception as e: return f"edit_file failed: {e}"
@@ -654,7 +656,7 @@ async def tool_mkdir(arg: str) -> str:
     path=(arg or "").strip()
     if not path: return "mkdir error: empty"
     try:
-        from .terminal import builder_mkdir
+        from terminal.sandbox import builder_mkdir
         res = builder_mkdir(path)
         return (res.get("output") or str(res))[:2000]
     except Exception as e: return f"mkdir failed: {e}"
@@ -665,7 +667,7 @@ async def tool_bash_exec(arg: str) -> str:
     if live is not None:
         return live[:8000]
     try:
-        from .terminal import builder_bash
+        from terminal.sandbox import builder_bash
         res = builder_bash(cmd)
         return (res.get("output") or str(res))[:2000]
     except Exception as e: return f"bash_exec failed: {e}"

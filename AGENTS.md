@@ -19,8 +19,9 @@ A self-hosted AI API gateway: fans requests out across many AI providers (free o
 | Path | Role |
 | --- | --- |
 | `main.py` | FastAPI entrypoint: lifespan (bootstrap, engine sidecar, maintenance), CORS, `/health`, router mounting, gateway request-log middleware |
-| `nova/` | Core library (config, SQLAlchemy models, bootstrap, engine sidecar client, provider transport, discovery, sync, sandbox executor, PTY sessions, agent runtime, storage, routing brain) |
-| `routers/` | HTTP APIs: `gateway.py` (`/v1/*` + `/api/v1/*`), `admin_*.py` (`/api/admin/*`), `agent_api.py` (`/api/agent/*`), `anthropic_adapter.py` |
+| `nova/` | Core library (config, SQLAlchemy models, bootstrap, engine sidecar client, provider transport, discovery, sync, agent runtime, storage, routing brain) |
+| `terminal/` | The whole terminal feature in one path: `pty.py` (real PTY sessions), `sandbox.py` (allowlist exec), `link.py` (LocalLink/RemoteLink seam), `api.py` (contract mounted by both hosts), `service.py` (standalone host), `config.py`, `run.sh` |
+| `routers/` | HTTP APIs: `gateway.py` (`/v1/*` + `/api/v1/*`), `admin_*.py` (`/api/admin/*`), `agent_api.py` (`/api/agent/*`), `anthropic_adapter.py`. `admin_terminal.py` is only the dashboard's glue — the terminal's own routes come from `terminal/api.py` |
 | `ui/` | Python frontend (BFF): `shell.py` (dashboard shell), `tabs/` (9 tab modules), `api_client.py` (self-API HTTP client), `render.py` (Jinja2), `format.py` |
 | `templates/` | Jinja2: `base.html`, `tabs/<key>.html`, `partials/*.html` |
 | `static/` | `nova.css`, `app.js` (HTMX wiring, toasts, streaming chat), `logo.svg` |
@@ -32,7 +33,7 @@ A self-hosted AI API gateway: fans requests out across many AI providers (free o
 
 ## Architecture in one paragraph
 
-`main.py` boots FastAPI → lifespan runs `nova/bootstrap.py` (additive schema sync + seed, including the OmniRoute provider/model catalogue) and starts the engine sidecar via `nova/engine.py` → requests hit `routers/gateway.py` (`/v1/chat/completions` etc.), which asks `nova/routing.py` to order the candidate pool (policy engine → model exposure lists → tag routing → per-(provider, model) lockouts → selection strategy), then walks it as a fallback chain (direct → chain → NovaFree engine last), calls upstreams through `nova/provider_transport.py` + pooled `httpx` clients, spoofs the response `model` to the requested id, attaches `_nova` metadata (including the routing decision), and logs to `RequestLog`. The dashboard (`ui/`) is server-rendered Jinja2 fragments swapped by HTMX; each tab module calls the app's own JSON API over HTTP (`ui/api_client.py`), so UI behaviour always matches the gateway. `nova/agent.py` runs autonomous tasks with a plan→tool→step loop. `nova/terminal.py` is a simulated allowlist sandbox (no real shells); `nova/pty_session.py` spawns the real PTY shells behind the Terminal tab sessions.
+`main.py` boots FastAPI → lifespan runs `nova/bootstrap.py` (additive schema sync + seed, including the OmniRoute provider/model catalogue) and starts the engine sidecar via `nova/engine.py` → requests hit `routers/gateway.py` (`/v1/chat/completions` etc.), which asks `nova/routing.py` to order the candidate pool (policy engine → model exposure lists → tag routing → per-(provider, model) lockouts → selection strategy), then walks it as a fallback chain (direct → chain → NovaFree engine last), calls upstreams through `nova/provider_transport.py` + pooled `httpx` clients, spoofs the response `model` to the requested id, attaches `_nova` metadata (including the routing decision), and logs to `RequestLog`. The dashboard (`ui/`) is server-rendered Jinja2 fragments swapped by HTMX; each tab module calls the app's own JSON API over HTTP (`ui/api_client.py`), so UI behaviour always matches the gateway. `nova/agent.py` runs autonomous tasks with a plan→tool→step loop. The terminal is a separate feature under `terminal/` (imported from there as `terminal.*`): `terminal/sandbox.py` is a simulated allowlist sandbox (no real shells) and `terminal/pty.py` spawns the real PTY shells behind the Terminal tab sessions.
 
 ## Non-negotiable conventions
 
@@ -43,7 +44,8 @@ A self-hosted AI API gateway: fans requests out across many AI providers (free o
 5. **Style**: dark terminal aesthetic — bg `#080c14`, panels `#0d1322/80` + slate-800 borders, emerald accent, amber warnings, rose errors, purple reserved for RAM/spoof accents, mono for ids/commands. No emojis in UI, aria-labels on icon buttons.
 6. **Ports**: server binds `0.0.0.0:$PORT` (default 3000, never hardcode). Engine sidecar is on its own port (`NOVA_ENGINE_PORT`, default 3099, never the app port).
 7. **Tests/verify**: `sh scripts/test.sh` (byte-compile → `python3 -m unittest discover -s tests -p 'test_*.py'` → JS suite). Fast lint: `python3 -m compileall -q main.py nova routers ui`. Offline; provider protocol tests use httpx MockTransport.
-8. **Terminal duality**: command-mode exec = `nova/terminal.py` (simulated allowlist, no subprocess); session tabs = `nova/pty_session.py` (real PTY shells, max 8, reaped after 30 min idle). Don't mix them up when changing terminal behavior.
+8. **Terminal duality**: command-mode exec = `terminal/sandbox.py` (simulated allowlist, no subprocess); session tabs = `terminal/pty.py` (real PTY shells, max 8, reaped after 30 min idle). Don't mix them up when changing terminal behavior.
+9. **The terminal is one path**: everything terminal-related lives in `terminal/` and the rest of the app imports it as `terminal.*` (`from terminal import link`, `from terminal.api import router`, `from terminal.sandbox import execute_command`). Never reach back from `terminal/` into the app's internals, and never inline terminal behavior in a router — that is what keeps the terminal hostable on its own (`python3 -m terminal.service`).
 
 ## Where to add things (quick pointers)
 

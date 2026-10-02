@@ -11,6 +11,12 @@ services:
       # - DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
+      # The Root@Build terminal runs as its own service. Comment these two out
+      # (or leave NOVA_TERMINAL_URL empty) to keep it in-process instead.
+      - NOVA_TERMINAL_URL=http://terminal:3100
+      - NOVA_TERMINAL_TOKEN=${NOVA_TERMINAL_TOKEN:-}
+    depends_on:
+      - terminal
     volumes:
       - nova-db:/app/db
     restart: unless-stopped
@@ -21,5 +27,28 @@ services:
       retries: 5
       start_period: 20s
 
+  # The terminal on its own host — real root shells, separately sized and
+  # restartable. It is the whole `terminal/` package and nothing else; the
+  # gateway talks to it over NOVA_TERMINAL_URL.
+  terminal:
+    build: .
+    command: ["python3", "-m", "terminal.service"]
+    environment:
+      - NOVA_TERMINAL_PORT=3100
+      # Same shared secret the gateway sends. It grants root access, so set it.
+      - NOVA_TERMINAL_TOKEN=${NOVA_TERMINAL_TOKEN:-}
+      # Where shells start — the shared builder workspace.
+      - NOVA_BUILD_ROOT=${NOVA_BUILD_ROOT:-/app/build}
+    volumes:
+      - nova-build:/app/build
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3100/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   nova-db:
+  nova-build:

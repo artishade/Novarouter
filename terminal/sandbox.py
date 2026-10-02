@@ -12,6 +12,12 @@ requirement that version output stays honest.
 An allowlist governs what may run; anything dangerous exits 126, anything
 unknown exits 127. Every execution is persisted (TerminalCommand, capped at
 200 rows).
+
+This is the ONE terminal module that borrows the NovaRouter app: the command
+history and the `nova …` subcommands are gateway state. Those imports are
+optional, so a terminal deployed on its own still boots and still runs the
+sandboxed file/shell helpers — it just says so plainly when you ask for
+something that genuinely needs the gateway behind it.
 """
 from __future__ import annotations
 
@@ -27,21 +33,42 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, select
-from sqlalchemy.orm import Session
+from .config import PACKAGE_ROOT, build_root
 
-from nova.config import PROJECT_ROOT
-from nova.kv import get_config, get_config_number, get_gpu_providers, set_config, set_gpu_providers
-from nova.models import (
-    AgentTask,
-    ClientKey,
-    ModelRoute,
-    Model as ModelRow,
-    Provider,
-    RequestLog,
-    StorageProviderRow,
-    SystemConfig,
-    TerminalCommand,
+# The app's database-backed helpers. Absent when only `terminal/` is deployed,
+# which is fine: every entry point that needs one checks `APP_AVAILABLE` first
+# and reports the honest reason instead of raising an ImportError at boot.
+APP_AVAILABLE = True
+try:
+    from sqlalchemy import delete, func, select
+    from sqlalchemy.orm import Session
+
+    from nova.kv import (
+        get_config,
+        get_config_number,
+        get_gpu_providers,
+        set_config,
+        set_gpu_providers,
+    )
+    from nova.models import (
+        AgentTask,
+        ClientKey,
+        ModelRoute,
+        Model as ModelRow,
+        Provider,
+        RequestLog,
+        StorageProviderRow,
+        SystemConfig,
+        TerminalCommand,
+    )
+except Exception:  # noqa: BLE001 — a standalone terminal has no app, no DB
+    APP_AVAILABLE = False
+
+PROJECT_ROOT = PACKAGE_ROOT
+
+NO_APP = (
+    "the NovaRouter gateway is not attached to this terminal (only the "
+    "terminal is hosted here), so this has no database to read"
 )
 
 PROCESS_START_MS = time.time() * 1000  # python equivalent of process.uptime()
@@ -68,11 +95,10 @@ BUILDER_ALLOWED_TMP = pathlib.Path("/tmp").resolve()
 
 
 def _builder_base() -> pathlib.Path:
-    """Builder base location — `/app/build` (see nova.build_registry), kept
-    separate from the NovaRouter source tree so agent file writes and shell
-    builds can never touch the gateway's own code."""
+    """Builder base location — `/app/build`, kept separate from the source tree
+    so agent file writes and shell builds can never touch the application's
+    own code."""
     try:
-        from nova.build_registry import build_root
         return pathlib.Path(build_root())
     except Exception:
         return PROJECT_ROOT
@@ -681,6 +707,8 @@ def run_cat(db: Session, args: list[str]) -> dict:
     if f == "nova.config.json":
         import json
 
+        if not APP_AVAILABLE:
+            return _err(1, f"cat: nova.config.json: {NO_APP}")
         rows = db.scalars(select(SystemConfig).order_by(SystemConfig.key.asc())).all()
         obj: dict = {}
         for r in rows:
@@ -691,6 +719,8 @@ def run_cat(db: Session, args: list[str]) -> dict:
         return _ok(json.dumps(obj, indent=2))
     if f == ".env":
         # Real environment (masked) — not a fabricated sample file.
+        if not APP_AVAILABLE:
+            return _err(1, f"cat: .env: {NO_APP}")
         from nova.config import DATABASE_URL, PORT
 
         token = get_config(db, "admin_token")
@@ -952,6 +982,12 @@ def nova_keys(db: Session) -> dict:
 
 def run_nova(db: Session, args: list[str]) -> dict:
     sub = args[0] if args else "help"
+    if sub == "help":
+        return _ok(NOVA_HELP_TEXT)
+    if not APP_AVAILABLE:
+        # `nova …` reads gateway state; say that plainly instead of failing
+        # with an import error on a terminal that has no gateway behind it.
+        return _err(1, f"nova {sub}: {NO_APP}")
     if sub == "status":
         return nova_status(db)
     if sub == "models":
@@ -966,8 +1002,6 @@ def run_nova(db: Session, args: list[str]) -> dict:
         return nova_storage(db)
     if sub == "keys":
         return nova_keys(db)
-    if sub == "help":
-        return _ok(NOVA_HELP_TEXT)
     return _err(1, f"nova: unknown subcommand '{sub}' — try 'nova help'")
 
 
@@ -1048,6 +1082,8 @@ def run_real_shell(cmd: str, cwd: str, timeout: float = SHELL_TIMEOUT_S) -> dict
 def persist_command(db: Session, command: str, output: str, exit_code: int,
                     duration_ms: int, cwd: str) -> None:
     """Best-effort persistence (TerminalCommand, capped at 200 rows)."""
+    if not APP_AVAILABLE:
+        return
     try:
         db.add(TerminalCommand(
             command=command, output=output, exitCode=exit_code,
@@ -1099,6 +1135,13 @@ def execute_command(db: Session, command: str, cwd: str | None = None) -> dict:
         return _err(1, "edit: usage: edit <path> <old>|||<new>")
     if _raw.startswith("bash "):
         return builder_bash(_raw[5:].strip())
+
+    # The simulated layer below reads gateway state (terminal cwd, GPU pool,
+    # request logs). On a terminal hosted without the gateway that is honest
+    # unavailability, not a crash.
+    if db is None or not APP_AVAILABLE:
+        return {"ok": False, "output": NO_APP, "stdout": "", "stderr": NO_APP,
+                "code": 1, "duration_ms": 1, "cwd": str(SANDBOX_ROOT)}
 
     """Port of executeCommand() → ExecResult wire shape."""
     started = time.time() * 1000

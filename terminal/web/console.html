@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NovaRouter Terminal</title>
+<!-- xterm.js — the same versions the dashboard pins, so a standalone terminal
+     gets real emulation (colour, cursor, vim, top). If this CDN is blocked the
+     console falls back to a plain append-only viewer instead of rendering
+     nothing; see terminal/console.js. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+<style>
+  :root {
+    --bg: #080c14; --panel: #0d1322; --line: #1e293b; --fg: #e2e8f0;
+    --dim: #94a3b8; --accent: #34d399; --warn: #fbbf24; --err: #fb7185;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg); overflow: hidden;
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: grid; grid-template-columns: minmax(0, 1fr) 400px;
+  }
+  @media (max-width: 980px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 55% 45%; }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+  }
+  section { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  aside { border-left: 1px solid var(--line); background: var(--panel); }
+
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font: 600 12px/1 var(--mono); margin: 0; letter-spacing: .08em; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+  .dot.bad { background: var(--err); }
+  .grow { flex: 1; }
+  #where { font: 11px var(--mono); color: var(--dim); overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
+
+  button {
+    background: #111a2e; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; font: 500 12px var(--mono); cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+
+  #tabs { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line);
+          overflow-x: auto; background: #0a101d; align-items: stretch; }
+  .tab {
+    display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+    border-radius: 6px; border: 1px solid var(--line); background: #0d1424;
+    font: 12px var(--mono); max-width: 260px;
+  }
+  .tab.active { border-color: var(--accent); }
+  .tab em { font-style: normal; color: var(--dim); font-size: 11px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab .x { color: var(--dim); padding: 0 2px; cursor: pointer; }
+  .tab .x:hover { color: var(--err); }
+
+  #screen { flex: 1; min-height: 0; padding: 8px 6px 8px 12px; overflow: hidden; }
+  #screen .xterm { height: 100%; }
+  #screen:focus { outline: none; }
+  pre.plain {
+    margin: 0; height: 100%; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    font: 13px/1.45 var(--mono); color: #cbd5e1;
+  }
+  #screen .no-emulation { font: 11px var(--mono); color: var(--warn); padding: 4px 0; }
+
+  #log { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px;
+         display: flex; flex-direction: column; gap: 10px; }
+  .msg { border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+         white-space: pre-wrap; word-break: break-word; font: 13px/1.5 var(--mono); }
+  .msg.you { background: #0f1a2e; }
+  .msg.bot { background: #0b1524; }
+  .msg.tool { color: var(--dim); border-style: dashed; font-size: 12px; }
+  .msg.err { border-color: var(--err); color: var(--err); }
+  .who { font: 600 10px var(--mono); letter-spacing: .1em; color: var(--dim);
+         display: block; margin-bottom: 5px; }
+
+  .providers { border-top: 1px solid var(--line); padding: 10px; }
+  .providers[hidden] { display: none; }
+  .list { max-height: 132px; overflow: auto; display: flex; flex-direction: column;
+          gap: 4px; margin-bottom: 8px; }
+  .prov { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line);
+          border-radius: 6px; padding: 4px 6px; font: 11px var(--mono); }
+  .prov.active { border-color: var(--accent); }
+  .prov .u { flex: 1; color: var(--dim); overflow: hidden;
+             text-overflow: ellipsis; white-space: nowrap; }
+
+  form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--line); }
+  form.stack { flex-direction: column; gap: 6px; }
+  textarea, input, select {
+    background: #080f1c; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 8px; font: 12px var(--mono);
+  }
+  textarea:focus, input:focus, select:focus { outline: 1px solid var(--accent); }
+  .hint { font: 11px var(--mono); color: var(--dim); padding: 0 12px 8px; }
+</style>
+</head>
+<body>
+  <section>
+    <header>
+      <span class="dot" id="dot" aria-hidden="true"></span>
+      <h1>NOVAROUTER TERMINAL</h1>
+      <span class="grow"></span>
+      <span id="where" aria-live="polite"></span>
+      <span id="count" style="font:11px var(--mono);color:var(--dim)"></span>
+      <button id="clear" type="button" aria-label="clear the view">clear</button>
+      <button id="new" type="button">new tab</button>
+    </header>
+    <div id="tabs" role="tablist" aria-label="terminal sessions"></div>
+    <div id="screen" aria-label="terminal output"></div>
+  </section>
+
+  <aside>
+    <header>
+      <span class="dot" id="adot" aria-hidden="true"></span>
+      <h1>AGENTBOX</h1>
+      <span class="grow"></span>
+      <select id="provider" aria-label="agent provider" style="width:auto;max-width:170px"></select>
+      <button id="manage" type="button">providers</button>
+    </header>
+    <div id="log" aria-live="polite" aria-label="agent conversation"></div>
+    <div class="providers" id="providerBox" hidden>
+      <div class="list" id="provList"></div>
+      <form id="provForm" class="stack">
+        <input id="p_id" placeholder="id — groq, openrouter, local-vllm" aria-label="provider id" required>
+        <input id="p_url" placeholder="base url — https://api.groq.com/openai/v1" aria-label="base url" required>
+        <input id="p_model" placeholder="model — optional" aria-label="model">
+        <input id="p_key" type="password" placeholder="api key — blank keeps the stored one" aria-label="api key">
+        <button type="submit">save provider</button>
+        <span class="hint" id="registry"></span>
+      </form>
+    </div>
+    <div class="hint">Every command the agent runs appears in a terminal tab.</div>
+    <form id="composer">
+      <textarea id="input" aria-label="message to the agent"
+        placeholder="deploy the site and tail the log"></textarea>
+      <button type="submit">send</button>
+    </form>
+  </aside>
+
+<script src="/static/console.js"></script>
+<script>
+  // Served from the same host as the page; no build step, no bundler.
+</script>
+</body>
+</html>

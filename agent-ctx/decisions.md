@@ -100,6 +100,15 @@ with the user before overriding, or add a new dated entry explaining the pivot.
   real PTY tabs on whichever host is answering. It is off unless
   `NOVA_AGENTBOX_BASE_URL` is set: no hidden outbound calls, no silent
   "configured" claims.
+- **The host serves its own page at `/`.** A terminal deployed on its own once
+  answered `{"detail":"Not Found"}` on its homepage: every API route existed
+  and no page did, which makes the whole feature useless in a browser.
+  `terminal/web/` is that page — session tabs, a real xterm.js shell, Agentbox
+  beside it — served by `terminal/service.py` at `/` (and `/agent`, where the
+  docs send people). The client keeps a plain append-only fallback because a
+  terminal that renders nothing the moment jsdelivr is blocked is not a
+  terminal. A hosted terminal therefore needs no dashboard, no gateway and no
+  build step to be usable.
 - **Providers are a registry, not a single env var.** One endpoint baked in at
   deploy time (`NOVA_AGENTBOX_BASE_URL`, id `env`) is not a config the person
   sitting at the terminal can change, and "which model" is exactly the thing

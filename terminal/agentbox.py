@@ -9,7 +9,9 @@ no database and no dashboard involved.
     POST /agent/chat        {message, provider?, model?, history?} → the answer
     GET/POST/DELETE /agent/providers   add and choose custom providers
     GET  /agent/models      what a provider can think with
-    GET  /agent             a small browser page: terminals + chat
+
+The page that uses all of it — session tabs, a real shell, this agent — is
+`web/console.html`, served by the host at `/`.
 
 It talks to any OpenAI-compatible `/v1/chat/completions` endpoint — the free
 NovaFree engine, OpenAI, Groq, OpenRouter, a self-hosted vLLM, or a NovaRouter
@@ -40,7 +42,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 from . import config
 from .link import TerminalError, current
@@ -621,13 +623,3 @@ async def models(provider: str = ""):
         "model": target.model or (listed[0].get("id") if listed else None),
         "models": [m.get("id") for m in (listed or []) if isinstance(m, dict)][:100],
     }
-
-
-@router.get("")
-@router.get("/")
-async def page():
-    """The Agentbox page: terminal tabs on one side, the agent on the other."""
-    from pathlib import Path
-
-    return FileResponse(Path(__file__).with_name("agentbox.html"),
-                        media_type="text/html", headers={"Cache-Control": "no-cache"})

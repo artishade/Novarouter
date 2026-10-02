@@ -28,9 +28,10 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from terminal import link as terminal_link
 from terminal.agentbox import agentbox_status
@@ -82,9 +83,10 @@ app = FastAPI(
 # loopback, and is called out loudly at boot.
 TOKEN_HEADERS = ("x-nova-terminal-token", "authorization")
 # Open on purpose: the health endpoints are how an orchestrator knows the host
-# is alive, and the Agentbox page is only static HTML — it sends the token with
+# is alive, and the console is only static assets — it sends the token with
 # every API call it makes, so opening it leaks nothing.
-OPEN_PATHS = ("/health", "/api/health", "/agent", "/agent/")
+OPEN_PATHS = ("/health", "/api/health", "/", "/index.html", "/console",
+              "/agent", "/agent/", "/static/console.js")
 
 
 @app.middleware("http")
@@ -108,10 +110,40 @@ async def require_token(request: Request, call_next):
 # The same contract the gateway serves under /api/admin/terminal/pty.
 app.include_router(terminal_api_router, prefix="/terminal/pty", tags=["terminal"])
 
+# The console — a terminal hosted alone still has to be usable in a browser,
+# so the host serves its own page at `/` (see the route below).
+
 # Agentbox — the AI agent that ships with the terminal. It is mounted here and
 # not in terminal/api.py on purpose: a gateway serves its own agent already
 # (/api/agent/*), so the two never compete for the same routes.
 app.include_router(agentbox_router, prefix="/agent", tags=["agent"])
+
+
+# --------------------------------------------------------------------------- #
+# The page — a terminal hosted alone still has to be *usable* in a browser:
+# session tabs, a real shell, and the agent. Served from the host root, so a
+# deployed terminal opens on its workspace instead of a bare 404.
+# --------------------------------------------------------------------------- #
+
+_APP_ASSETS = Path(__file__).with_name("web")
+
+
+@app.get("/")
+@app.get("/index.html")
+@app.get("/console")
+@app.get("/agent")
+@app.get("/agent/")
+async def console():
+    return FileResponse(_APP_ASSETS / "console.html",
+                        media_type="text/html",
+                        headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/static/console.js")
+async def console_js():
+    return FileResponse(_APP_ASSETS / "console.js",
+                        media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/health")

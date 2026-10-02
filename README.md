@@ -385,12 +385,14 @@ bun run dev
 from `terminal/` on its own, and a gateway that forwards to it.
 
 **You don't need the project at all.** `terminal/` imports nothing from
-`nova/`, needs no database, and carries its own **Agentbox** — the AI agent —
-so a terminal deployed alone still gives you the shells *and* the agent:
+`nova/`, needs no database, and ships its own console and **Agentbox** — the AI
+agent — so a terminal deployed alone still gives you the shells *and* the agent.
+Open `http://<terminal-host>:3100/`: session tabs, a real shell (xterm.js), and
+the agent side by side.
 
 ```bash
 curl -s http://terminal-host:3100/health            # agentbox.configured
-open http://terminal-host:3100/agent                # shells + agent, one page
+curl -s http://terminal-host:3100/                  # the console page
 curl -s -XPOST http://terminal-host:3100/agent/chat \
   -H 'X-Nova-Terminal-Token: <secret>' \
   -d '{"message":"deploy the site and tail the log"}'
@@ -457,8 +459,8 @@ main.py            FastAPI entrypoint — 0.0.0.0:$PORT, CORS, /health, API rout
 terminal/          the ENTIRE terminal feature, one path, hostable on its own:
                    pty (real PTY sessions) · sandbox (allowlist exec) · link
                    (in-process vs separately hosted) · api (the contract, mounted by
-                   BOTH hosts) · agentbox (the AI agent, served by the terminal)
-                   · service (the standalone host) · config · run.sh · Dockerfile
+                   BOTH hosts) · agentbox (the AI agent) · web (the console page served
+                   at `/`) · service (the standalone host) · config · run.sh · Dockerfile
                    (self-contained: no nova import, no database; the rest of the app
                    imports it as `terminal.*` and nothing terminal lives outside it)
 nova/              config, SQLAlchemy models (Prisma-layout compatible), bootstrap,

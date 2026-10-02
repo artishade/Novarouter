@@ -369,6 +369,10 @@ in-process, exactly as before: one service, no extra configuration.
 
 ```bash
 # 1. the terminal, on its own host (binds 0.0.0.0:$NOVA_TERMINAL_PORT, default 3100)
+docker build -t novarouter-terminal ./terminal    # builds terminal/ ALONE
+docker run -p 3100:3100 -e NOVA_TERMINAL_TOKEN=<shared secret> novarouter-terminal
+
+# …or from source, same directory, no Docker:
 bun run terminal          # → sh ./terminal/run.sh → python3 -m terminal.service
 
 # 2. the project, connected to that terminal
@@ -377,8 +381,36 @@ NOVA_TERMINAL_TOKEN=<shared secret> \
 bun run dev
 ```
 
-`docker compose up` already runs both that way — a `terminal` service and a
-gateway that forwards to it.
+`docker compose up` already runs both that way — a `terminal` service built
+from `terminal/` on its own, and a gateway that forwards to it.
+
+**You don't need the project at all.** `terminal/` imports nothing from
+`nova/`, needs no database, and carries its own **Agentbox** — the AI agent —
+so a terminal deployed alone still gives you the shells *and* the agent:
+
+```bash
+curl -s http://terminal-host:3100/health            # agentbox.configured
+open http://terminal-host:3100/agent                # shells + agent, one page
+curl -s -XPOST http://terminal-host:3100/agent/chat \
+  -H 'X-Nova-Terminal-Token: <secret>' \
+  -d '{"message":"deploy the site and tail the log"}'
+```
+
+Every command the agent runs lands in a **visible terminal tab**. Point it at
+any OpenAI-compatible endpoint (the free NovaFree engine, OpenAI, Groq,
+OpenRouter, a local vLLM, or a NovaRouter `/v1`) and it stays off — honestly,
+with `agentbox.configured: false` — until you do. Add as many custom providers
+as you like and pick one per message:
+
+```bash
+curl -XPOST http://terminal-host:3100/agent/providers \
+  -H 'X-Nova-Terminal-Token: <secret>' -H 'content-type: application/json' \
+  -d '{"id":"groq","base_url":"https://api.groq.com/openai/v1",
+       "api_key":"…","model":"llama-3.3-70b"}'
+```
+
+They are stored beside the workspace, `0600`, and their keys are only ever
+echoed back masked. The page has the same controls under **providers**.
 
 | Variable | Where | What it does |
 | --- | --- | --- |
@@ -386,6 +418,10 @@ gateway that forwards to it.
 | `NOVA_TERMINAL_TOKEN` | **both** | Shared secret for `X-Nova-Terminal-Token`. Gates real root shells — always set it before exposing the terminal beyond loopback. |
 | `NOVA_TERMINAL_PORT` | terminal | The terminal's own port (default `3100`). Never the app's port. |
 | `NOVA_BUILD_ROOT` | terminal | Where shells start (default `/app/build`). Point both hosts at the same shared workspace. |
+| `NOVA_AGENTBOX_BASE_URL` | terminal | Agentbox's model endpoint. Unset = agent off. |
+| `NOVA_AGENTBOX_API_KEY` | terminal | Its API key. |
+| `NOVA_AGENTBOX_MODEL` | terminal | Model id (default: first the endpoint offers). |
+| `NOVA_AGENTBOX_PROVIDER_FILE` | terminal | Where saved custom providers live (default: `<workspace>/.agentbox-providers.json`). |
 
 Read in `terminal/config.py` (the terminal owns its own settings) — see also
 [`terminal/README.md`](terminal/README.md).
@@ -421,9 +457,10 @@ main.py            FastAPI entrypoint — 0.0.0.0:$PORT, CORS, /health, API rout
 terminal/          the ENTIRE terminal feature, one path, hostable on its own:
                    pty (real PTY sessions) · sandbox (allowlist exec) · link
                    (in-process vs separately hosted) · api (the contract, mounted by
-                   BOTH hosts) · service (the standalone host) · config · run.sh
-                   (the rest of the app imports it as `terminal.*`; nothing terminal
-                   lives outside this directory)
+                   BOTH hosts) · agentbox (the AI agent, served by the terminal)
+                   · service (the standalone host) · config · run.sh · Dockerfile
+                   (self-contained: no nova import, no database; the rest of the app
+                   imports it as `terminal.*` and nothing terminal lives outside it)
 nova/              config, SQLAlchemy models (Prisma-layout compatible), bootstrap,
                    engine sidecar client, live discovery, model sync, build registry,
                    agent runtime, storage lib, MCP client + plugin registry,
@@ -440,6 +477,8 @@ engine/            NovaFree engine sidecar (bun/node, zero npm deps) — routes 
 db/                SQLite database file (bootstrap at first boot)
 Dockerfile         python:3.12-slim runtime + bun sidecar (UI is pure Python — no node build)
 docker-compose.yml one-command deploy with persistent volume — gateway + terminal host
+                   (the terminal is built from ./terminal on its own; to deploy just the
+                   terminal, point your host's build context at terminal/)
 ```
 
 ## 🔒 A note on data

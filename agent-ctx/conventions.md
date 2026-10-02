@@ -81,9 +81,17 @@ Rules that keep changes consistent. Break these only with a documented reason
     `terminal/pty.py` + `terminal/link.py` (the dashboard glue in
     `routers/admin_terminal.py` just mounts those routes and adds DB history).
 25. **Everything terminal lives under `terminal/`**, imported from there as
-    `terminal.*`. `terminal/` may use `nova`'s pure config/model helpers, never
-    the reverse — that one-way dependency is what lets the terminal be hosted on
-    its own (`python3 -m terminal.service`, `terminal/README.md`).
+    `terminal.*` — and the dependency is one-way *all the way*: `terminal/`
+    imports nothing from `nova/`. It reads the environment itself
+    (`terminal/config.py`), which is what lets the terminal be hosted on its own
+    (`docker build ./terminal`, `python3 -m terminal.service`). Don't "tidy"
+    a nova import back in there; the only module allowed to borrow the app is
+    `sandbox.py`, and it guards every entry point with `APP_AVAILABLE`.
+26. **A separately hosted terminal still gets the AI agent.** Agentbox
+    (`terminal/agentbox.py`, mounted at `/agent` only by the service — the
+    gateway has its own `/api/agent/*`) is configured by env and otherwise
+    reports `configured: false` rather than pretending. Its tools go through
+    the link, so they land in real PTY tabs on whichever host runs them.
 
 ## Testing & verification
 

@@ -9,8 +9,8 @@ host, and it is the only entrypoint you need if you deploy `terminal/` alone:
     sh ./terminal/run.sh               # same thing, with dependency install
 
 It serves exactly the routes the dashboard already calls (the same
-`terminal/api.py` the gateway mounts), so pointing the app at it
-changes nothing about the UI or the API contract:
+`terminal/api.py` the gateway mounts), plus `/agent/*` for Agentbox, so
+pointing the app at it changes nothing about the UI or the API contract:
 
     NOVA_TERMINAL_URL=http://terminal-host:3100   # on the NovaRouter side
     NOVA_TERMINAL_TOKEN=<shared secret>           # on BOTH sides
@@ -18,6 +18,10 @@ changes nothing about the UI or the API contract:
 NOVA_TERMINAL_URL unset (the default) means the gateway keeps the terminal
 in-process and this module is simply not run. See `terminal/link.py` for
 the seam, and `agent-ctx/project-map.md` for the operational notes.
+
+This host is self-contained: it imports nothing from `nova/`, needs no
+database, and ships its own Agentbox (`terminal/agentbox.py`) so a separately
+hosted terminal still comes with the AI agent.
 """
 from __future__ import annotations
 
@@ -28,10 +32,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from nova.config import PROJECT_ROOT
 from terminal import link as terminal_link
+from terminal.agentbox import agentbox_status
+from terminal.agentbox import router as agentbox_router
 from terminal.api import router as terminal_api_router
-from terminal.config import TERMINAL_SERVICE_PORT, TERMINAL_SERVICE_TOKEN
+from terminal.config import (
+    PACKAGE_ROOT,
+    TERMINAL_SERVICE_PORT,
+    TERMINAL_SERVICE_TOKEN,
+    build_root,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("terminal.service")
@@ -50,7 +60,7 @@ async def lifespan(_app: FastAPI):
     except Exception as err:  # never block boot on the warmup shell
         log.warning("default cloud shell warmup skipped: %s", err)
     log.info("NovaRouter terminal service up on 0.0.0.0:%s (root of %s)",
-             TERMINAL_SERVICE_PORT, PROJECT_ROOT)
+             TERMINAL_SERVICE_PORT, PACKAGE_ROOT)
     yield
     try:
         await terminal_link.current().close_all()
@@ -71,11 +81,15 @@ app = FastAPI(
 # between "private" and "anyone on the network". Unset is only sane on
 # loopback, and is called out loudly at boot.
 TOKEN_HEADERS = ("x-nova-terminal-token", "authorization")
+# Open on purpose: the health endpoints are how an orchestrator knows the host
+# is alive, and the Agentbox page is only static HTML — it sends the token with
+# every API call it makes, so opening it leaks nothing.
+OPEN_PATHS = ("/health", "/api/health", "/agent", "/agent/")
 
 
 @app.middleware("http")
 async def require_token(request: Request, call_next):
-    if request.url.path in ("/health", "/api/health"):
+    if request.url.path in OPEN_PATHS:
         return await call_next(request)
     if not TERMINAL_SERVICE_TOKEN:
         return await call_next(request)
@@ -93,6 +107,11 @@ async def require_token(request: Request, call_next):
 
 # The same contract the gateway serves under /api/admin/terminal/pty.
 app.include_router(terminal_api_router, prefix="/terminal/pty", tags=["terminal"])
+
+# Agentbox — the AI agent that ships with the terminal. It is mounted here and
+# not in terminal/api.py on purpose: a gateway serves its own agent already
+# (/api/agent/*), so the two never compete for the same routes.
+app.include_router(agentbox_router, prefix="/agent", tags=["agent"])
 
 
 @app.get("/health")
@@ -114,7 +133,8 @@ async def health():
         "sessions": sessions,
         "active": state.get("active"),
         "max_sessions": state.get("max_sessions"),
-        "build_root": str(PROJECT_ROOT),
+        "build_root": str(build_root()),
+        "agentbox": agentbox_status(),
     })
 
 

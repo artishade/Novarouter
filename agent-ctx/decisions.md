@@ -83,6 +83,33 @@ with the user before overriding, or add a new dated entry explaining the pivot.
   telemetry) and mounts the terminal's router at `/pty`.
 - **Terminal settings live in `terminal/config.py`, not `nova/config.py`** — a
   host that deploys only `terminal/` still has to read `NOVA_TERMINAL_*`.
+- **`terminal/` imports nothing from `nova/`, all the way down.** It reads the
+  environment itself, so it is a genuinely separate deployable: `docker build
+  ./terminal` produces an image with three dependencies and no database, no
+  gateway, no UI. `sandbox.py` is the single exception — it borrows the app for
+  command history and `nova …`, so it imports those names optionally and reports
+  `APP_AVAILABLE` at every entry point rather than crashing a terminal that has
+  no gateway behind it.
+- **Agentbox ships inside the terminal, not beside it.** A root prompt without a
+  mind behind it is a half-product, and the whole reason people split the
+  terminal off is that it has different hardware and a different lifecycle. So
+  `/agent/*` (chat, models, and a page showing shells and chat together) is
+  mounted by the terminal host only — the gateway already serves `/api/agent/*`,
+  and two agents competing for the same routes would be worse than one of them
+  being in the right place. Its tools run through the link, so commands land in
+  real PTY tabs on whichever host is answering. It is off unless
+  `NOVA_AGENTBOX_BASE_URL` is set: no hidden outbound calls, no silent
+  "configured" claims.
+- **Providers are a registry, not a single env var.** One endpoint baked in at
+  deploy time (`NOVA_AGENTBOX_BASE_URL`, id `env`) is not a config the person
+  sitting at the terminal can change, and "which model" is exactly the thing
+  they want to switch. So `GET/POST/DELETE /agent/providers` manages a small
+  JSON registry (mode `0600`) beside the workspace, the page has a panel for
+  it, and each `chat` names a provider. Three rules keep it safe: an API key is
+  only ever echoed back masked, an edit with a blank key keeps the stored one,
+  and `env` cannot be deleted over the API (unset the variables instead). A
+  provider that does not exist is a 404 that lists the ones that do — never a
+  silent fall back to the default, which would quietly bill the wrong account.
 
 ## 2026-10-02 — The routing brain is ported from OmniRoute
 - **The upstream model is OmniRoute's domain layer, not its code.** NovaRouter

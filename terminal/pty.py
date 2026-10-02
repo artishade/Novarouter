@@ -1,5 +1,9 @@
 """Persistent PTY shell sessions — a REAL interactive terminal.
 
+Self-contained: the only thing this module imports from the terminal package is
+`.config`, so `terminal/` can be hosted on its own with no NovaRouter app, no
+database and no gateway.
+
 Architecture mirrors the OperitTerminalCore terminal module: a single
 `TerminalManager` owns every piece of terminal state and exposes it as one
 reactive snapshot, instead of letting each caller track sessions on its own.
@@ -37,7 +41,7 @@ import threading
 import time
 from urllib.parse import unquote
 
-from nova.config import PROJECT_ROOT
+from .config import PACKAGE_ROOT, build_root, engine_runtime
 
 SESSION_TTL_S = 30 * 60          # idle reaper
 SCROLLBACK_BYTES = 512 * 1024    # per-session history kept for late attachers
@@ -112,7 +116,7 @@ class TerminalSession:
         self.closed = False
         self.exit_code: int | None = None
         self.named = bool(label)        # True once the user renamed the tab
-        self.cwd = cwd if cwd and os.path.isdir(cwd) else str(PROJECT_ROOT)
+        self.cwd = cwd if cwd and os.path.isdir(cwd) else str(PACKAGE_ROOT)
         self.label = label.strip() or _default_label(self.cwd)
         self.cols = max(20, min(500, int(cols or 120)))
         self.rows = max(5, min(200, int(rows or 32)))
@@ -465,7 +469,6 @@ def stop_all() -> None:
 
 def engine_banner() -> str | None:
     """One extra MOTD line describing the NovaFree engine runtime, or None."""
-    from nova.config import engine_runtime
     runtime = engine_runtime()
     return f"NovaFree engine runtime: {runtime} (sidecar auto-starts with the gateway)." if runtime else None
 
@@ -485,10 +488,9 @@ def ensure_default() -> None:
     if live:
         return
     try:
-        from nova.build_registry import build_root
         cwd = str(build_root())
     except Exception:
-        cwd = str(PROJECT_ROOT)
+        cwd = str(PACKAGE_ROOT)
     try:
         manager.create(cwd=cwd, cols=120, rows=32, label="Root@Build")
     except (SessionLimitReached, OSError):
@@ -540,10 +542,9 @@ def agent_session(label: str | None = None) -> TerminalSession | None:
         elif newest is not None:
             return newest                # no task context: keep using one tab
     try:
-        from nova.build_registry import build_root
         cwd = str(build_root())
     except Exception:
-        cwd = str(PROJECT_ROOT)
+        cwd = str(PACKAGE_ROOT)
     for attempt in (0, 1, 2):
         try:
             return manager.create(cwd=cwd, cols=120, rows=32,

@@ -28,15 +28,21 @@ services:
       start_period: 20s
 
   # The terminal on its own host — real root shells, separately sized and
-  # restartable. It is the whole `terminal/` package and nothing else; the
-  # gateway talks to it over NOVA_TERMINAL_URL.
+  # restartable. Built from `terminal/` ALONE (its own Dockerfile and its own
+  # three dependencies): no gateway code, no database, no dashboard. The
+  # gateway talks to it over NOVA_TERMINAL_URL; Agentbox lives inside it.
   terminal:
-    build: .
-    command: ["python3", "-m", "terminal.service"]
+    build:
+      context: ./terminal
+      dockerfile: Dockerfile
     environment:
       - NOVA_TERMINAL_PORT=3100
       # Same shared secret the gateway sends. It grants root access, so set it.
       - NOVA_TERMINAL_TOKEN=${NOVA_TERMINAL_TOKEN:-}
+      # Agentbox: any OpenAI-compatible /v1 endpoint, or a NovaRouter /v1.
+      - NOVA_AGENTBOX_BASE_URL=${NOVA_AGENTBOX_BASE_URL:-}
+      - NOVA_AGENTBOX_API_KEY=${NOVA_AGENTBOX_API_KEY:-}
+      - NOVA_AGENTBOX_MODEL=${NOVA_AGENTBOX_MODEL:-}
       # Where shells start — the shared builder workspace.
       - NOVA_BUILD_ROOT=${NOVA_BUILD_ROOT:-/app/build}
     volumes:

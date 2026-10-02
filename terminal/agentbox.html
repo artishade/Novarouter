@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NovaRouter Terminal · Agentbox</title>
+<style>
+  :root {
+    --bg: #080c14; --panel: #0d1322; --line: #1e293b; --fg: #e2e8f0;
+    --dim: #94a3b8; --accent: #34d399; --warn: #fbbf24; --err: #fb7185;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg); height: 100vh;
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: grid; grid-template-columns: 1fr 380px;
+  }
+  @media (max-width: 900px) { body { grid-template-columns: 1fr; grid-template-rows: 1fr 45%; } }
+  section { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  aside { border-left: 1px solid var(--line); background: var(--panel); }
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font: 600 13px/1 var(--mono); margin: 0; letter-spacing: .04em; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .dot.bad { background: var(--err); }
+  .grow { flex: 1; }
+  button {
+    background: #111a2e; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; font: 500 12px var(--mono); cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  #tabs { display: flex; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--line);
+          overflow-x: auto; background: #0a101d; }
+  #screen {
+    flex: 1; margin: 0; padding: 12px 14px; overflow: auto; white-space: pre-wrap;
+    word-break: break-word; font: 13px/1.45 var(--mono); color: #cbd5e1;
+  }
+  #log { flex: 1; overflow: auto; padding: 12px 14px; display: flex;
+         flex-direction: column; gap: 10px; }
+  .msg { border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; white-space: pre-wrap; }
+  .msg.you { background: #0f1a2e; }
+  .msg.bot { background: #0b1524; }
+  .msg .who { font: 600 10px var(--mono); letter-spacing: .1em; color: var(--dim); display: block; margin-bottom: 5px; }
+  .msg.tool { font: 12px var(--mono); color: var(--dim); border-style: dashed; }
+  .msg.err { border-color: var(--err); color: var(--err); }
+  form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--line); }
+  form.stack { flex-direction: column; gap: 6px; }
+  input, select {
+    background: #080f1c; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; font: 12px var(--mono); width: 100%;
+  }
+  .providers { border-top: 1px solid var(--line); padding: 10px; }
+  .providers[hidden] { display: none; }
+  .row { display: flex; gap: 8px; }
+  .list { max-height: 130px; overflow: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .prov { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line);
+          border-radius: 6px; padding: 4px 6px; font: 11px var(--mono); }
+  .prov.active { border-color: var(--accent); }
+  .prov .u { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+  textarea {
+    flex: 1; resize: none; height: 58px; padding: 9px; border-radius: 8px;
+    border: 1px solid var(--line); background: #080f1c; color: var(--fg);
+    font: 13px var(--mono);
+  }
+  textarea:focus, input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .hint { font: 11px var(--mono); color: var(--dim); padding: 0 10px 8px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+  <section>
+    <header>
+      <span class="dot" id="dot" aria-hidden="true"></span>
+      <h1>Root@Build</h1>
+      <span class="grow"></span>
+      <button id="new" type="button">new tab</button>
+    </header>
+    <div id="tabs" role="tablist" aria-label="terminal sessions"></div>
+    <pre id="screen" aria-live="polite" aria-label="terminal output"></pre>
+  </section>
+
+  <aside>
+    <header>
+      <span class="dot" id="adot" aria-hidden="true"></span>
+      <h1>AGENTBOX</h1>
+      <span class="grow"></span>
+      <span id="amodel" style="font:11px var(--mono);color:var(--dim)"></span>
+      <select id="provider" aria-label="agent provider" style="width:auto"></select>
+      <button id="manage" type="button">providers</button>
+    </header>
+    <div id="log" aria-live="polite" aria-label="agent conversation"></div>
+
+    <div class="providers" id="providerBox" hidden>
+      <div class="list" id="provList"></div>
+      <form id="provForm" class="stack">
+        <input id="p_id" placeholder="id (groq, openrouter, local-vllm…)" aria-label="provider id" required>
+        <div class="row">
+          <input id="p_url" placeholder="base url (https://api.groq.com/openai/v1)" aria-label="base url" required>
+          <input id="p_model" placeholder="model" aria-label="model">
+        </div>
+        <input id="p_key" type="password" placeholder="api key (optional — blank keeps the stored one)" aria-label="api key">
+        <button type="submit">save provider</button>
+      </form>
+    </div>
+
+    <div class="hint">Every command the agent runs appears in a terminal tab.</div>
+    <form id="composer">
+      <textarea id="input" aria-label="message to the agent"
+        placeholder="deploy the site and tail the log…"></textarea>
+      <button type="submit">send</button>
+    </form>
+  </aside>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const API = "/terminal/pty";
+let session = null, offset = 0, stream = null, history = [];
+
+// The host grants root shells, so it wants the shared secret. A browser
+// navigation cannot set a header, so the page loads openly and every call it
+// makes carries the token — asked for once, then remembered locally.
+let token = localStorage.getItem("nova_terminal_token") || "";
+
+function askToken() {
+  token = prompt("This terminal host requires its shared secret.\nNOVA_TERMINAL_TOKEN:", token || "");
+  if (token) localStorage.setItem("nova_terminal_token", token);
+}
+
+async function call(url, options = {}) {
+  const send = () => fetch(url, {
+    ...options,
+    headers: { "content-type": "application/json", ...(token ? { "X-Nova-Terminal-Token": token } : {}), ...(options.headers || {}) },
+  });
+  let res = await send();
+  if (res.status === 401) { askToken(); res = await send(); }
+  return res;
+}
+
+const tabs = async () => (await call(`${API}/sessions`)).json();
+
+async function renderTabs() {
+  const state = await tabs();
+  const box = $("tabs");
+  box.innerHTML = "";
+  if (!session || !state.sessions.some((s) => s.id === session)) {
+    session = state.sessions.find((s) => !s.closed)?.id || null;
+    offset = 0; $("screen").textContent = "";
+  }
+  for (const s of state.sessions) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = s.label;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-pressed", String(s.id === session));
+    b.onclick = () => select(s.id);
+    if (s.id === state.active && s.id !== session) select(s.id);
+    box.appendChild(b);
+  }
+}
+
+function select(id) {
+  if (id === session) return;
+  session = id; offset = 0; $("screen").textContent = "";
+  renderTabs(); attach();
+}
+
+function attach() {
+  if (stream) stream.close();
+  if (!session) return;
+  stream = new EventSource(`${API}/stream?session=${encodeURIComponent(session)}&offset=${offset}`);
+  stream.onmessage = (e) => {
+    let d; try { d = JSON.parse(e.data); } catch { return; }
+    if (d.o) { offset += d.o.length; $("screen").textContent += d.o; $("screen").scrollTop = $("screen").scrollHeight; }
+    if (d.done) { renderTabs(); attach(); }
+  };
+  stream.onerror = () => { stream.close(); setTimeout(attach, 1500); };
+}
+
+$("screen").addEventListener("keydown", (e) => {
+  if (!session || !$("screen").isContentEditable) return;
+  e.preventDefault();
+  call(`${API}/input`, { method: "POST", body: JSON.stringify({ session, data: e.key.length === 1 ? e.key : `\\u0003` }) });
+});
+
+$("new").onclick = async () => {
+  const res = await call(`${API}/sessions`, { method: "POST",
+    body: JSON.stringify({ cols: 120, rows: 32 }) });
+  const body = await res.json();
+  if (body.session) { session = body.session; offset = 0; $("screen").textContent = ""; renderTabs(); attach(); }
+};
+
+function say(who, text, cls = "") {
+  const el = document.createElement("div");
+  el.className = `msg ${cls}`;
+  el.innerHTML = `<span class="who">${who}</span>`;
+  el.appendChild(document.createTextNode(text));
+  $("log").appendChild(el);
+  $("log").scrollTop = $("log").scrollHeight;
+  return el;
+}
+
+async function ask(message) {
+  say("YOU", message, "you");
+  const pending = say("AGENTBOX", "thinking…", "bot");
+  try {
+    const res = await call("/agent/chat", { method: "POST",
+      body: JSON.stringify({ message, history, provider: providerId || undefined }) });
+    const body = await res.json();
+    pending.remove();
+    if (!res.ok) { say("AGENTBOX", body.error || `HTTP ${res.status}`, "err"); return; }
+    for (const step of body.steps || []) {
+      const detail = step.tool === "run_command"
+        ? `$ ${step.args.command}\n${(step.result?.output ?? JSON.stringify(step.result)).slice(0, 600)}`
+        : `${step.tool} ${JSON.stringify(step.args).slice(0, 120)}\n${JSON.stringify(step.result).slice(0, 400)}`;
+      say(step.tool.toUpperCase(), detail, "tool");
+    }
+    say("AGENTBOX", body.reply || "(no reply)", "bot");
+    history.push({ role: "user", content: message }, { role: "assistant", content: body.reply || "" });
+    renderTabs();
+  } catch (err) {
+    pending.remove();
+    say("AGENTBOX", String(err), "err");
+  }
+}
+
+$("composer").onsubmit = (e) => {
+  e.preventDefault();
+  const box = $("input");
+  const message = box.value.trim();
+  if (!message) return;
+  box.value = "";
+  ask(message);
+};
+
+// ---- custom providers -------------------------------------------------------
+
+let providerId = "";
+
+async function loadProviders() {
+  const res = await call("/agent/providers");
+  if (!res.ok) return;
+  const body = await res.json();
+  providerId = body.active || "";
+  const select = $("provider");
+  select.innerHTML = "";
+  for (const p of body.providers) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.label || p.id;
+    if (p.id === providerId) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.hidden = body.providers.length < 2;
+  $("amodel").remove();
+  renderProviderList(body);
+}
+
+function renderProviderList(body) {
+  const box = $("provList");
+  box.innerHTML = "";
+  for (const p of body.providers) {
+    const row = document.createElement("div");
+    row.className = "prov" + (p.active ? " active" : "");
+    const name = document.createElement("b");
+    name.textContent = p.id;
+    const url = document.createElement("span");
+    url.className = "u";
+    url.textContent = `${p.base_url}${p.model ? " · " + p.model : ""}${p.has_key ? " · " + p.api_key : ""}`;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "×";
+    del.title = `remove ${p.id}`;
+    del.onclick = async () => {
+      await call(`/agent/providers/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+      loadProviders();
+    };
+    row.append(name, url, del);
+    box.appendChild(row);
+  }
+}
+
+$("provider").onchange = (e) => { providerId = e.target.value; };
+
+$("manage").onclick = () => {
+  $("providerBox").hidden = !$("providerBox").hidden;
+  if (!$("providerBox").hidden) loadProviders();
+};
+
+$("provForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const res = await call("/agent/providers", { method: "POST", body: JSON.stringify({
+    id: $("p_id").value.trim(),
+    base_url: $("p_url").value.trim(),
+    model: $("p_model").value.trim(),
+    api_key: $("p_key").value,
+  }) });
+  const body = await res.json();
+  if (!res.ok) { say("AGENTBOX", body.error || `HTTP ${res.status}`, "err"); return; }
+  $("p_key").value = "";
+  providerId = body.provider.id;
+  loadProviders();
+  say("AGENTBOX", `Provider ${body.provider.id} saved — using it for the next message.`, "bot");
+};
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("composer").requestSubmit();
+});
+
+(async function boot() {
+  $("screen").contentEditable = "true";
+  await renderTabs();
+  attach();
+  const health = await (await call("/health")).json();
+  $("dot").classList.toggle("bad", !health.ok);
+  const box = (health.agentbox || {});
+  $("adot").classList.toggle("bad", !box.configured);
+  if (!box.configured) {
+    say("AGENTBOX", "No provider yet — set NOVA_AGENTBOX_BASE_URL on this host, or add one under “providers”.", "err");
+  }
+  loadProviders();
+  setInterval(renderTabs, 20000);
+})();
+</script>
+</body>
+</html>

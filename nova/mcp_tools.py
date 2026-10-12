@@ -68,7 +68,7 @@ def required_scopes(tool_name: str) -> list[str]:
 def has_scopes(granted: Iterable[str] | None, needed: Sequence[str]) -> bool:
     """Least-privilege check. No scopes granted ⇒ everything is permitted.
 
-    That default matters: NovaRouter's own console/agent run in-process with no
+    That default matters: RouterX's own console/agent run in-process with no
     scope table, and locking them out would be a regression. A client that
     *does* declare scopes gets them enforced.
     """

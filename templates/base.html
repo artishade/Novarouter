@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
-  <title>NovaRouter — Gateway Console</title>
-  <meta name="description" content="NovaRouter — AI gateway console: providers, models, routes, keys, storage, analytics." />
+  <title>RouterX — Gateway Console</title>
+  <meta name="description" content="RouterX — AI gateway console: providers, models, routes, keys, storage, analytics." />
   <link rel="icon" href="/static/logo.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -48,7 +48,7 @@
     {# ----------------------------- Sidebar ----------------------------- #}      {% set groups = [
       ('Operate', [
         ('overview', 'Overview', 'layout-dashboard', 'Gateway health at a glance'),
-        ('terminal', 'Nova Console', 'square-terminal', 'Cloud workspace — opens the Root@Build terminal + console in a new tab'),
+        ('terminal', 'RouterX Console', 'square-terminal', 'Cloud workspace — opens the Root@Build terminal + console in a new tab'),
       ]),
       ('Gateway', [
         ('providers', 'Providers', 'server', 'Upstream accounts, keys and sign-in'),
@@ -71,7 +71,7 @@
         <div class="flex min-w-0 items-center gap-2.5">
           <div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 font-mono text-lg font-bold text-emerald-400">N</div>
           <div class="sb-only min-w-0">
-            <div class="truncate text-sm font-semibold tracking-tight text-slate-100">NovaRouter</div>
+            <div class="truncate text-sm font-semibold tracking-tight text-slate-100">RouterX</div>
             <div class="text-[10px] uppercase tracking-widest text-slate-500">Gateway Console</div>
           </div>
         </div>
@@ -113,7 +113,7 @@
             </span>
             <span class="text-xs font-medium text-slate-300">Gateway online</span>
           </div>
-          <div class="mt-1.5 font-mono text-[10px] text-slate-500">NovaRouter v2.0</div>
+          <div class="mt-1.5 font-mono text-[10px] text-slate-500">RouterX v2.0</div>
         </div>
         <button id="sb-expand-bottom" type="button" title="Expand sidebar" aria-label="Expand sidebar"
           class="sb-collapsed-only h-9 w-full items-center justify-center border-t border-slate-800/70 text-slate-500 transition-colors hover:text-emerald-400">
@@ -167,7 +167,7 @@
               <summary class="inline-block cursor-pointer select-none font-medium text-amber-300 underline decoration-amber-500/40 underline-offset-2">Keep my data forever (free, ~2 min)</summary>
               <ol class="mt-1.5 list-decimal space-y-0.5 pl-4 text-amber-200/80">
                 <li>Create a free project at <a href="https://neon.tech" target="_blank" rel="noopener" class="underline decoration-amber-500/40 hover:text-amber-200">neon.tech</a> and copy the connection string (<span class="font-mono">postgresql://…?sslmode=require</span>).</li>
-                <li>Render dashboard → your NovaRouter service → <span class="font-medium">Environment</span> → add <span class="font-mono">DATABASE_URL</span> with that string.</li>
+                <li>Render dashboard → your RouterX service → <span class="font-medium">Environment</span> → add <span class="font-mono">DATABASE_URL</span> with that string.</li>
                 <li>Save &amp; deploy — tables are created automatically, and everything you configure afterwards survives every future deploy.</li>
               </ol>
             </details>
@@ -230,7 +230,7 @@
 
   <noscript>
     <div class="fixed bottom-12 left-4 z-[70] rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-      NovaRouter needs JavaScript for the interactive console.
+      RouterX needs JavaScript for the interactive console.
     </div>
   </noscript>
 </body>

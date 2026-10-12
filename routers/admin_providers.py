@@ -66,7 +66,7 @@ def validate_base_url(url: str, kind: str) -> str | None:
 
 PRESETS: list[dict] = [
     {
-        "key": "novafree", "name": "NovaFree Engine", "kind": "builtin",
+        "key": "novafree", "name": "RouterX Free Engine", "kind": "builtin",
         "base_url": "internal://nova-engine", "prefix": "nova/", "key_hint": "no key needed",
         "free_tier": "Built-in — every model here is free, no key required",
         "docs_url": "https://github.com/artishade/Novarouter", "auth_url": None,
@@ -547,7 +547,7 @@ def delete_provider(id: str, db: Session = Depends(get_db)):
     if provider is None:
         return not_found("Provider not found")
     if provider.key == "novafree":
-        return JSONResponse({"error": "The built-in NovaFree engine cannot be deleted"}, status_code=400)
+        return JSONResponse({"error": "The built-in RouterX Free engine cannot be deleted"}, status_code=400)
 
     db.delete(provider)
     db.query(ProviderSession).filter(ProviderSession.providerKey == provider.key).delete(synchronize_session=False)
@@ -639,7 +639,7 @@ async def probe_upstream(provider_key: str, kind: str, base_url: str, api_key: s
 
 
 async def probe_nova_engine() -> dict:
-    """Real end-to-end ping of the built-in NovaFree engine (free-model sidecar)."""
+    """Real end-to-end ping of the built-in RouterX Free engine (free-model sidecar)."""
     started = time.monotonic()
     try:
         completion = await nova_engine.chat(

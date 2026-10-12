@@ -188,7 +188,7 @@ async def sync_models(req: Request):
 # --------------------------------------------------------------------------- #
 # POST /api/admin/models/disable-unreachable — bulk-disable every model whose
 # last health check marked it dead. Disabled models are excluded from the
-# gateway catalogue and the Nova Agent, so unreachable models never get
+# gateway catalogue and the RouterX Agent, so unreachable models never get
 # picked for real traffic.
 # --------------------------------------------------------------------------- #
 
@@ -291,7 +291,7 @@ def _snippet(text: str) -> str:
 # POST /api/admin/models/{id}/ping — health-check a single model by asking it
 # a REAL one-shot question. A plain GET /models ping only proves the endpoint
 # is reachable; this proves the model is RESPONSIVE:
-#   builtin     → real NovaFree engine completion (measured latency)
+#   builtin     → real RouterX Free engine completion (measured latency)
 #   gemini      → POST {base}/models/{model}:generateContent?key=…
 #   anthropic   → POST {base}/v1/messages (x-api-key + version)
 #   others      → POST {base}/chat/completions (OpenAI-compatible, Bearer)

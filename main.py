@@ -1,4 +1,4 @@
-"""NovaRouter — Python server entrypoint (FastAPI + uvicorn).
+"""RouterX — Python server entrypoint (FastAPI + uvicorn).
 
 Binds to 0.0.0.0:$PORT (Render assigns PORT dynamically; local default 3000).
 Owns:
@@ -81,7 +81,7 @@ async def lifespan(_app: FastAPI):
     await nova_engine.start_sidecar()
     # Start periodic maintenance task (sync + disable dead) every 12h
     asyncio.create_task(periodic_maintenance())
-    log.info("NovaRouter up on 0.0.0.0:%s (Python UI + API)", PORT)
+    log.info("RouterX up on 0.0.0.0:%s (Python UI + API)", PORT)
     yield
     try:
         from ui.api_client import api as _ui_api
@@ -103,7 +103,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="NovaRouter Gateway",
+    title="RouterX Gateway",
     version="2.0.0-python",
     lifespan=lifespan,
     docs_url="/api/docs",
@@ -204,7 +204,7 @@ async def health_payload() -> dict:
     return {
         "ok": db_ok and terminal_ok,
         "status": "healthy" if db_ok and terminal_ok else "degraded",
-        "service": "novarouter",
+        "service": "routerx",
         "runtime": "python",
         "version": "2.0.0",
         "uptime_s": int(time.time() - STARTED_AT),

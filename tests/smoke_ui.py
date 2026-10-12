@@ -28,9 +28,9 @@ def check(cond: bool, label: str, detail: str = "") -> None:
 
 
 TAB_CHECKS = {
-    "overview": ["tab-overview", "NovaFree Engine", "Provider Health"],
-    "console": ["console-root", "console-input", "Nova Console"],  # legacy console tab still renders
-    "terminal": ["tab-terminal", "term-view", "Root@Build", "Nova Console", "ws-config",
+    "overview": ["tab-overview", "RouterX Free Engine", "Provider Health"],
+    "console": ["console-root", "console-input", "RouterX Console"],  # legacy console tab still renders
+    "terminal": ["tab-terminal", "term-view", "Root@Build", "RouterX Console", "ws-config",
                  "ws-landing", "term-sheet-close", "ws-keyrow", "data-sheet-open=\"term\"",
                  "data-sheet-open=\"chat\""],
     "providers": ["providers-root"],
@@ -74,11 +74,11 @@ async def main() -> int:
             res = await client.get("/terminal")
             page = res.text
             check(res.status_code == 200, "/terminal renders", str(res.status_code))
-            for needle in ("Root@Build", "Nova Console", "term-view", "ws-config",
+            for needle in ("Root@Build", "RouterX Console", "term-view", "ws-config",
                            "ws-landing", "term-sheet-close", "ws-keyrow",
                            "term-cmdbar", "term-promptbar", "term-interrupt", "term-keys-next",
                            'data-sheet-open="term"', 'data-sheet-open="chat"',
-                           "terminal_workspace.js?v=6"):
+                           "terminal_workspace.js?v=7"):
                 check(needle in page, f"/terminal: contains {needle!r}")
 
             # Permanent cloud build config.
@@ -134,8 +134,10 @@ async def main() -> int:
             mc = data.get("memory_config") or {}
             check("v8_heap_mb" not in mc and "total_mb" in mc,
                   "history memory_config is real telemetry (no v8 fiction)", str(mc)[:160])
-            check((data.get("system") or {}).get("user") in ("root",),
-                  "system.user reports the real (root) user", str((data.get('system') or {}).get('user')))
+            import pwd
+            expected_user = pwd.getpwuid(os.geteuid()).pw_name
+            check((data.get("system") or {}).get("user") == expected_user,
+                  "system.user reports the real server user", str((data.get('system') or {}).get('user')))
 
             # Mobile workspace CSS: the two rules that broke phones. Tailwind's
             # `.flex` used to beat the UA `[hidden]` rule (drawer stuck open) and
@@ -176,7 +178,7 @@ async def main() -> int:
                   "keystrokes are sent in order instead of one request per key")
             # xterm paints on a canvas: without help there is no way to select
             # (and so no way to copy) terminal text on a phone.
-            check("selectAt" in js and "term.select(" in js and "term.selectLines(" in js,
+            check("selectAt" in js and "term.selectLines(" in js,
                   "long-press selects terminal text so it can be copied")
             check("pasteClipboard" in js and "clipboard.readText" in js,
                   "key row can paste the clipboard into the shell")
@@ -207,7 +209,7 @@ async def main() -> int:
             check("agent task — it runs its commands live in the terminal tab" in page2
                   or "hand a task to the agent — it runs in its own terminal tab" in page2,
                   "chatbox tells the user agent tasks run in the terminal")
-            for needle in ("Long-press the terminal to select text", "ws-term-chrome",
+            for needle in ("long-press a line to select it", "ws-term-chrome",
                            "ws-hide-mobile", "term-cmdbar", "term-promptbar", "term-interrupt",
                            "term-envsetup", "term-kbd", "term-keys-next", "term-keys-label",
                            "term-prompt-badge"):

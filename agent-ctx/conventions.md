@@ -1,4 +1,4 @@
-# NovaRouter — Coding Conventions & Invariants (Python era)
+# RouterX — Coding Conventions & Invariants (Python era)
 
 Rules that keep changes consistent. Break these only with a documented reason
 (then record it in `decisions.md`).
@@ -48,8 +48,8 @@ Rules that keep changes consistent. Break these only with a documented reason
     the truth goes in `_nova` metadata (`upstream_model`, `provider`, `stage`,
     `fallback`, `spoofed`).
 15. Fallback order: Stage 1 direct upstream → Stage 2..N explicit route chain →
-    final NovaFree engine. The engine degrades honestly (502, never fabricated).
-16. `nova/*` tier aliases (`nova/pro`, `nova/air`, `nova/mini`) resolve via
+    final RouterX Free engine. The engine degrades honestly (502, never fabricated).
+16. `nova/*` tier aliases (`routerx/pro`, `routerx/air`, `routerx/mini`) resolve via
     `nova/freemodels.py` onto the free-models catalogue.
 17. Every gateway request — success or failure — is logged (`RequestLog` via
     `gwlog.record_request`).

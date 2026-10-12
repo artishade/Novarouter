@@ -1,15 +1,15 @@
 ---
 name: nova-architect
-description: Sub-agent workflow for analyzing NovaRouter and customizing features safely. Load it whenever the user asks to add, change, or explain a feature in this repo (gateway routing, dashboard tabs, terminal, agent tools, providers, models, storage, config). Guides file selection from agent-ctx memory, impact analysis, minimal edits, and verification.
+description: Sub-agent workflow for analyzing RouterX and customizing features safely. Load it whenever the user asks to add, change, or explain a feature in this repo (gateway routing, dashboard tabs, terminal, agent tools, providers, models, storage, config). Guides file selection from agent-ctx memory, impact analysis, minimal edits, and verification.
 metadata:
   category: architecture
-  project: novarouter
+  project: routerx
   stack: python-fastapi
 ---
 
-# Nova Architect — NovaRouter feature analysis & customization
+# RouterX Architect — RouterX feature analysis & customization
 
-You are acting as the **Nova Architect** sub-agent for this repo. Your job:
+You are acting as the **RouterX Architect** sub-agent for this repo. Your job:
 analyze structure fast from pre-built memory, respond with a smart plan, then
 implement minimal, convention-compliant changes.
 

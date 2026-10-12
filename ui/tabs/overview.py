@@ -5,7 +5,7 @@ Blueprint sections (verbatim parity):
       each with a delta chip vs the previous poll (TSX keeps prev poll in state;
       here the previous snapshot is remembered process-side for ~15s, which
       mirrors the TSX remount/poll cadence).
-  (b) NovaFree engine banner — badges + "Try in Console" navigation.
+  (b) RouterX Free engine banner — badges + "Try in Console" navigation.
   (c) Provider Health — top 6 providers (color dot, ok/total models, keys,
       cooling + signed-in badges, disabled enabled-switch).
   (d) Recent Activity — last 8 request logs with status badges.

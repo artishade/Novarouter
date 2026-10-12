@@ -111,15 +111,14 @@ def preview_route(req: Request, db: Session = Depends(get_db)):
     explicit_chain = parse_fallbacks(effective_route.fallbacks) if effective_route else []
     auto_allowed = effective_route.auto if effective_route else True
 
-    # Stage 3 — auto stand-ins: healthy, enabled, free models not already listed.
+    # Stage 3 — auto stand-ins: the exact pool the live pipeline appends once a
+    # route's explicit chain is exhausted. Shared helper, so the preview can
+    # never disagree with what the gateway will actually do.
     listed = {model, *stage1, *explicit_chain}
     if auto_allowed:
-        candidates = [
-            m for m in models
-            if m.status == "healthy" and m.enabled and m.isFree and m.exposedId not in listed
-        ]
-        candidates.sort(key=lambda m: (m.provider.key, m.exposedId))
-        auto_targets = [m.exposedId for m in candidates[:3]]
+        from routers import gateway as gw  # lazy import: avoids an import cycle
+
+        auto_targets = [m.exposedId for m in gw.auto_standins(db, model, set(listed))]
     else:
         auto_targets = []
 

@@ -1,4 +1,4 @@
-"""NovaFree engine client — talks to the free-model sidecar (engine/index.js).
+"""RouterX Free engine client — talks to the free-model sidecar (engine/index.js).
 
 The sidecar is spawned automatically on the loopback interface only. It needs
 no configuration and no API key: it routes onto the free model catalogue in

@@ -1,7 +1,7 @@
 """Console tab — Python UI port of src/components/nova/tabs/ConsoleTab.tsx.
 
-The unified Nova Console: one chatbox, three modes, auto-routed.
-  Chat      → POST /api/v1/chat/completions (stream: true) with the Nova Console
+The unified RouterX Console: one chatbox, three modes, auto-routed.
+  Chat      → POST /api/v1/chat/completions (stream: true) with the RouterX Console
               system prompt; SSE deltas are appended live; the [[DELEGATE]]
               protocol hands actionable tasks to the autonomous agent.
   Terminal  → `$ <command>` and slash diagnostics run in the sandbox executor

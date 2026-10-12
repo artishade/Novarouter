@@ -1,10 +1,10 @@
 """The terminal's configuration — self-contained by design.
 
 This module reads the environment itself and imports **nothing** from the
-NovaRouter app. That is what lets `terminal/` be copied to another machine and
+RouterX app. That is what lets `terminal/` be copied to another machine and
 run on its own:
 
-    python3 -m terminal.service        # fastapi + uvicorn + httpx, no Nova, no DB
+    python3 -m terminal.service        # fastapi + uvicorn + httpx, no RouterX app, no DB
 
 The rest of the app keeps its own `nova/config.py` (PORT, DATABASE_URL, engine
 sidecar); the two deliberately do not share code, so a terminal host never has
@@ -26,12 +26,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# The terminal's own package root. In the NovaRouter checkout this is the repo
+# The terminal's own package root. In the RouterX checkout this is the repo
 # root; when `terminal/` is deployed by itself it is the directory above it.
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 # Where shells start when nothing else is configured. Deliberately never the
-# NovaRouter source tree: agent writes, `npm create` scaffolds, venvs and
+# RouterX source tree: agent writes, `npm create` scaffolds, venvs and
 # node_modules land in the workspace, never in anyone's application files.
 DEFAULT_BUILD_ROOT = Path("/app/build")
 
@@ -85,8 +85,8 @@ TERMINAL_SERVICE_TOKEN = os.environ.get("NOVA_TERMINAL_TOKEN", "")
 # --------------------------------------------------------------------------- #
 # Agentbox — the AI agent that ships with the terminal
 # --------------------------------------------------------------------------- #
-# Any OpenAI-compatible /v1/chat/completions endpoint: the free NovaFree engine,
-# OpenAI, Groq, OpenRouter, or a NovaRouter gateway's own /v1. This one is the
+# Any OpenAI-compatible /v1/chat/completions endpoint: the free RouterX Free engine,
+# OpenAI, Groq, OpenRouter, or a RouterX gateway's own /v1. This one is the
 # provider the deployer baked in (id `env`); the user adds more at runtime with
 # POST /agent/providers, which persist beside the workspace.
 AGENTBOX_BASE_URL = os.environ.get("NOVA_AGENTBOX_BASE_URL", "").rstrip("/")

@@ -1,4 +1,4 @@
-"""NovaRouter's terminal — one path, hostable on its own.
+"""RouterX's terminal — one path, hostable on its own.
 
 Every terminal behaviour lives under this package, and nothing in the project
 reaches around it: the gateway, the agent and the dashboard all import from

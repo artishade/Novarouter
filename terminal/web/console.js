@@ -1,5 +1,5 @@
 /**
- * NovaRouter terminal console — the standalone workspace client.
+ * RouterX terminal console — the standalone workspace client.
  *
  * One page for a terminal that may be hosted with nothing else: the shell tabs
  * on the left, Agentbox on the right, providers manageable in place. It talks

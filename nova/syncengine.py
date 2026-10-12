@@ -23,7 +23,7 @@ from .models import Model, Provider
 # Hard cap per provider — protects the DB from pathological upstream catalogues.
 MAX_MODELS_PER_PROVIDER = 500
 
-# Built-in NovaFree engine catalogue: the `nova/*` tiers plus every free model
+# Built-in RouterX Free engine catalogue: the `nova/*` tiers plus every free model
 # from ClawLabsAI/free-ai-models (engine/free-models.json). Resolved per call so
 # a refreshed snapshot is picked up without a restart.
 def NOVA_ENGINE_MODELS() -> list[dict]:
@@ -65,7 +65,7 @@ async def sync_provider(db: Session, provider: dict, log=None) -> dict:
 
     # ── Built-in engine: catalogue is the engine's real surface, no network ──
     if provider["kind"] == "builtin":
-        log("built-in NovaFree engine — refreshing the engine catalogue (no network)…")
+        log("built-in RouterX Free engine — refreshing the engine catalogue (no network)…")
         catalogue = NOVA_ENGINE_MODELS()
         created = 0
         updated = 0

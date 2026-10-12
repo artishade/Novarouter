@@ -1,4 +1,4 @@
-"""The agent must still plan when the NovaFree engine sidecar is off.
+"""The agent must still plan when the RouterX Free engine sidecar is off.
 
 Run: python -m unittest discover -s tests -p test_agent_llm_fallback.py
 

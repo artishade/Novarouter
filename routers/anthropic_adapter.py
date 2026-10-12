@@ -262,16 +262,17 @@ async def anthropic_messages(request: Request):
         )
 
     with SessionLocal() as db:
+        plan: dict = {}
         # Stage 0: native Anthropic passthrough when the resolved provider speaks Anthropic.
         native = await _try_native_anthropic(db, requested, payload, openai_msgs, system_text, max_tokens, temperature)
         if native is not None:
             result = native
         else:
             try:
-                result, stage, _plan = await gw.pipeline_nonstream(db, requested, openai_msgs, temperature, pipeline_body)
+                result, stage, plan = await gw.pipeline_nonstream(db, requested, openai_msgs, temperature, pipeline_body)
             except gw.HTTPError as err:
                 gw.write_log(db, model=requested, upstream_model="nova-engine",
-                             provider_name="NovaFree Engine", endpoint="/v1/messages",
+                             provider_name="RouterX Free Engine", endpoint="/v1/messages",
                              status=err.status, latency_ms=gw.now_ms() - started, via="nova-engine",
                              error=err.message)
                 return JSONResponse({"type": "error", "error": {"type": "api_error", "message": err.message}},
@@ -307,7 +308,8 @@ async def anthropic_messages(request: Request):
             "stop_reason": stop_reason,
             "stop_sequence": None,
             "usage": {"input_tokens": tin, "output_tokens": tout},
-            "_nova": gw.nova_meta(result["upstream_model"], result["provider_name"], result.get("stage", 1), requested, result.get("stage", 1) > 1),
+            "_nova": gw.nova_meta(result["upstream_model"], result["provider_name"], result.get("stage", 1), requested,
+                                 result.get("stage", 1) > 1 or not plan.get("direct", True)),
         })
 
 
@@ -379,7 +381,7 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
     from nova.database import SessionLocal
     db = SessionLocal()
     committed = False
-    served = {"upstream_model": "nova-engine", "provider_name": "NovaFree Engine", "via": "nova-engine", "stage": 0}
+    served = {"upstream_model": "nova-engine", "provider_name": "RouterX Free Engine", "via": "nova-engine", "stage": 0}
 
     def ev(event: str, data: dict) -> bytes:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
@@ -581,11 +583,18 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                     stream, provider_name, upstream_model = await gw.attempt_upstream_stream(r, openai_msgs, temperature, pipeline_body)
                 except gw.UpstreamFailure:
                     continue
+                pieces = gw._iterate_with_heartbeat(stream, b": routerx-keepalive\n\n")
                 first = None
-                async for piece in stream:
-                    if piece["text"] or piece["finish_reason"] or piece.get("tool_calls"):
-                        first = piece
-                        break
+                # Heartbeats (SSE comments, ignored by every SSE parser) keep the
+                # Claude Code / Anthropic SDK connection open while a cold or
+                # long-thinking upstream is silent before its first token.
+                async for kind, value in pieces:
+                    if kind == "hb":
+                        yield value
+                        continue
+                    if kind == "piece" and (value["text"] or value["finish_reason"] or value.get("tool_calls")):
+                        first = value
+                    break
                 if first is None:
                     try:
                         await stream.aclose()
@@ -612,7 +621,12 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                     except Exception:
                         pass
                     break
-                async for piece in stream:
+                async for kind, piece in pieces:
+                    if kind == "hb":
+                        yield piece
+                        continue
+                    if kind == "eof":
+                        break
                     if piece["text"]:
                         filtered = anthro_think.feed(piece["text"])
                         if filtered:
@@ -631,7 +645,7 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                 stage = len(gw.resolve_pipeline(db, requested)) + 1
             except gw.HTTPError:
                 stage = 1
-            served = {"upstream_model": "nova-engine", "provider_name": "NovaFree Engine",
+            served = {"upstream_model": "nova-engine", "provider_name": "RouterX Free Engine",
                       "via": "nova-engine", "stage": stage}
             try:
                 for start_chunk in start_events():
@@ -671,7 +685,7 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                 yield b"".join(end_events(gw.estimate_tokens("".join(assembled))))
             except gw.nova_engine.EngineUnavailable as err:
                 detail = ("All routing stages failed: %s. Fix checklist: (1) Dashboard → Providers → Test your provider; "
-                          "(2) Dashboard → Models → Sync models; (3) the built-in NovaFree engine runs the free "
+                          "(2) Dashboard → Models → Sync models; (3) the built-in RouterX Free engine runs the free "
                           "ai-models catalogue with no key, so a request should never reach this branch — check the "
                           "server log for the engine sidecar." % err)
                 yield ev("error", {"type": "error", "error": {"type": "api_error", "message": detail}})

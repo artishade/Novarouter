@@ -7,7 +7,7 @@
         <i data-lucide="sparkles" class="size-3.5 text-emerald-400"></i>
       </div>
       <div>
-        <div class="text-xs font-semibold text-slate-100">Nova Console</div>
+        <div class="text-xs font-semibold text-slate-100">RouterX Console</div>
         <div class="text-[10px] text-slate-500">chat · terminal · agent — auto-routed from one box</div>
       </div>
       <span id="console-mode-chip" class="ml-2 hidden"></span>
@@ -51,7 +51,7 @@
           <div class="mx-auto mb-3 flex size-12 items-center justify-center rounded-2xl border border-emerald-500/30 bg-emerald-500/10">
             <i data-lucide="sparkles" class="size-6 text-emerald-400"></i>
           </div>
-          <h2 class="text-lg font-semibold text-slate-100">Nova Console</h2>
+          <h2 class="text-lg font-semibold text-slate-100">RouterX Console</h2>
           <p class="mt-1 text-sm text-slate-400">One chatbox — chat with the gateway, run sandbox commands and launch autonomous tasks.</p>
         </div>
         <div class="grid gap-3 sm:grid-cols-3">
@@ -82,7 +82,7 @@
               <i data-lucide="bot" class="size-4 text-purple-400"></i>
             </div>
             <div class="text-sm font-semibold text-slate-100">Agent</div>
-            <p class="mt-1 text-[11px] leading-relaxed text-slate-500">Prefix with ! — or just describe a task. Nova delegates and streams every step.</p>
+            <p class="mt-1 text-[11px] leading-relaxed text-slate-500">Prefix with ! — or just describe a task. RouterX delegates and streams every step.</p>
             <div class="mt-3 flex flex-col gap-1.5">
               <button type="button" data-console-send="!research the top free AI providers" class="truncate rounded-md border border-slate-800 bg-black/30 px-2 py-1.5 text-left font-mono text-[10px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">!research the top free AI providers</button>
               <button type="button" data-console-send="!scan storage and report usage" class="truncate rounded-md border border-slate-800 bg-black/30 px-2 py-1.5 text-left font-mono text-[10px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">!scan storage and report usage</button>
@@ -218,7 +218,7 @@
 
   /* ------------------------- constants (TSX parity) ------------------------ */
   const DELEGATE_TOKEN = '[[DELEGATE]]';
-  const CONSOLE_SYSTEM_PROMPT = 'You are Nova Console, the unified operator interface of NovaRouter — an OpenAI-compatible AI gateway with multi-provider routing, fallback chains, a sandboxed terminal, storage management, GPU compute pools and an autonomous agent.\n\n' +
+  const CONSOLE_SYSTEM_PROMPT = 'You are RouterX Console, the unified operator interface of RouterX — an OpenAI-compatible AI gateway with multi-provider routing, fallback chains, a sandboxed terminal, storage management, GPU compute pools and an autonomous agent.\n\n' +
     'Style: concise, technically precise markdown. Use the conversation history for context. If the user speaks Bengali or Banglish, reply in the same language they used.\n\n' +
     'DELEGATION PROTOCOL — reply with exactly ONE line and nothing else when (and only when) the user asks you to PERFORM an action that requires live tools: searching the web, reading a specific URL, running diagnostics commands, scanning storage, or checking live gateway telemetry/stats:\n' +
     DELEGATE_TOKEN + ' {"goal": "<restate the request as one clear actionable goal>"}\n\n' +
@@ -231,10 +231,10 @@
     '/keys': 'nova keys',
     '/agents': 'nova agents',
   };
-  const HELP_MARKDOWN = '**Nova Console — one box, three modes**\n\n' +
+  const HELP_MARKDOWN = '**RouterX Console — one box, three modes**\n\n' +
     '- **Chat** — just ask. "What is a fallback chain?" Routed through the live gateway with automatic fallback.\n' +
     '- **Terminal** — prefix with `$` (`$ git status`, `$ apt update`) — a real root shell with full command freedom. For the standalone terminal with `cd` and history, open the **Terminal** tab in the sidebar.\n' +
-    '- **Agent** — prefix with `!` (`!find the best free GPU providers and compare them`) or just describe an actionable task; Nova delegates it to the autonomous agent and streams every step here.\n\n' +
+    '- **Agent** — prefix with `!` (`!find the best free GPU providers and compare them`) or just describe an actionable task; RouterX delegates it to the autonomous agent and streams every step here.\n\n' +
     '**Slash commands**\n\n' +
     '- `/status` · `/models` · `/gpu` · `/storage` · `/keys` · `/agents` — gateway diagnostics\n' +
     '- `/plugins` — open the MCP server / plugin drawer (register a server, test it, run one of its tools)\n' +
@@ -445,7 +445,7 @@
         '<div class="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10"><i data-lucide="bot" class="size-4 text-emerald-400"></i></div>' +
         '<div class="min-w-0 flex-1">' +
           '<div class="flex flex-wrap items-center gap-2">' +
-            '<span class="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">Nova Agent</span>' +
+            '<span class="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">RouterX Agent</span>' +
             agentStatusBadge(task ? task.status : 'queued') +
             '<span class="inline-flex items-center gap-1 font-mono text-[10px] text-slate-500"><i data-lucide="clock" class="size-3"></i>' + elapsedLabel(startedAt, finishedAt) + '</span>' +
             '<span class="font-mono text-[10px] text-slate-600">steps ' + done + '/' + m.maxSteps + '</span>' +
@@ -669,7 +669,7 @@
     if (!cmd) {
       pushMsg({
         kind: 'terminal', id: uid(), command: 'help',
-        output: 'NovaRouter terminal — a REAL root shell (git, apt, curl, pipes — everything).\nSlash shortcuts: /status /models /gpu /storage /keys /agents /boost (memory report)\nTip: the full Terminal tab lives in the sidebar — cd, history and all.',
+        output: 'RouterX terminal — a REAL root shell (git, apt, curl, pipes — everything).\nSlash shortcuts: /status /models /gpu /storage /keys /agents /boost (memory report)\nTip: the full Terminal tab lives in the sidebar — cd, history and all.',
         exitCode: 0, durationMs: 1, at: Date.now(),
       });
       return;

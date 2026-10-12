@@ -3,7 +3,7 @@
 A terminal hosted on its own is useless without a mind behind it: you want to
 type "deploy the site and tail the log", not just get a root prompt. Agentbox
 is that mind, and it lives in the terminal host — so **deploying only
-`terminal/` gives you the shells *and* the agent**, with no NovaRouter gateway,
+`terminal/` gives you the shells *and* the agent**, with no RouterX gateway,
 no database and no dashboard involved.
 
     POST /agent/chat        {message, provider?, model?, history?} → the answer
@@ -14,7 +14,7 @@ The page that uses all of it — session tabs, a real shell, this agent — is
 `web/console.html`, served by the host at `/`.
 
 It talks to any OpenAI-compatible `/v1/chat/completions` endpoint — the free
-NovaFree engine, OpenAI, Groq, OpenRouter, a self-hosted vLLM, or a NovaRouter
+RouterX Free engine, OpenAI, Groq, OpenRouter, a self-hosted vLLM, or a RouterX
 gateway's own `/v1`. Providers come from two places:
 
   environment   NOVA_AGENTBOX_BASE_URL / _API_KEY / _MODEL  (id: `env`)
@@ -59,7 +59,7 @@ ENV_PROVIDER_ID = "env"     # the provider built from NOVA_AGENTBOX_* variables
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,39}$")
 REGISTRY_LOCK = threading.Lock()   # the registry is a tiny file; keep writes sane
 
-SYSTEM_PROMPT = """You are Agentbox, the AI agent inside a NovaRouter terminal.
+SYSTEM_PROMPT = """You are Agentbox, the AI agent inside a RouterX terminal.
 
 You are working inside a real Linux shell on the user's machine. Every tool
 call you make is typed into a live terminal tab the user can watch, so:

@@ -1,4 +1,4 @@
-/* Nova Console + Root@Build terminal workspace — shared client runtime.
+/* RouterX Console + Root@Build terminal workspace — shared client runtime.
  * Loaded by the standalone /terminal page and the embedded dashboard
  * fragment. Owns: session tabs, xterm viewport, SSE attach, one-shot exec,
  * the console sidebar (chat / $cmd / !goal / /shortcut) and the config
@@ -829,7 +829,7 @@
   if (window.ResizeObserver) new ResizeObserver(queueResize).observe(view);
   window.addEventListener('resize', queueResize);
 
-  /* ====================== Nova Console sidebar ====================== */
+  /* ====================== RouterX Console sidebar ====================== */
 
   const side = $('ws-console');
   const sideBody = $('term-side-body');

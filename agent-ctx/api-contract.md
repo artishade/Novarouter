@@ -1,4 +1,4 @@
-# NovaRouter Next.js — API CONTRACT (v1)
+# RouterX Next.js — API CONTRACT (v1)
 
 > ⚠️ **HISTORICAL DOCUMENT — paths are stale, shapes are still authoritative.**
 > The Next.js file layout below (`src/app/api/**`, `src/lib/**`) does NOT exist
@@ -65,7 +65,7 @@ Create `src/lib/server/config.ts` first: `getConfig(key)`, `setConfig(key, value
   - Implement realistic outputs: `free -m` real os values + configured swap row; `df -h` static realistic fs table incl. /workspace; `ps aux` realistic table (node server, prisma engine, bun); `ls -la` fake but stable workspace listing (workspace/ models/ logs/ storage/ .env nova.config.json); `cat nova.config.json` pretty JSON of SystemConfig; `cat .env` masked.
   - `nova` subcommands: `nova status` (stats one-liner), `nova models [n]` (top models table), `nova boost <mb>` (updates v8_heap_mb via setConfig, prints new limit), `nova gpu` (GPU pool table from config), `nova storage` (storage providers table), `nova keys` (client keys count), `nova help`.
   - Unknown → exit 127, stderr `bash: <cmd>: command not found — type 'help' for allowed commands`.
-  - DANGEROUS tokens (rm, sudo, kill, chmod, curl, bash, sh, |, ;, &&, >, <, backtick, $()) → exit 126 stderr `sandbox: command blocked by NovaRouter safety policy`.
+  - DANGEROUS tokens (rm, sudo, kill, chmod, curl, bash, sh, |, ;, &&, >, <, backtick, $()) → exit 126 stderr `sandbox: command blocked by RouterX safety policy`.
   - Persist every executed command row (TerminalCommand), cap table to 200 rows (delete oldest).
   - `clear` → {ok, output:'', code:0}.
   - Return duration_ms measured. `help` output lists allowed commands.
@@ -95,12 +95,12 @@ Gateway:
   2. Stage 1: if requested model exists and its provider has an enabled key and kind != 'builtin' → attempt real upstream OpenAI-format call (`{base_url}/chat/completions`, modelId, Bearer key, 15s timeout, temperature passthrough). On 2xx → log via='upstream', return response mapped to OpenAI shape (model field = REQUESTED model id — spoofing; add `_nova {upstream_model, provider, fallback:false, cached:false, spoofed:true, stage:1}`).
   3. If kind='builtin' or model is nova/* → skip upstream.
   4. Stage 2+: explicit chain models (same rules).
-  5. FINAL FALLBACK — NovaFree engine: dependency-free bun/node sidecar (engine/index.js) routed onto the bundled free-ai-models catalogue (engine/free-models.json); `nova/*` tier aliases pick the best available free model, real free model ids are honoured directly. tools/tool_choice are forwarded and tool_calls/finish_reason returned. tokens_in/out: estimate (chars/4). provider from the engine `_nova` meta. spoofed = (requested != upstream). via='nova-engine'. If no free route is reachable → 502 {error} with a helpful message (never a fabricated reply).
+  5. FINAL FALLBACK — RouterX Free engine: dependency-free bun/node sidecar (engine/index.js) routed onto the bundled free-ai-models catalogue (engine/free-models.json); `nova/*` tier aliases pick the best available free model, real free model ids are honoured directly. tools/tool_choice are forwarded and tool_calls/finish_reason returned. tokens_in/out: estimate (chars/4). provider from the engine `_nova` meta. spoofed = (requested != upstream). via='nova-engine'. If no free route is reachable → 502 {error} with a helpful message (never a fabricated reply).
   6. Always create RequestLog row (model=requested, upstreamModel, providerName, status 200/500, latencyMs, tokens, via, spoofed) .
   7. Response shape: {id: 'chatcmpl-'+random, object:'chat.completion', model: REQUESTED id, choices:[{index:0, message:{role:'assistant', content}, finish_reason:'stop'}], usage:{...}, _nova:{...}}.
   - Errors → log row status>=400 with error text, respond {error}.
 
-Agent (autonomous, real LLM via the NovaFree free-model engine):
+Agent (autonomous, real LLM via the RouterX Free free-model engine):
 - `GET /api/agent/tools` → [{id:'web_search', name:'Web Search', description:'Search the live web for up-to-date information', icon:'Globe'}, {id:'read_url', name:'Page Reader', description:'Read and extract any web page', icon:'BookOpen'}, {id:'terminal', name:'Sandbox Terminal', description:'Run safe diagnostics in the gateway sandbox', icon:'TerminalSquare'}, {id:'gateway_stats', name:'Gateway Telemetry', description:'Inspect live gateway stats, models and routes', icon:'Activity'}, {id:'storage_scan', name:'Storage Scanner', description:'Scan configured storage providers and files', icon:'HardDrive'}]
 - `POST /api/agent/tasks` {goal, max_steps?=6, model?='auto'} → create AgentTask (status 'queued', steps empty) → {id, status}. Then KICK OFF async run WITHOUT awaiting: call the exported runner `runAgentTask(taskId)` imported from `src/lib/server/agent.ts` (same file, fire-and-forget with .catch). Respond immediately.
 - `src/lib/server/agent.ts` — export async function runAgentTask(taskId: string): loop:

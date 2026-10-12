@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # ============================================================================ #
-# NovaRouter — 100% Python server (FastAPI + Jinja2 UI + SQLAlchemy), plus a
-# dependency-free bun sidecar for the built-in NovaFree engine, which routes
+# RouterX — 100% Python server (FastAPI + Jinja2 UI + SQLAlchemy), plus a
+# dependency-free bun sidecar for the built-in RouterX Free engine, which routes
 # onto the free AI model set from ClawLabsAI/free-ai-models
 # (engine/free-models.json).
 # The server binds 0.0.0.0:$PORT (Render assigns PORT dynamically).
@@ -27,7 +27,7 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# bun binary — hosts the NovaFree engine sidecar (127.0.0.1:$ENGINE_PORT)
+# bun binary — hosts the RouterX Free engine sidecar (127.0.0.1:$ENGINE_PORT)
 COPY --from=bun-bin /usr/local/bin/bun /usr/local/bin/bun
 
 # Engine sidecar — zero npm dependencies; the catalogue ships with the image

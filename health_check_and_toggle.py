@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Auto health check and toggle script for NovaRouter.
+Auto health check and toggle script for RouterX.
 Features:
 1. Runs health check on all enabled models
 2. Automatically disables unreachable/dead models 
@@ -260,7 +260,7 @@ def recheck_disabled_models():
 async def main():
     """Main function with interactive menu"""
     print("=" * 60)
-    print("NovaRouter Health Check & Model Management")
+    print("RouterX Health Check & Model Management")
     print("=" * 60)
     
     while True:

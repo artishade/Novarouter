@@ -1,4 +1,4 @@
-/* NovaRouter Python UI — shell behaviours + custom bits beyond Tailwind utilities. */
+/* RouterX Python UI — shell behaviours + custom bits beyond Tailwind utilities. */
 
 /* ---------------- Sidebar expand/collapse (body class driven) ---------------- */
 body.sb-expanded #sidebar { width: 15rem; }

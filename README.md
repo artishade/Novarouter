@@ -1,24 +1,65 @@
-# NovaRouter
+# RouterX
 
-**A self-hosted AI API gateway with a built-in autonomous agent — now on Python (FastAPI).**
+**One endpoint in front of every AI provider — with automatic failover that actually uses the providers you configured.**
 
-NovaRouter fans out requests across many AI providers (including fully free ones), applies fallback + cooldown strategies, manages keys/models/routes, and ships with a unified **Nova Console** where one chatbox can answer questions, run shell commands, and execute agent tasks.
+RouterX is a self-hosted, OpenAI- and Anthropic-compatible AI gateway. Point your SDKs (or **Claude Code**) at one base URL and RouterX fans every request out across the providers you've added, walks a fallback chain when one fails, keeps a per-provider key pool with cooldowns, and finally falls back to **RouterX Free** — a zero-key free-model engine so the gateway never leaves a request unanswered. It ships with a 10-tab dashboard, a chat console, and a real cloud terminal with an autonomous agent.
 
-![stack](https://img.shields.io/badge/Python-FastAPI-009688) ![stack](https://img.shields.io/badge/SQLAlchemy-2-orange) ![stack](https://img.shields.io/badge/UI-Jinja2%20%2B%20HTMX-emerald)
+![stack](https://img.shields.io/badge/Python-FastAPI-009688) ![stack](https://img.shields.io/badge/SQLAlchemy-2-orange) ![stack](https://img.shields.io/badge/UI-Jinja2%20%2B%20HTMX-emerald) ![stack](https://img.shields.io/badge/Claude%20Code-ready-8b5cf6) ![license](https://img.shields.io/badge/license-MIT-blue)
 
-**100% Python — backend and frontend.** The dashboard UI is a Python module (`ui/`, Jinja2 templates + HTMX + Alpine) rendered and served by the same FastAPI process. No Node frontend, no React build step.
+**100% Python** — the backend and the dashboard are one FastAPI process (Jinja2 + HTMX + Alpine, no Node build step). The only JavaScript in the project is the `static/app.js` wiring the dashboard, the terminal client, and the tiny zero-dependency free-model engine sidecar.
 
 ---
 
-## 🌐 Hosted gateway (base URL for external use)
+## Why RouterX?
 
-| What | Value |
+| Problem | What RouterX does about it |
 | --- | --- |
-| **Gateway base URL** | `https://novarouter.onrender.com/v1` |
-| **Health check** | `https://novarouter.onrender.com/health` |
-| **Dashboard** | `https://novarouter.onrender.com` |
+| 🔑 **Provider sprawl** | Add OpenRouter, Groq, Anthropic, xAI, a Cloudflare Worker, or any OpenAI-compatible gateway once. One base URL serves every model, every SDK, no code changes. |
+| 💥 **A provider goes down mid-task** | Requests fail over through your explicit chain **and then across every other healthy provider** before ever giving up — the client keeps asking for one model id and still gets an answer. |
+| 🧊 **Freezes / "request failed" on long runs** | Long-thinking models go quiet for minutes. RouterX keeps the stream alive with heartbeats, so Claude Code and streaming clients don't die at the 10–15s mark. |
+| 🧩 **Nobody can find the right model** | 2,300+ models are searchable right where you build a fallback route — type `claude`, `gpt-4`, `qwen` and click. |
+| 🧠 **You don't want to babysit keys** | Per-provider key pools, weights, cooldowns, and a (provider, model) lockout registry that backs off failures and clears itself the instant a provider recovers. |
+| 🆓 **Free models, honestly** | A built-in **RouterX Free** engine serves a free-model catalogue with **no API key at all**, and tells you the truth via `_nova` when it's used. |
+| 🖥️ **You want it on your own box** | One `docker compose up`. SQLite by default, Postgres when you want persistence, optional separate terminal host. |
 
-The base URL is also advertised live by `GET /api/admin/meta` (`base_url` field). Set `PUBLIC_BASE_URL` to override, otherwise the server always uses the incoming request origin — which on Render is your hosted domain automatically.
+---
+
+## See it work
+
+**Auto-fallback: a failed provider rolls onto the next healthy one, then the free engine.** The client never sees the failure.
+
+![RouterX auto-fallback demo](docs/fallback-demo.svg)
+
+> If GitHub doesn't animate SVG, the static frames still show the flow: request → direct (429) → auto stand-in (200) → response keeps the requested model id.
+
+### Screens
+
+| Dashboard | Fallback-route builder (with model search) | Console |
+| --- | --- | --- |
+| ![Overview](docs/screenshots/overview.svg) | ![Routes](docs/screenshots/routes.svg) | ![Console](docs/screenshots/console.svg) |
+
+*(These are vector previews of the dashboard's dark-terminal UI; run it locally to see the live HTMX version.)*
+
+---
+
+## Architecture
+
+![RouterX architecture](docs/architecture.svg)
+
+```mermaid
+flowchart TD
+    C["Clients<br/>OpenAI SDK · Claude Code · curl · dashboard"] --> G["RouterX Gateway (FastAPI)<br/>/v1/* &amp; /api/v1/* · SSE streaming"]
+    G --> R["Routing brain — nova/routing.py<br/>policies → exposure → tags → lockouts → strategy"]
+    R --> F{"Fallback chain"}
+    F -->|1 direct| P1["Provider transport (pooled httpx)<br/>OpenAI-compatible · Anthropic · Worker · custom"]
+    F -->|2 explicit chain| P1
+    F -->|3 auto stand-ins| P2["Every other healthy, enabled provider"]
+    F -->|4 last resort| E["RouterX Free engine (JS sidecar)<br/>free-ai-models catalogue, no key"]
+    G --> DB[("SQLAlchemy 2<br/>Providers · Models · Keys · Routes · RequestLog")]
+    G -. optional .-> T["Terminal (hostable alone)<br/>PTY shells · sandbox · Agentbox agent"]
+```
+
+A request is ordered by a pure function (`nova/routing.py`, an OmniRoute port) and then executed as a fallback chain: **direct model → your explicit route chain → auto stand-ins → the free engine**. Every stage is recorded, so `_nova.routing` can always explain *why* a request was answered by the provider it was.
 
 ---
 
@@ -26,24 +67,25 @@ The base URL is also advertised live by `GET /api/admin/meta` (`base_url` field)
 
 | Area | What you get |
 | --- | --- |
-| 🐍 Python server | FastAPI + SQLAlchemy — binds `0.0.0.0:$PORT` (Render assigns PORT dynamically, never hardcoded), CORS enabled for browser clients, `/health` for uptime pings |
-| 🤖 Autonomous Agent | Task queue, background execution, tool use (web search, page reader, terminal, live model discovery), task history & cancellation |
-| 💬 Nova Console | **One chatbox for everything** — questions → AI chat with fallback telemetry, `$ cmd` → sandbox shell, `! task` → agent execution |
-| 🔌 MCP plugins | Register your own **MCP servers** from the console (streamable HTTP or a local stdio plugin process) — their tools join the toolbox, the agent planner and a built-in "run this tool" form |
-| 🧠 Free AI providers | Built-in presets (OpenRouter, Groq, GitHub Models, Google AI Studio, Mistral, Ollama, …) with health checks, weights, cooldowns |
-| 🔀 Smart routing | Fallback chains, identity spoofing, request logs, analytics dashboards — plus a routing brain ported from [OmniRoute](https://github.com/diegosouzapw/OmniRoute): glob-matched access/routing/budget policies, `metadata.tags` steering, per-(provider, model) cooldowns, and 11 selection strategies (priority, weighted, round-robin, least-used, cost-optimized, latency, SLA, last-known-good…) |
-| 🗂️ Huge model catalogue | Every routable provider + active model from the OmniRoute registry (**223 providers / 2300+ models**) seeds into the Models tab on first boot, with real base URLs and capabilities. Enable a provider, add a key, and it's live |
-| 📡 OpenAI-spec API | `/v1/models`, `/v1/chat/completions` (**streaming SSE + non-streaming**), `/v1/completions` (legacy), `/v1/messages` (Anthropic format), `/v1/embeddings`, live discovery |
-| 🗄️ Storage manager | Firebase + free storage providers (Supabase, Backblaze B2, Cloudflare R2, GitHub…), dashboard sign-in/connect flows, file browser, backups |
-| ⚙️ Compute config | Gateway memory booster, in-terminal RAM booster, free compute providers (Colab, Kaggle…), **GPU pool config** (attach/detach, VRAM) |
-| 🔑 Key management | Multi-key pools per provider, bulk import, cooldown tracking, client keys for the gateway |
-| 🎨 UI/UX | Dark terminal aesthetic (emerald/slate), responsive mobile-first layout, sticky footer — **Python-rendered UI (Jinja2 + HTMX)** |
+| 🔀 **Real cross-provider failover** | Direct → explicit chain → **auto stand-ins across every other healthy, enabled provider** → free engine. Opt out per route with the `auto` switch. |
+| 💬 **Claude Code &amp; Anthropic-native** | `/v1/messages` + `/v1/messages/count_tokens`, full streaming event order, tool_use/tool_result passthrough, and raw passthrough to Anthropic-kind providers. |
+| 🔌 **OpenAI-spec API** | `/v1/models`, `/v1/chat/completions` (SSE + non-streaming), `/v1/completions`, `/v1/messages`, `/v1/embeddings`, live discovery. Every endpoint also exists under `/api/v1/*`. |
+| 🛡️ **Streams that survive** | Heartbeats while an upstream is silent + 600s read tolerance, so long prefill/thinking runs never trip a proxy timeout mid-answer. |
+| 🧭 **Routing brain (OmniRoute)** | Policy engine, glob exposure lists, `metadata.tags` steering, per-(provider, model) cooldowns, and 11 selection strategies (priority, weighted, round-robin, least-used, cost/latency/SLA, last-known-good…). |
+| 🔎 **Searchable route builder** | Build a fallback chain by searching the whole catalogue (`/ui/routes/models`) and clicking models in order — plus a 3-stage resolution **preview** that matches runtime exactly. |
+| 🧠 **Free models, no key** | Built-in **RouterX Free** engine + convenience tiers (`routerx/pro`, `routerx/air`, `routerx/mini`). |
+| 🔌 **MCP plugins** | Register your own MCP servers (streamable HTTP or local stdio); their tools join the agent's toolbox and a built-in "run this tool" form. |
+| 🗂️ **Huge catalogue** | The OmniRoute registry (**223 providers / 2,300+ models**) seeds on first boot and fills with live discovery. |
+| 🔑 **Key management** | Multi-key pools per provider, bulk import, weights, cooldown tracking, client keys for the gateway. |
+| 🖥️ **Console + terminal** | One chatbox (`$ cmd` shell, `! task` agent) and a real xterm.js cloud terminal with an optional standalone deployment. |
+| 🗄️ **Storage / compute** | Storage manager (R2, S3, GCS, B2, Azure, Supabase…) and compute config (GPU pool, gateway RAM booster). |
+| 🎨 **UI/UX** | Dark terminal aesthetic (emerald/slate), responsive mobile-first layout, server-rendered Jinja2 + HTMX. |
 
 ---
 
 ## 🚀 Quickstart
 
-### Run with Docker (recommended)
+### Docker (recommended)
 
 ```bash
 git clone https://github.com/artishade/Novarouter.git
@@ -51,45 +93,14 @@ cd Novarouter
 docker compose up -d
 ```
 
-Open **http://localhost:3000** (or `http://localhost:$PORT` if you overrode it). Done.
-
-- The server binds `0.0.0.0:$PORT` — `PORT` is read from the environment (Render injects it dynamically; default 3000).
-- On first start the app creates the schema and bootstraps the real minimum: the built-in NovaFree engine (the `nova/mini`, `nova/air`, `nova/pro` tiers plus every free model from [ClawLabsAI/free-ai-models](https://github.com/ClawLabsAI/free-ai-models)) + gateway config. **No mock data is ever seeded.**
-- Data persists in the `nova-db` Docker volume.
-
-Prefer plain Docker?
+Open **http://localhost:3000** (or `http://localhost:$PORT`). On first start RouterX creates the schema and bootstraps the real minimum: the built-in free engine + the OmniRoute provider catalogue + gateway config. **No mock data is ever seeded.** Data lives in the `nova-db` volume.
 
 ```bash
-docker build -t novarouter .
-docker run -d -p 3000:3000 -v nova-db:/app/db novarouter
+docker build -t routerx .
+docker run -d -p 3000:3000 -v nova-db:/app/db routerx
 ```
 
-### Deploy to Render.com (or any Docker host)
-
-1. **New → Web Service** → connect this repo → **Runtime: Docker** (no build/start commands needed — the image self-initializes).
-2. Add an environment variable:
-   - `DATABASE_URL` — **strongly recommended: a free Postgres URL** (Neon, Supabase, Aiven, …) — see [Keep your data across deploys](#-keep-your-data-across-deploys-important). Prisma-style values (`postgres://…`, `pgbouncer` params) are accepted and normalized automatically.
-   - Or SQLite: `file:/app/db/custom.db` (⚠ the container filesystem is ephemeral on Render — without Postgres every deploy resets your data).
-   - Optional: `PUBLIC_BASE_URL=https://novarouter.onrender.com` (the request origin is used when unset).
-   - Optional: `CORS_ALLOW_ORIGINS=*` (default) or a comma-separated origin list.
-3. Set the **Health Check Path** to `/health`.
-4. Deploy. Render injects `PORT` automatically; the server binds `0.0.0.0:$PORT`.
-
-### 💾 Keep your data across deploys (IMPORTANT)
-
-**Why data can disappear:** without `DATABASE_URL`, the server falls back to SQLite at `/app/db/custom.db` — a file **inside the container**. Render replaces the container on every `git push` (and free instances restart on idle), so providers, models, keys, routes and configs would reset each time. The dashboard shows a warning banner and `/health` reports `"storage": {"persistent": false}` until this is fixed.
-
-**The fix (one time, free, ~2 minutes):**
-
-1. Create a free project at [neon.tech](https://neon.tech) (or Supabase/Aiven) and copy the connection string — it looks like `postgresql://user:password@ep-xxx.aws.neon.tech/neondb?sslmode=require`.
-2. Render dashboard → your NovaRouter service → **Environment** → add `DATABASE_URL` = that string. Prisma-style `postgres://…` URLs and `pgbouncer`/`connection_limit` params are handled automatically.
-3. Save & redeploy. On first boot the app creates every table it needs (additive schema sync) and seeds the built-in NovaFree engine if the database is empty.
-
-From then on **deploys never touch your data**: bootstrapping is strictly additive — it creates missing tables and seeds only what's missing, and never deletes, resets or "purges" anything. New deploys only bring new features, bug fixes and additive schema updates.
-
-> Alternative: a Render **persistent disk** (paid plans) mounted at `/var/data` with `DATABASE_URL=file:/var/data/custom.db` works too — but the free Postgres route is recommended.
-
-### Run locally (Python)
+### Local (Python)
 
 ```bash
 git clone https://github.com/artishade/Novarouter.git
@@ -99,64 +110,95 @@ cp .env.example .env
 python3 main.py             # http://localhost:3000 — UI + API in one process
 ```
 
-`python3 main.py` starts the FastAPI server on `0.0.0.0:$PORT`. It serves **everything**: the OpenAI-compatible gateway, the admin/agent JSON APIs, and the dashboard UI itself (Jinja2 templates rendered by the `ui/` Python package — HTMX for interactivity, no Node dev server, no proxy).
+`python3 main.py` binds `0.0.0.0:$PORT` (`PORT` defaults to 3000). It serves **everything**: the gateway, the admin/agent JSON APIs, and the dashboard.
+
+### Deploy (Render or any Docker host)
+
+1. **New → Web Service** → connect the repo → **Runtime: Docker**.
+2. Set **Health Check Path** to `/health`.
+3. Set `DATABASE_URL` to a free Postgres URL (Neon/Supabase/Aiven) — see below.
+
+### 💾 Keep your data across deploys (important)
+
+Without `DATABASE_URL`, RouterX uses SQLite inside the container, so a redeploy on an ephemeral host resets providers, keys and routes. Point `DATABASE_URL` at a free Postgres instance instead:
+
+```bash
+DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
+```
+
+Prisma-style `postgres://…` values and `pgbouncer`/`connection_limit` params are normalized automatically. Bootstrapping is **strictly additive** — it creates missing tables and seeds only what's missing, and never deletes, resets or purges anything. The dashboard shows a warning banner and `/health` reports `"storage": {"persistent": false}` until this is set.
 
 ### Scripts
 
-`bun` is only a task runner here — the app itself is pure Python, and the scripts work with `npm run` too.
-
 | Command | What it does |
 | --- | --- |
-| `bun run install:py` | Install `requirements.txt` (the only dependency step the project needs) |
-| `bun run preview` | Install dependencies if needed, then start the server on `0.0.0.0:$PORT` |
-| `bun run terminal` | Start the terminal **as its own service** on `0.0.0.0:$NOVA_TERMINAL_PORT` (see below) |
-| `bun run test` | Byte-compile, then the Python suite (`tests/test_*.py`) and the dashboard JS suite |
-| `bun run dev` / `bun run start` | Start the server and tee the log to `dev.log` / `server.log` |
+| `bun run install:py` | Install `requirements.txt` |
+| `bun run preview` | Install deps if needed, then run on `0.0.0.0:$PORT` |
+| `bun run terminal` | Run the terminal as its own service |
+| `bun run test` | Byte-compile + Python suite + dashboard JS suite |
 | `bun run lint` | `compileall` syntax check |
 
-`scripts/preview.sh` is the entrypoint used by hosted previews (Freebuff Cloud): it installs the Python dependencies, reaps a gateway left behind by an earlier run, and binds `0.0.0.0:$PORT`. Because those hosts install dependencies with a Node-only toolchain, the Python install has to live in the run step rather than in an install hook.
-
-> **Sandbox preview:** the preview also sets `NOVA_ENGINE_DISABLED=1`. The built-in engine sidecar is a private loopback service, and hosted preview port detection advertises a loopback listener in preference to the public port — with the sidecar running, the preview URL resolves to the sidecar instead of the dashboard. Turning it off in the sandbox keeps the preview URL on the dashboard; the gateway then degrades to your configured upstreams, exactly as it does anywhere the sidecar cannot run. Production (Docker/Render) is unaffected.
+> `bun` is only a task runner; the app is pure Python and the scripts work with `npm run` too.
 
 ---
 
-## 🆓 Free AI model base
+## 🤖 Connect Claude Code (and Claude Desktop)
 
-The built-in **NovaFree engine** needs no API key and no configuration. Its model catalogue is a snapshot of [**ClawLabsAI/free-ai-models**](https://github.com/ClawLabsAI/free-ai-models), bundled at `engine/free-models.json` and exposed through the gateway as real model ids (plus three convenience tiers):
+RouterX speaks the Anthropic Messages API natively, so Claude Code can use the whole provider pool with fallback. Point it at your RouterX base URL:
 
-| Tier | Routes onto (best free model first) |
-| --- | --- |
-| `nova/pro` | Nemotron 3 Ultra, Inkling, Qwen3.8-27B, Pollinations |
-| `nova/air` | Qwen3.8-27B, Gemma-4-31B, Pollinations |
-| `nova/mini` | Pollinations `openai-fast`, Liquid LFM |
+```bash
+export ANTHROPIC_BASE_URL="https://your-routerx-host/v1"     # local: http://localhost:3000/v1
+export ANTHROPIC_AUTH_TOKEN="any-value"                       # RouterX auth (optional client key)
+export ANTHROPIC_MODEL="anthropic/claude-3-5-sonnet"          # a model id from GET /v1/models
+# Claude Code also honours ANTHROPIC_SMALL_FAST_MODEL for lightweight turns.
+claude
+```
 
-Every free catalogue model is also callable directly by its real id (`qwen/qwen3.8-27b:free`, `google/gemma-4-31b-it:free`, …). Responses always report the model you asked for, with the real upstream free model in the `_nova` metadata (`upstream_model`, `provider`, `stage`).
+What RouterX implements for the agent loop:
 
-**Keyless by default** (Pollinations, OVHcloud). Optional keys unlock higher rate limits — set them in the dashboard or as environment variables:
+- `POST /v1/messages` — streaming **and** non-streaming, with the full SSE event order (`message_start` → `content_block_start` → `content_block_delta` → `message_delta` → `message_stop`).
+- `POST /v1/messages/count_tokens` — Claude Code calls this before every turn; without it the session 404s and dies.
+- `tool_use` / `tool_result` blocks are preserved end-to-end (the loop dies on the second turn without them); `thinking`/`redacted_thinking` history is dropped safely.
+- If the requested model maps to an **Anthropic-kind provider**, RouterX passes straight through; otherwise it translates to the OpenAI pipeline and back, and the fallback chain still applies.
+- Long thinking runs are covered by stream heartbeats, so Claude Code doesn't drop the request mid-answer.
 
-| Provider | Env var | Free tier |
-| --- | --- | --- |
-| OpenRouter | `OPENROUTER_API_KEY` | your own free key, ~20 req/min · 50 req/day |
-| ZeroLimitAI | `ZEROLIMIT_API_KEY` | free key |
-| OVHcloud AI Endpoints | `OVH_AI_TOKEN` | keyless, frequently rate-limited |
+Same endpoint powers any Anthropic SDK:
 
-Refresh the bundled snapshot from upstream with `POST /api/admin/models/sync` (the built-in provider is synced from the catalogue, no network calls), or regenerate `engine/free-models.json` from `data/models.json` in the source repository. The engine degrades honestly: if no free route is reachable the gateway falls back to your configured upstreams instead of fabricating a reply.
+```bash
+curl $BASE/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"anthropic/claude-3-5-sonnet","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'
+```
 
 ---
 
-## 🧭 Routing — the OmniRoute brain
+## 🔌 Configure providers &amp; the fallback pipeline
 
-Routing, model routing, provider routing, fallback, MCP scopes, skills and the
-provider catalogue are ported from [**OmniRoute**](https://github.com/diegosouzapw/OmniRoute)
-into `nova/routing.py`, `nova/catalog.py`, `nova/mcp_tools.py` and
-`nova/router_settings.py`. Nothing has to be configured — the defaults reproduce
-the previous stage order exactly — but everything is tunable:
+In **Providers → Add Provider** choose **Anthropic (native)**, **OpenAI-compatible**, **Cloudflare Worker**, **Custom gateway API**, or **xAI Grok**. A provider's **base URL points upstream** (not RouterX's own `/v1`). Pick **Anthropic (native)** for `https://api.anthropic.com` with an Anthropic key; enter the API **root**, not a full `/chat/completions` path.
+
+Then, in **Routes**, create a chain. The route builder now has a **model search**: type to filter the whole catalogue and click models in order. `auto` (default on) appends **every other healthy, enabled provider** as stand-ins — so a failure rolls onto your pool, not straight onto the free engine.
 
 ```bash
 # what the router is doing right now, and what it is skipping (and why)
 curl -s localhost:3000/api/admin/routing
 
-# switch strategy + declare policies, fallback chains and the exposure lists
+# create a fallback chain: public id -> ordered upstream models
+curl -s -X POST localhost:3000/api/admin/routes -H 'content-type: application/json' \
+  -d '{"public_id":"my-model","fallbacks":["anthropic/claude-3-5-sonnet","groq/llama-3.3-70b"],"auto":true}'
+
+# resolve exactly what a request would do (direct / chain / auto stand-ins)
+curl -s "localhost:3000/api/admin/routes/preview?model=my-model"
+```
+
+Every chat response explains itself: `_nova.routing` carries the strategy, the ordered candidates, what was excluded and why; `_nova.fallback` is `true` when anything other than the direct model served the request.
+
+---
+
+## 🧭 Routing — the OmniRoute brain
+
+Routing, model routing, provider routing, fallback, MCP scopes, skills and the provider catalogue are ported from [**OmniRoute**](https://github.com/diegosouzapw/OmniRoute) into `nova/routing.py`, `nova/catalog.py`, `nova/mcp_tools.py` and `nova/router_settings.py`. Defaults reproduce the classic stage order; everything is tunable:
+
+```bash
 curl -s -X POST localhost:3000/api/admin/routing -H 'content-type: application/json' -d '{
   "strategy": "weighted",
   "policies": [
@@ -167,89 +209,46 @@ curl -s -X POST localhost:3000/api/admin/routing -H 'content-type: application/j
   "chains": {"my/model": [{"id":"groq/llama-3.3-70b","priority":0,"enabled":true}]},
   "denylist": ["internal/*"]
 }'
-
-# the ported catalogue (223 providers, 2300+ active models) and the skill/MCP tables
-curl -s localhost:3000/api/admin/catalog
-curl -s localhost:3000/api/admin/catalog/anthropic
-curl -s localhost:3000/api/admin/skills
-curl -s localhost:3000/api/admin/mcp/scopes
 ```
 
 | Knob | What it does |
 | --- | --- |
-| **Strategy** | `priority` (default, the old stage order), `weighted`, `round-robin`, `random`, `least-used`, `cost-optimized`, `rules` / `cost` / `latency` / `sla` / `lkgp` |
-| **Policies** | `access` blocks a model by glob (the request is refused, never silently served by something else), `routing` prefers providers, `budget` caps output tokens — each with a `conditions.model_pattern` glob and a `priority` |
-| **Tag routing** | Send `metadata: {"tags": ["eu"], "tag_match_mode": "any"}` and only providers tagged `eu` are eligible; an untagged request still reaches everyone |
-| **Cooldowns** | A (provider, model) that keeps failing is backed off exponentially and skipped until it recovers — a success clears it instantly. See `/api/admin/routing/availability` |
-| **Exposure lists** | Deny/allow globs hide a model from `/v1/models` **and** from every candidate pool, so it can never sneak back in through a fallback chain |
-| **MCP scopes** | `nova/mcp_tools.py` carries OmniRoute's scope table; a credential that declares scopes is held to them (undeclared = unrestricted) |
-
-Every chat response explains itself: `_nova.routing` carries the strategy, the
-ordered candidates, what was excluded and the reason for each exclusion.
+| **Strategy** | `priority` (default), `weighted`, `round-robin`, `random`, `least-used`, `cost-optimized`, `rules`/`cost`/`latency`/`sla`/`lkgp` |
+| **Policies** | `access` blocks a model by glob (refused, never silently substituted), `routing` prefers providers, `budget` caps output tokens |
+| **Tag routing** | `metadata: {"tags":["eu"],"tag_match_mode":"any"}` limits a request to tagged providers |
+| **Cooldowns / lockouts** | A failing (provider, model) is backed off and skipped until it recovers; a success clears it instantly (`/api/admin/routing/availability`) |
+| **Exposure lists** | Deny/allow globs hide a model from `/v1/models` **and** every candidate pool — it can never sneak back in via a fallback chain |
+| **MCP scopes** | `nova/mcp_tools.py` carries OmniRoute's scope table; a credentialed tool is held to the scopes it declares |
 
 ---
 
 ## 🔌 Gateway API
 
-### Connect upstream providers
-
-In **Providers → Add Provider**, choose **Cloudflare Worker**, **Custom gateway API**, **xAI Grok**, or **Anthropic (native)**. A provider's **base URL points upstream**; it is not the NovaRouter client-facing `/v1` URL shown above. Paste an upstream API key during setup or add one later from the provider's **Keys** panel.
-
-| Choice | Protocol and base URL |
-| --- | --- |
-| Cloudflare Worker | OpenAI-compatible Worker that you deployed, e.g. `https://your-worker.your-subdomain.workers.dev/v1`. Configure its actual URL and token; the Worker must implement the requested API operations. |
-| Custom gateway API | OpenAI-compatible gateway root such as `https://gateway.example.com/v1`. Use its upstream URL, not NovaRouter's own URL (which would create a loop). |
-| xAI Grok | OpenAI-compatible `https://api.x.ai/v1` with an xAI API key. |
-| Anthropic (native) | Native Anthropic Messages API at `https://api.anthropic.com` with an Anthropic API key; **do not** append `/v1` or select an OpenAI-compatible proxy for this choice. |
-
-Enter the API **root**, not a full `/chat/completions`, `/messages`, or `/models` URL. Model discovery calls the upstream catalogue; some custom gateways or Workers do not provide `/models`. If discovery fails, the provider still exists: verify its URL/key and use **Models → Sync Catalogue** to retry. A missing key may also prevent discovery and requests. Provider protocol selection does not change the gateway's client-facing API.
-
-Point any OpenAI/Anthropic SDK at the hosted base URL:
-
 ```bash
-BASE=https://novarouter.onrender.com/v1
+BASE=https://your-routerx-host/v1
 
-# Models (DB catalogue) — live discovery available too
-curl $BASE/models
-curl "$BASE/models?discover=1"            # query every provider's real /models endpoint
-curl "$BASE/models?discover=1&free=1"     # free-tier models only
+curl $BASE/models                             # DB catalogue
+curl "$BASE/models?discover=1"                # live discovery from every provider
+curl "$BASE/models?discover=1&free=1"         # free-tier only
 
-# Chat completions — non-streaming
-curl $BASE/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"nova/air","messages":[{"role":"user","content":"hi"}]}'
+curl $BASE/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"routerx/air","messages":[{"role":"user","content":"hi"}]}'
 
-# Chat completions — STREAMING (SSE)
-curl -N $BASE/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"nova/air","stream":true,"messages":[{"role":"user","content":"Count to 5"}]}'
+curl -N $BASE/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"routerx/air","stream":true,"messages":[{"role":"user","content":"Count to 5"}]}'
 
-# Legacy completions
-curl $BASE/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"nova/air","prompt":"Say hello"}'
+curl $BASE/messages -H 'Content-Type: application/json' \
+  -d '{"model":"anthropic/claude-3-5-sonnet","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'
 
-# Anthropic-format messages (native passthrough for Anthropic providers)
-curl $BASE/messages \
-  -H "Content-Type: application/json" \
-  -d '{"model":"your-model","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'
-
-# Embeddings (via OpenAI-compatible / Gemini providers)
-curl $BASE/embeddings \
-  -H "Content-Type: application/json" \
+curl $BASE/embeddings -H 'Content-Type: application/json' \
   -d '{"model":"text-embedding-3-small","input":"hello world"}'
-
-# Health check (Render uptime pings)
-curl https://novarouter.onrender.com/health
 ```
 
-All endpoints exist under both `/v1/*` and `/api/v1/*`. Responses carry `_nova` metadata showing the upstream provider, stage, and fallback state. CORS is enabled — browser apps can call the API directly.
-
-Admin APIs live under `/api/admin/*` (providers, models, keys, routes, storage, terminal, compute, analytics, logs, meta). Agent APIs under `/api/agent/*` (tasks, tools).
+All endpoints exist under both `/v1/*` and `/api/v1/*`. Responses carry `_nova` metadata (upstream provider, stage, fallback state, routing decision). CORS is enabled by default. Admin APIs live under `/api/admin/*`; agent APIs under `/api/agent/*`.
 
 ---
 
-## 🖥️ Using the Nova Console
+## 🖥️ Using the RouterX Console
 
 Everything lives in one chatbox — input is routed automatically:
 
@@ -258,235 +257,122 @@ Everything lives in one chatbox — input is routed automatically:
 | `Why is my fallback chain failing?` | Gateway AI answers in chat, with live provider/model telemetry chips |
 | `$ free -m` | Runs a real command in the sandbox executor, shows output + exit code |
 | `$ nova gpu kaggle on` | Attaches a GPU from the Kaggle pool to your compute config |
-| `$ nova boost 512` | Raises the gateway memory booster by 512 MB |
-| `$ nova agents` | Lists autonomous agent task history |
 | `/boost 256`, `/models`, `/gpu`, `/storage`, `/help` | Slash shortcuts for terminal-side config |
-| `! Audit the storage providers and report failures` | Delegates to the autonomous agent — watch steps stream live until the task completes |
+| `! Audit the storage providers and report failures` | Delegates to the autonomous agent — steps stream live until it completes |
 | `/plugins` | Opens the MCP server drawer — add, test, disable/remove, and run a tool by hand |
-| Natural language task | Detected as a task → auto-delegates to the agent |
 
 ---
 
-## 🔌 MCP plugins — your own tools in the toolbox
+## 🔌 MCP plugins
 
-The **Plugins** button in the Nova Console toolbar (or `/plugins`) registers
-[Model Context Protocol](https://modelcontextprotocol.io) servers. Everything
-you add is additive: rows are never seeded and never wiped by a deploy.
+The **Plugins** button (or `/plugins`) registers [Model Context Protocol](https://modelcontextprotocol.io) servers. Everything you add is additive — rows are never seeded and never wiped by a deploy.
 
 | Transport | Example | How it runs |
 | --- | --- | --- |
-| `http` | `https://mcp.example.com/mcp` | Streamable HTTP JSON-RPC, plain-JSON **or** SSE-framed replies, `Mcp-Session-Id` echoed back |
-| `stdio` | `npx -y @modelcontextprotocol/server-filesystem /app/build` | A local plugin process, argv-split (never a shell), one cached child per server |
+| `http` | `https://mcp.example.com/mcp` | Streamable HTTP JSON-RPC, plain-JSON or SSE-framed replies |
+| `stdio` | `npx -y @modelcontextprotocol/server-filesystem /app/build` | A local plugin process (argv-split, never a shell), one cached child per server |
 
-- **Test** connects, reports what the server actually offers, and caches the
-  tool list — no fabrication, and a dead plugin never stalls a task.
-- **Run** opens a form generated from the tool's own `inputSchema`, so you can
-  call any tool by hand and read exactly what came back.
-- **Enable/disable** controls what the agent may use; an allow-list
-  (`ask_wiki, search`) narrows it further.
-- Headers are stored as credentials: they are masked on every read and a
-  masked re-save keeps the stored value.
-
-The tools join the permanent toolbox, so an agent task can call them the same
-way it calls the terminal — `! use the wiki plugin to look up …`:
-
-```
-mcp_call → mcp nova-test-plugin::add
-{"result": "42"}
-```
-
-The API behind the drawer, if you would rather script it:
+Tools join the permanent toolbox, so an agent task can call them the same way it calls the terminal. Headers are stored as credentials, shown masked, and a masked re-save keeps the value.
 
 ```bash
-# register
-curl -X POST /api/admin/mcp/servers -H 'Content-Type: application/json' \
-  -d '{"name":"DeepWiki","transport":"http","url":"https://mcp.deepwiki.com/mcp"}'
-
-# connect + cache the tool list
-curl -X POST /api/admin/mcp/servers/test -H 'Content-Type: application/json' \
-  -d '{"id":"deepwiki"}'
-
-# what the agent is allowed to call
-curl /api/admin/mcp/tools
+curl -X POST localhost:3000/api/admin/mcp/servers/test -H 'Content-Type: application/json' -d '{"id":"deepwiki"}'
+curl localhost:3000/api/admin/mcp/tools
 ```
 
 ---
 
 ## ⬛ Terminal — the `~ Root@Build` cloud workspace
 
-The sidebar's **Nova Console** entry opens the merged cloud workspace at
-**`/terminal` in a new browser tab**: the Nova Console chat panel on the left
-(chat, `$ commands`, `! agent tasks`, `/ shortcuts`) and the cloud terminal on
-the right — one screen, like a native terminal app with an assistant beside it.
+The sidebar's **RouterX Console** entry opens the merged cloud workspace at **`/terminal`** in a new tab: the chat panel on the left (chat, `$ commands`, `! agent tasks`, `/ shortcuts`) and the cloud terminal on the right.
 
-- **Permanent cloud shell** — every session is a real `bash` on a
-  pseudo-terminal with **root access on Debian Linux**, branded
-  `~ Root@Build:<cwd>#`. A default `Root@Build` session is recreated
-  automatically whenever none is live, so the terminal is never empty.
-- **Permanently registered tools** — git, curl, python3, pip, node, bun and
-  npm stay available for you *and* for background agent tasks; the agent
-  toolbox (web search, page reader, shell, file tools, storage scan, model
-  discovery) is registered at every boot and needs no UI setup.
-- **Session tabs** — each **New session** spawns its own shell, so `ssh`,
-  `git clone`, `sudo` and `vim` all behave normally. Up to 8 run at once;
-  switch, rename (double-click a tab) or close them freely.
-- **Live state** — the shell reports its working directory (OSC 7), so a tab
-  follows your `cd`; output is drawn with xterm.js (full ANSI colour,
-  selection, `Ctrl+Shift+C` copy, resize forwarded to the PTY).
-- **Cloud build config** — the **Config** button opens the settings drawer:
-  add or edit storage targets (**Cloudflare R2, Google Cloud Storage,
-  AWS S3, Backblaze B2, Azure Blob**, or any custom S3-compatible endpoint)
-  and review the permanently registered tools. Everything is saved from the
-  web UI; secrets are stored server-side and always shown masked.
+- **Permanent cloud shell** — every session is a real `bash` on a pseudo-terminal with root access on Debian, branded `~ Root@Build:<cwd>#`.
+- **Session tabs** — up to 8 live shells; switch, rename (double-click) or close them.
+- **Live state** — OSC 7 working-directory reporting and full ANSI colour via xterm.js.
+- **Cloud build config** — add/edit storage targets (R2, GCS, S3, B2, Azure, custom S3) from the UI; secrets stored server-side and always shown masked.
 
 ```bash
-curl -s localhost:3000/api/admin/terminal/pty/sessions          # state snapshot
-curl -s -XPOST localhost:3000/api/admin/terminal/pty/sessions -d '{"cols":120,"rows":32}'
-curl -sN localhost:3000/api/admin/terminal/pty/stream?session=<id>   # output + cd + exit events
-curl -s localhost:3000/api/build/info                # cloud identity, tools, build targets
-curl -s -XPOST localhost:3000/api/build/providers \
-  -d '{"id":"cloudflare_r2","config":{"bucket_name":"my-bucket","access_key":"…","secret_key":"…"}}'
+curl -s localhost:3000/api/admin/terminal/pty/sessions
+curl -sN "localhost:3000/api/admin/terminal/pty/stream?session=<id>"
+curl -s localhost:3000/api/build/info
 ```
 
----
+### Hosting the terminal separately
 
-## 🏗️ Hosting the terminal separately
-
-The terminal is the one part of NovaRouter that often wants its own machine:
-it hands out **real root shells**, so it can be sized, restarted and
-network-isolated independently of the gateway.
-
-**The whole terminal is one directory: `terminal/`.** Nothing terminal-related
-lives anywhere else in the project, and the rest of the app reaches it only
-through `terminal.*` imports (`from terminal import link`, `from terminal.api
-import router`, `from terminal.sandbox import execute_command`). So hosting the
-terminal separately is a deployment decision, not a code change.
-
-**Nothing to do by default.** With `NOVA_TERMINAL_URL` unset the terminal runs
-in-process, exactly as before: one service, no extra configuration.
-
-**To host it on its own**, run the terminal service and point the app at it:
+The whole terminal is one directory, `terminal/`, that imports nothing from `nova/` and needs no database — so hosting it on its own is a deployment decision, not a code change. With `NOVA_TERMINAL_URL` unset it runs in-process (the default).
 
 ```bash
-# 1. the terminal, on its own host (binds 0.0.0.0:$NOVA_TERMINAL_PORT, default 3100)
-docker build -t novarouter-terminal ./terminal    # builds terminal/ ALONE
-docker run -p 3100:3100 -e NOVA_TERMINAL_TOKEN=<shared secret> novarouter-terminal
+docker build -t routerx-terminal ./terminal
+docker run -p 3100:3100 -e NOVA_TERMINAL_TOKEN=<shared-secret> routerx-terminal
 
-# …or from source, same directory, no Docker:
-bun run terminal          # → sh ./terminal/run.sh → python3 -m terminal.service
-
-# 2. the project, connected to that terminal
-NOVA_TERMINAL_URL=http://terminal-host:3100 \
-NOVA_TERMINAL_TOKEN=<shared secret> \
-bun run dev
+# then point the gateway at it
+NOVA_TERMINAL_URL=http://terminal-host:3100 NOVA_TERMINAL_TOKEN=<shared-secret> bun run dev
 ```
-
-`docker compose up` already runs both that way — a `terminal` service built
-from `terminal/` on its own, and a gateway that forwards to it.
-
-**You don't need the project at all.** `terminal/` imports nothing from
-`nova/`, needs no database, and ships its own console and **Agentbox** — the AI
-agent — so a terminal deployed alone still gives you the shells *and* the agent.
-Open `http://<terminal-host>:3100/`: session tabs, a real shell (xterm.js), and
-the agent side by side.
-
-```bash
-curl -s http://terminal-host:3100/health            # agentbox.configured
-curl -s http://terminal-host:3100/                  # the console page
-curl -s -XPOST http://terminal-host:3100/agent/chat \
-  -H 'X-Nova-Terminal-Token: <secret>' \
-  -d '{"message":"deploy the site and tail the log"}'
-```
-
-Every command the agent runs lands in a **visible terminal tab**. Point it at
-any OpenAI-compatible endpoint (the free NovaFree engine, OpenAI, Groq,
-OpenRouter, a local vLLM, or a NovaRouter `/v1`) and it stays off — honestly,
-with `agentbox.configured: false` — until you do. Add as many custom providers
-as you like and pick one per message:
-
-```bash
-curl -XPOST http://terminal-host:3100/agent/providers \
-  -H 'X-Nova-Terminal-Token: <secret>' -H 'content-type: application/json' \
-  -d '{"id":"groq","base_url":"https://api.groq.com/openai/v1",
-       "api_key":"…","model":"llama-3.3-70b"}'
-```
-
-They are stored beside the workspace, `0600`, and their keys are only ever
-echoed back masked. The page has the same controls under **providers**.
 
 | Variable | Where | What it does |
 | --- | --- | --- |
-| `NOVA_TERMINAL_URL` | gateway | Set it to host the terminal separately. Unset = in-process. |
-| `NOVA_TERMINAL_TOKEN` | **both** | Shared secret for `X-Nova-Terminal-Token`. Gates real root shells — always set it before exposing the terminal beyond loopback. |
-| `NOVA_TERMINAL_PORT` | terminal | The terminal's own port (default `3100`). Never the app's port. |
-| `NOVA_BUILD_ROOT` | terminal | Where shells start (default `/app/build`). Point both hosts at the same shared workspace. |
-| `NOVA_AGENTBOX_BASE_URL` | terminal | Agentbox's model endpoint. Unset = agent off. |
-| `NOVA_AGENTBOX_API_KEY` | terminal | Its API key. |
-| `NOVA_AGENTBOX_MODEL` | terminal | Model id (default: first the endpoint offers). |
-| `NOVA_AGENTBOX_PROVIDER_FILE` | terminal | Where saved custom providers live (default: `<workspace>/.agentbox-providers.json`). |
+| `NOVA_TERMINAL_URL` | gateway | Host the terminal separately. Unset = in-process |
+| `NOVA_TERMINAL_TOKEN` | **both** | Shared secret for `X-Nova-Terminal-Token`. Gates real root shells — always set it before exposing the terminal beyond loopback |
+| `NOVA_TERMINAL_PORT` | terminal | The terminal's own port (default `3100`) |
+| `NOVA_BUILD_ROOT` | terminal | Where shells start (default `/app/build`) |
+| `NOVA_AGENTBOX_BASE_URL` / `_API_KEY` / `_MODEL` | terminal | Point the standalone Agentbox agent at any OpenAI-compatible endpoint |
 
-Read in `terminal/config.py` (the terminal owns its own settings) — see also
-[`terminal/README.md`](terminal/README.md).
-
-**Why the project stays connected.** The gateway and the service mount the
-*same* routes (`terminal/api.py`) — the split changes where the PTYs
-live, not the API. So the dashboard, the JSON API, the agent's shell steps and
-every `curl` above keep working unchanged, including the SSE output stream.
-`terminal/link.py` is the seam: `LocalLink` in-process, `RemoteLink` over
-HTTP, chosen by configuration alone.
-
-```bash
-curl -s localhost:3100/health                    # the terminal service's own health
-curl -s localhost:3000/health | grep -A3 terminal # mode: local | remote
-```
-
-A few behaviours worth knowing:
-
-- **Sessions outlive the gateway.** Restarting or redeploying the app does not
-  kill shells on the terminal host — that is the point of splitting it.
-- **A dead terminal doesn't take the app down.** `/health` reports the terminal
-  as degraded, `/history` still answers with OS stats, and the agent falls back
-  to its one-shot executor rather than failing the task.
-- **The service always owns its shells.** A stray `NOVA_TERMINAL_URL` in its
-  own environment can't make it proxy to itself.
+`terminal/` ships its own console and AI agent (**Agentbox**), so a terminal deployed alone still gives you shells *and* an assistant.
 
 ---
 
-## 🗂️ Project Structure
+## 🔒 Configuration &amp; notes
+
+Key environment variables (see `.env.example`):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | Bind port (`0.0.0.0:$PORT`) |
+| `DATABASE_URL` | `file:./db/custom.db` | SQLite or Postgres (`postgres://…` accepted) |
+| `PUBLIC_BASE_URL` | request origin | Advertised base URL in `/api/admin/meta` and client snippets |
+| `CORS_ALLOW_ORIGINS` | `*` | Comma-separated origin allow-list |
+| `NOVA_ENGINE_PORT` | `3099` | RouterX Free engine sidecar port (never the app port) |
+| `NOVA_UPSTREAM_READ_TIMEOUT` | `600` | Max silence between upstream bytes (long thinking runs) |
+| `NOVA_SSE_HEARTBEAT` | `10` | Seconds between keep-alive comments while an upstream is silent |
+| `NOVA_AUTO_STANDINS` | `6` | Max auto stand-in providers appended to a chain |
+
+**Data:** no mock/demo data ships with the project. The dashboard starts with the built-in engine and the real OmniRoute catalogue (disabled providers, no keys), and fills with **real** data as you enable providers, add keys, sync catalogues, and use the gateway. Everything you add survives every restart and every `git push`.
+
+---
+
+## 🗂️ Project structure
 
 ```
 main.py            FastAPI entrypoint — 0.0.0.0:$PORT, CORS, /health, API routers, UI
 terminal/          the ENTIRE terminal feature, one path, hostable on its own:
                    pty (real PTY sessions) · sandbox (allowlist exec) · link
                    (in-process vs separately hosted) · api (the contract, mounted by
-                   BOTH hosts) · agentbox (the AI agent) · web (the console page served
-                   at `/`) · service (the standalone host) · config · run.sh · Dockerfile
-                   (self-contained: no nova import, no database; the rest of the app
-                   imports it as `terminal.*` and nothing terminal lives outside it)
-nova/              config, SQLAlchemy models (Prisma-layout compatible), bootstrap,
-                   engine sidecar client, live discovery, model sync, build registry,
-                   agent runtime, storage lib, MCP client + plugin registry,
-                   routing brain (catalog / routing / router_settings / mcp_tools)
-routers/           gateway (/v1), admin CRUD, admin misc, terminal (glue: exec history,
-                   OS telemetry, and the terminal's routes mounted at /pty), compute,
-                   storage, agent, MCP plugin registry, build APIs
-ui/                the Python frontend module — shell + 9 dashboard tabs,
-                   server-rendered fragments consumed by HTMX (BFF over the JSON API)
+                   BOTH hosts) · agentbox (the AI agent) · web (the console page at `/`)
+                   · service (the standalone host) · config · run.sh · Dockerfile
+nova/              config, SQLAlchemy models, bootstrap, engine sidecar client, live
+                   discovery, model sync, agent runtime, storage lib, MCP client +
+                   registry, routing brain (catalog / routing / router_settings / mcp_tools)
+routers/           gateway (/v1 + /api/v1), admin CRUD, terminal glue, compute, storage,
+                   agent, MCP registry, build APIs, anthropic_adapter (/v1/messages)
+ui/                the Python frontend module — shell + dashboard tabs, server-rendered
+                   fragments consumed by HTMX (BFF over the JSON API)
 templates/         Jinja2 templates (base shell, tab fragments, partials)
-static/            nova.css, app.js (HTMX wiring, toasts, streaming chat JS), logo
-engine/            NovaFree engine sidecar (bun/node, zero npm deps) — routes onto the
-                   free-ai-models catalogue (free-models.json): chat stream, search, reader
-db/                SQLite database file (bootstrap at first boot)
-Dockerfile         python:3.12-slim runtime + bun sidecar (UI is pure Python — no node build)
+static/            nova.css, app.js, terminal_workspace.js, logo
+engine/            RouterX Free engine sidecar (bun/node, zero npm deps) + free-models.json
+docs/              architecture.svg · fallback-demo.svg · screenshots/
+db/                SQLite database file (created at first boot)
+Dockerfile         python:3.12-slim runtime + sidecar — no Node build
 docker-compose.yml one-command deploy with persistent volume — gateway + terminal host
-                   (the terminal is built from ./terminal on its own; to deploy just the
-                   terminal, point your host's build context at terminal/)
 ```
 
-## 🔒 A note on data
+## 🧪 Tests
 
-No mock/demo data ships with the project: the dashboard starts with the built-in engine and the real OmniRoute provider catalogue (disabled providers, no keys, nothing invented), and fills with **real** data as you enable providers, add keys, sync live model catalogues, and use the gateway. Everything else you add — providers, models, keys, routes, configs, logs, files — survives every restart and every `git push`.
+```bash
+sh scripts/test.sh          # byte-compile → Python suite → dashboard JS suite
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+Fully offline: provider protocol tests use `httpx.MockTransport`, and the gateway needs no keys.
 
 ## 📄 License
 
-MIT
+MIT — see [LICENSE](LICENSE).

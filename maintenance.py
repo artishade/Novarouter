@@ -1,4 +1,4 @@
-"""Periodic maintenance utilities for NovaRouter"""
+"""Periodic maintenance utilities for RouterX"""
 
 import asyncio
 import logging

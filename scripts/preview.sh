@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# NovaRouter preview launcher — installs the Python dependencies, then runs
+# RouterX preview launcher — installs the Python dependencies, then runs
 # the FastAPI app on 0.0.0.0:$PORT.
 # POSIX-safe: the Freebuff preview runner executes it with `sh` (dash),
 # so no bash-only features (pipefail, [[ ]], source) may appear here.
@@ -16,7 +16,7 @@ fi
 # be installed here — in the run step — before the app can import fastapi.
 # Already-satisfied requirements make this a fast no-op on a warm start.
 if ! "$PY" -c "import fastapi, uvicorn, sqlalchemy, jinja2, httpx" >/dev/null 2>&1; then
-  echo "[novarouter] preview: installing python dependencies into ${PY}"
+  echo "[routerx] preview: installing python dependencies into ${PY}"
   if [ "$PY" != "python3" ]; then
     "$PY" -m pip install --no-cache-dir --disable-pip-version-check --quiet -r requirements.txt
   else
@@ -32,7 +32,7 @@ fi
 for pid in $(ps -eo pid,args | grep '[p]ython3 main.py' | awk '{print $1}'); do
   [ "$pid" = "$$" ] && continue
   [ "$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)" = "$PWD" ] || continue
-  echo "[novarouter] preview: stopping stale gateway process ${pid}"
+  echo "[routerx] preview: stopping stale gateway process ${pid}"
   kill "$pid" 2>/dev/null || true
 done
 
@@ -46,5 +46,5 @@ done
 : "${NOVA_ENGINE_DISABLED:=1}"
 export NOVA_ENGINE_DISABLED
 
-echo "[novarouter] preview: ${PY} on 0.0.0.0:${PORT:-3000}"
+echo "[routerx] preview: ${PY} on 0.0.0.0:${PORT:-3000}"
 exec "$PY" main.py

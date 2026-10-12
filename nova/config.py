@@ -1,4 +1,4 @@
-"""NovaRouter Python core — configuration and environment handling.
+"""RouterX Python core — configuration and environment handling.
 
 The server binds to 0.0.0.0:$PORT (Render assigns PORT dynamically — never
 hardcoded). DATABASE_URL accepts Prisma-style values (`file:…`, `postgres://`,

@@ -487,7 +487,7 @@ async def delete_provider(request: Request) -> HTMLResponse:
     try:
         await api.delete(f"/api/admin/providers/{pid}")
     except ApiError as e:
-        # e.g. "The built-in NovaFree engine cannot be deleted" — surfaced verbatim.
+        # e.g. "The built-in RouterX Free engine cannot be deleted" — surfaced verbatim.
         return _toast(message=e.message, ttype="error")
     except Exception as e:  # noqa: BLE001
         return _toast(message=f"Failed to delete provider ({e.__class__.__name__})", ttype="error")

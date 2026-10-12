@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cron job script for automatic NovaRouter health checks.
+Cron job script for automatic RouterX health checks.
 This runs periodically to:
 1. Check health of all enabled models
 2. Disable dead/unreachable models

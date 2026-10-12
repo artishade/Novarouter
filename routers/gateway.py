@@ -12,8 +12,10 @@ Routing pipeline:
   Stage 1     — direct upstream (requested model, enabled key)
   Stage 2..N  — fallback chain: the ModelRoute `fallbacks` list first (publicId
                 match, else '*'), then any richer declarative chains registered
-                in `routing_fallback_chains`
-  Final stage — NovaFree engine (free-ai-models catalogue, no key required)
+                in `routing_fallback_chains`, then the auto stand-in pool
+                (every other healthy, enabled provider) while the route's `auto`
+                flag is on — the default
+  Final stage — RouterX Free engine (free-ai-models catalogue, no key required)
 
 The order of those stages is produced by `nova.routing` (the OmniRoute domain
 layer, ported): policy engine → exposure lists → tag routing → per-(provider,
@@ -80,6 +82,19 @@ _KEY_CACHE_TTL = 30.0
 
 # Lockouts are flushed to SystemConfig at most once a minute.
 _LOCKOUT_FLUSH_TS = 0.0
+
+# Auto stand-ins: once a route's explicit chain is exhausted (and the route's
+# `auto` flag is on — the default), the pipeline appends other healthy, enabled
+# providers' models. That is what makes a dead provider fall over onto the rest
+# of the pool the operator configured instead of jumping straight to the free
+# engine. The dashboard preview calls the same helper, so they never disagree.
+AUTO_STANDIN_LIMIT = int(os.environ.get("NOVA_AUTO_STANDINS", "6"))
+
+# SSE keep-alive: when an upstream is silent (cold start, long thinking, queue)
+# a proxy with a short idle timeout drops the connection and the client reports
+# a failure roughly 10-15s in. A comment line / ping every few seconds keeps the
+# stream demonstrably alive end to end. Env-tunable.
+SSE_HEARTBEAT_S = float(os.environ.get("NOVA_SSE_HEARTBEAT", "10.0"))
 
 
 # --------------------------------------------------------------------------- #
@@ -619,6 +634,84 @@ def _candidate(row: ModelRow, stage: int, requested: str,
     }
 
 
+def _effective_route(db: Session, requested: str) -> ModelRoute | None:
+    """The enabled route that governs `requested`, else the '*' default chain."""
+    route = db.scalars(
+        select(ModelRoute).where(ModelRoute.publicId == requested, ModelRoute.enabled.is_(True))
+    ).first()
+    if route is None:
+        route = db.scalars(
+            select(ModelRoute).where(ModelRoute.publicId == "*", ModelRoute.enabled.is_(True))
+        ).first()
+    return route
+
+
+def auto_standins(db: Session, requested: str, seen: set[str],
+                  limit: int = AUTO_STANDIN_LIMIT) -> list[ModelRow]:
+    """Healthy, enabled models from other providers — the auto-fallback pool.
+
+    Shared by the live pipeline (after a route's explicit chain is exhausted)
+    and by the dashboard's route preview, so what the preview promises is what
+    the gateway actually does.
+    """
+    rows = db.scalars(
+        select(ModelRow)
+        .where(ModelRow.enabled.is_(True))
+        .options(joinedload(ModelRow.provider))
+        .order_by(ModelRow.isFree.desc(), ModelRow.latencyMs.asc(), ModelRow.id.asc())
+    ).unique().all()
+    picked: list[ModelRow] = []
+    for m in rows:
+        provider = m.provider
+        if provider is None or not provider.enabled:
+            continue
+        # Not reachable through the HTTP upstream path: the free engine is the
+        # pipeline's own final stage, and gemini is not wired for chat here.
+        if provider.kind in ("builtin", "gemini"):
+            continue
+        if not provider.baseUrl or provider.baseUrl.startswith("internal://"):
+            continue
+        if (m.status or "") == "dead":
+            continue
+        if m.exposedId in seen or m.modelId in seen:
+            continue
+        seen.add(m.exposedId)
+        picked.append(m)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+async def _iterate_with_heartbeat(stream, heartbeat: bytes):
+    """Iterate a provider stream, yielding heartbeats while it stays silent.
+
+    Yields ``("hb", bytes)`` for every silent interval, ``("piece", item)`` for
+    each real chunk and a final ``("eof", None)``. The pending read is shielded
+    from cancellation, so emitting a heartbeat never tears the upstream
+    connection down the way cancelling ``__anext__`` would. Callers keep the
+    same generator across the probe/continuation split, so a long prefill can be
+    watched by the client (and a proxy) without the stream dying.
+    """
+    pending = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(stream.__anext__())
+            try:
+                piece = await asyncio.wait_for(asyncio.shield(pending), timeout=SSE_HEARTBEAT_S)
+            except asyncio.TimeoutError:
+                yield ("hb", heartbeat)
+                continue
+            except (StopAsyncIteration, Exception):
+                yield ("eof", None)
+                return
+            pending = None
+            yield ("piece", piece)
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+
+
 def _pipeline_rows(db: Session, requested: str,
                    settings: router_settings.RouterSettings) -> list[ModelRow]:
     """Direct row, then ModelRoute fallbacks, then declarative routing chains."""
@@ -641,6 +734,12 @@ def _pipeline_rows(db: Session, requested: str,
         row = find_model(db, cid)
         if row is not None:
             rows.append(row)
+
+    # Auto stand-ins — every other healthy, enabled provider joins the chain
+    # after the explicit fallbacks (opt out per route with auto=0).
+    route = _effective_route(db, requested)
+    if route.auto if route is not None else True:
+        rows.extend(auto_standins(db, requested, seen))
     return rows
 
 
@@ -683,6 +782,12 @@ def route_request(db: Session, requested: str, body: dict | None = None) -> tupl
 
     plan["rows"] = [c["row"] for c in plan["candidates"]]
     plan["considered"] = len(candidates)
+    # Did the requested id resolve to a real candidate? If not, whatever serves
+    # the request is a fallback even when it lands at stage 1.
+    plan["direct"] = any(
+        c.get("exposed_id") == requested or c.get("model_id") == requested
+        for c in candidates
+    )
     return plan["rows"], plan
 
 
@@ -716,6 +821,7 @@ def note_attempt(row: ModelRow, ok: bool, reason: str = "") -> None:
 
 def persist_lockouts(db: Session, force: bool = False) -> None:
     """Flush lockout state to SystemConfig, throttled to once a minute."""
+    global _LOCKOUT_FLUSH_TS
     now = time.time()
     if not force and now - _LOCKOUT_FLUSH_TS < 60.0:
         return
@@ -736,7 +842,7 @@ async def pipeline_nonstream(db: Session, requested: str, messages: list[dict], 
             result["stage"] = stage
             return result, stage, plan
 
-    # Final stage: NovaFree engine (free-ai-models base, non-streaming)
+    # Final stage: RouterX Free engine (free-ai-models base, non-streaming)
     stage = len(rows) + 1
     tools = None
     tool_choice = None
@@ -765,7 +871,7 @@ async def pipeline_nonstream(db: Session, requested: str, messages: list[dict], 
             "finish_reason": choice.get("finish_reason"),
             "upstream_model": engine_meta.get("upstream_model") or "nova-engine",
             "upstream_exposed_id": engine_meta.get("upstream_model") or "nova-engine",
-            "provider_name": engine_meta.get("provider") or "NovaFree Engine",
+            "provider_name": engine_meta.get("provider") or "RouterX Free Engine",
             "provider_id": None,
             "via": "nova-engine",
             "usage": {"prompt_tokens": None, "completion_tokens": None},
@@ -877,7 +983,7 @@ async def chat_completions(request: Request):
             result, stage, plan = await pipeline_nonstream(db, requested, messages, temperature, body)
         except HTTPError as err:
             write_log(db, model=requested, upstream_model="nova-engine",
-                      provider_name="NovaFree Engine", endpoint="/v1/chat/completions",
+                      provider_name="RouterX Free Engine", endpoint="/v1/chat/completions",
                       status=err.status, latency_ms=now_ms() - started, via="nova-engine",
                       error=err.message)
             return JSONResponse({"error": err.message}, status_code=err.status)
@@ -889,7 +995,7 @@ async def chat_completions(request: Request):
         usage = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                  "total_tokens": prompt_tokens + completion_tokens}
         meta = nova_meta(result["upstream_model"], result["provider_name"], result["stage"], requested,
-                         result["stage"] > 1, routing_summary(plan))
+                         result["stage"] > 1 or not plan.get("direct", True), routing_summary(plan))
         write_log(db, model=requested, upstream_model=result["upstream_model"],
                   provider_name=result["provider_name"], status=200,
                   latency_ms=now_ms() - started, tokens_in=prompt_tokens,
@@ -930,9 +1036,12 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
     db = SessionLocal()
     committed = False
     assembled: list[str] = []
-    served = {"upstream_model": "nova-engine", "provider_name": "NovaFree Engine", "via": "nova-engine", "stage": 0}
+    served = {"upstream_model": "nova-engine", "provider_name": "RouterX Free Engine", "via": "nova-engine", "stage": 0}
     think_filter = ThinkStreamFilter()
     try:
+        # Open the client stream immediately so a proxy never sees an idle
+        # connection while the router resolves and the upstream warms up.
+        yield b": routerx-keepalive\n\n"
         try:
             rows, plan = route_request(db, requested, original_body)
         except HTTPError as err:
@@ -950,14 +1059,19 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
                 log.info("stream stage %s failed: %s", stage, err)
                 continue
 
-            # Probe the first delta before committing.
+            # Probe the first delta before committing — heartbeats keep the
+            # connection warm while a cold/long-thinking upstream stays silent.
+            pieces = _iterate_with_heartbeat(stream, b": routerx-keepalive\n\n")
             first = None
-            async for piece in stream:
-                if piece["text"] or piece["finish_reason"] or piece.get("tool_calls"):
-                    first = piece
-                    break
+            async for kind, value in pieces:
+                if kind == "hb":
+                    yield value
+                    continue
+                if kind == "piece" and (value["text"] or value["finish_reason"] or value.get("tool_calls")):
+                    first = value
+                break
 
-            if first is None or (not first["text"] and not first["finish_reason"] and not first.get("tool_calls")):
+            if first is None:
                 try:
                     await stream.aclose()
                 except Exception:
@@ -990,7 +1104,12 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
                 except Exception:
                     pass
                 break
-            async for piece in stream:
+            async for kind, piece in pieces:
+                if kind == "hb":
+                    yield piece
+                    continue
+                if kind == "eof":
+                    break
                 if piece["text"]:
                     filtered = think_filter.feed(piece["text"])
                     if filtered:
@@ -1008,9 +1127,9 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
             break
 
         if not committed:
-            # Final stage: NovaFree engine (free-ai-models base, streamed).
+            # Final stage: RouterX Free engine (free-ai-models base, streamed).
             stage = len(rows) + 1
-            served = {"upstream_model": "nova-engine", "provider_name": "NovaFree Engine",
+            served = {"upstream_model": "nova-engine", "provider_name": "RouterX Free Engine",
                       "via": "nova-engine", "stage": stage}
             tools = None
             tool_choice = None
@@ -1063,7 +1182,7 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
                 yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {}, "finish_reason": final_reason}]})
                 yield b"data: [DONE]\n\n"
             except nova_engine.EngineUnavailable as err:
-                msg = f"All routing stages failed: {err}. Fix checklist: (1) Dashboard → Providers → Test your provider; (2) Dashboard → Models → Sync models; (3) request a model id that exists there (e.g. \"nova/air\")."
+                msg = f"All routing stages failed: {err}. Fix checklist: (1) Dashboard → Providers → Test your provider; (2) Dashboard → Models → Sync models; (3) request a model id that exists there (e.g. \"routerx/air\")."
                 yield sse_chunk({"error": {"message": msg, "type": "gateway_error", "code": 502}})
                 yield b"data: [DONE]\n\n"
     finally:
@@ -1125,7 +1244,7 @@ async def legacy_completions(request: Request):
                 result, stage, plan = await pipeline_nonstream(db, requested, messages, temperature)
             except HTTPError as err:
                 write_log(db, model=requested, upstream_model="nova-engine",
-                          provider_name="NovaFree Engine", endpoint="/v1/completions",
+                          provider_name="RouterX Free Engine", endpoint="/v1/completions",
                           status=err.status, latency_ms=now_ms() - started, via="nova-engine",
                           error=err.message)
                 return JSONResponse({"error": err.message}, status_code=err.status)
@@ -1152,7 +1271,7 @@ async def legacy_completions(request: Request):
         "usage": {"prompt_tokens": total_in, "completion_tokens": total_out,
                   "total_tokens": total_in + total_out},
         "_nova": nova_meta(served["upstream_model"], served["provider_name"], served["stage"], requested,
-                           served["stage"] > 1, routing_summary(plan)),
+                           served["stage"] > 1 or not plan.get("direct", True), routing_summary(plan)),
     })
 
 
@@ -1164,7 +1283,7 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
     from nova.database import SessionLocal
     db = SessionLocal()
     committed = False
-    served = {"upstream_model": "nova-engine", "provider_name": "NovaFree Engine", "via": "nova-engine", "stage": 0}
+    served = {"upstream_model": "nova-engine", "provider_name": "RouterX Free Engine", "via": "nova-engine", "stage": 0}
     legacy_think = ThinkStreamFilter()
     try:
         rows = resolve_pipeline(db, requested)
@@ -1175,11 +1294,15 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
                 stream, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature)
             except UpstreamFailure:
                 continue
+            pieces = _iterate_with_heartbeat(stream, b": routerx-keepalive\n\n")
             first = None
-            async for piece in stream:
-                if piece["text"] or piece["finish_reason"]:
-                    first = piece
-                    break
+            async for kind, value in pieces:
+                if kind == "hb":
+                    yield value
+                    continue
+                if kind == "piece" and (value["text"] or value["finish_reason"]):
+                    first = value
+                break
             if first is None:
                 try:
                     await stream.aclose()
@@ -1207,7 +1330,12 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
                 except Exception:
                     pass
                 break
-            async for piece in stream:
+            async for kind, piece in pieces:
+                if kind == "hb":
+                    yield piece
+                    continue
+                if kind == "eof":
+                    break
                 if piece["text"]:
                     filtered = legacy_think.feed(piece["text"])
                     if filtered:
@@ -1221,7 +1349,7 @@ async def _legacy_stream(requested: str, prompt: str, temperature, started: int)
 
         if not committed:
             stage = len(rows) + 1
-            served = {"upstream_model": "nova-engine", "provider_name": "NovaFree Engine", "via": "nova-engine", "stage": stage}
+            served = {"upstream_model": "nova-engine", "provider_name": "RouterX Free Engine", "via": "nova-engine", "stage": stage}
             try:
                 result_content = ""
                 completion = await nova_engine.chat(messages, model=requested)

@@ -11,10 +11,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <!-- Critical fallback so the shell never renders white if the Tailwind CDN is unreachable -->
   <style>
-    html { background: #050505; color: #e5e5e5; }
+    html { background: #000000; color: #e5e5e5; }
     body { margin: 0; font-family: Geist, ui-sans-serif, system-ui, sans-serif; }
     #shell { display: flex; min-height: 100vh; }
-    #sidebar { width: 3.5rem; background: #070707; border-right: 1px solid #262626; }
+    #sidebar { width: 3.5rem; background: #000000; border-right: 1px solid #1a1a1a; }
     #right-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   </style>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -27,28 +27,34 @@
             sans: ['Geist', 'ui-sans-serif', 'system-ui', 'sans-serif'],
             mono: ['Geist Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
           },
-          // RouterX default theme: matte black surfaces with a darkest-red
-          // interaction accent.
+          // RouterX theme: Vantablack surfaces (#000000 page / #000000 panels,
+          // near-black borders) with a **neon green** interaction accent and
+          // #6A1C0F for error lines.
           //
-          // `emerald` is deliberately remapped to the RouterX red ramp: every
-          // existing accent utility (buttons, links, active nav, focus rings,
-          // toggles, chips) is written against that scale, so the accent is
-          // themed in ONE place instead of across ~500 class attributes.
-          // `slate` is remapped to Tailwind's neutral ramp so no surface or
-          // border keeps the old blue-navy cast.
-          //
-          // Success/health semantics do NOT ride this ramp — those use `green`
-          // (see .nova-badge-ok and the status maps in ui/tabs/).
+          // `emerald` is deliberately remapped to the RouterX neon-green ramp:
+          // every existing accent utility (buttons, links, active nav, focus
+          // rings, toggles, chips) is written against that scale, so the accent
+          // is themed in ONE place instead of across ~500 class attributes.
+          // `slate` is remapped to a neutral ramp so no surface or border keeps
+          // the old navy cast.
+          // `rose` is remapped to the error ramp (#6A1C0F family) so all error
+          // borders/text/accents use the user's specified error color.
+          // Success/health semantics do NOT ride this ramp — those use `green`.
           colors: {
             emerald: {
-              50: '#fdeded', 100: '#fad7d7', 200: '#f3adad', 300: '#e57979',
-              400: '#d43a3a', 500: '#b01414', 600: '#961111', 700: '#7c0e0e',
-              800: '#5f0b0b', 900: '#4a0909', 950: '#2e0606',
+              50: '#f0fdf4', 100: '#dcfce7', 200: '#bbf7d0', 300: '#86efac',
+              400: '#22c55e', 500: '#16a34a', 600: '#15803d', 700: '#166534',
+              800: '#0f4429', 900: '#133d23', 950: '#0a1a10',
             },
             slate: {
               50: '#fafafa', 100: '#f5f5f5', 200: '#e5e5e5', 300: '#d4d4d4',
               400: '#a3a3a3', 500: '#737373', 600: '#525252', 700: '#404040',
               800: '#262626', 900: '#171717', 950: '#0a0a0a',
+            },
+            rose: {
+              50: '#fff1f2', 100: '#ffe4e6', 200: '#fecdd8', 300: '#fba3b0',
+              400: '#f87171', 500: '#ea580c', 600: '#c2321f', 700: '#a01a10',
+              800: '#881313', 900: '#71221a', 950: '#450a05',
             },
           },
         },
@@ -67,7 +73,7 @@
   <link rel="stylesheet" href="/static/nova.css?v=7" />
   <script src="/static/app.js?v=5" defer></script>
 </head>
-<body class="sb-expanded bg-[#050505] font-sans text-slate-200 antialiased">
+<body class="sb-expanded bg-[#000000] font-sans text-slate-200 antialiased">
   <div id="shell" class="flex min-h-screen">
     {# ----------------------------- Sidebar ----------------------------- #}      {% set groups = [
       ('Operate', [
@@ -89,11 +95,11 @@
       ]),
     ] %}
     <aside id="sidebar"
-      class="sticky top-0 z-30 flex h-screen shrink-0 flex-col border-r border-slate-800 bg-[#070707]/90 transition-[width] duration-200 ease-out">
+      class="sticky top-0 z-30 flex h-screen shrink-0 flex-col border-r border-slate-800 bg-[#000000] transition-[width] duration-200 ease-out">
       {# Brand + collapse toggle #}
       <div class="brand-row flex h-14 shrink-0 items-center border-b border-slate-800">
         <div class="flex min-w-0 items-center gap-2.5">
-          <div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 font-mono text-lg font-bold text-emerald-400">N</div>
+          <div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-emerald-400/40 bg-emerald-400/10 font-mono text-lg font-bold text-emerald-400">N</div>
           <div class="sb-only min-w-0">
             <div class="truncate text-sm font-semibold tracking-tight text-slate-100">RouterX</div>
             <div class="text-[10px] uppercase tracking-widest text-slate-500">Gateway Console</div>
@@ -129,7 +135,7 @@
 
       {# Gateway health mini-card #}
       <div class="shrink-0 p-2 pb-3">
-        <div class="sb-only rounded-xl border border-slate-800 bg-[#0b0b0b] p-3">
+        <div class="sb-only rounded-xl border border-slate-800 bg-[#000000] p-3">
           <div class="flex items-center gap-2">
             <span class="relative flex size-2">
               <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60"></span>
@@ -149,20 +155,20 @@
     {# --------------------------- Right column --------------------------- #}
     <div id="right-col" class="flex min-w-0 flex-1 flex-col">
       {# Header #}
-      <header class="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-slate-800 bg-[#0b0b0b]/80 px-4 backdrop-blur md:px-6">
+      <header class="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-slate-800 bg-[#000000]/80 px-4 backdrop-blur md:px-6">
         <div class="min-w-0">
           <h1 id="tab-title" class="truncate text-sm font-semibold leading-tight text-slate-100">Overview</h1>
           <p id="tab-subtitle" class="hidden truncate text-[11px] leading-tight text-slate-500 sm:block">Gateway health at a glance</p>
         </div>
         <div class="flex shrink-0 items-center gap-2 md:gap-3">
-          <div id="baseurl-chip" class="hidden items-center gap-1.5 rounded-md border border-slate-800 bg-[#050505] py-1 pl-2.5 pr-1 font-mono text-[11px] text-slate-400 md:flex">
+          <div id="baseurl-chip" class="hidden items-center gap-1.5 rounded-md border border-slate-800 bg-[#000000] py-1 pl-2.5 pr-1 font-mono text-[11px] text-slate-400 md:flex">
             <span id="base-url" class="max-w-[220px] truncate lg:max-w-none"></span>
             <button type="button" data-copy-selector="#base-url" title="Copy base URL" aria-label="Copy base URL"
               class="inline-flex size-6 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-800 hover:text-emerald-400">
               <i data-lucide="copy" class="size-3.5"></i>
             </button>
           </div>
-          <label title="Live data polling for Overview, Logs, Routes, Keys, Storage and Analytics — Models and Providers are never auto-refreshed, so Sync and Health check sweeps always finish uninterrupted. Off by default; always pauses while you type." class="flex cursor-pointer select-none items-center gap-2 rounded-md border border-slate-800 bg-[#050505] px-2.5 py-1">
+          <label title="Live data polling for Overview, Logs, Routes, Keys, Storage and Analytics — Models and Providers are never auto-refreshed, so Sync and Health check sweeps always finish uninterrupted. Off by default; always pauses while you type." class="flex cursor-pointer select-none items-center gap-2 rounded-md border border-slate-800 bg-[#000000] px-2.5 py-1">
             <span class="relative flex size-2">
               <span id="ar-ping" class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60"></span>
               <span id="ar-dot" class="relative inline-flex size-2 rounded-full bg-emerald-400"></span>
@@ -172,7 +178,7 @@
             <span class="relative h-4 w-7 rounded-full bg-slate-700 transition-colors after:absolute after:left-0.5 after:top-0.5 after:size-3 after:rounded-full after:bg-slate-300 after:transition-transform peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-3"></span>
           </label>
           <button id="refresh-btn" type="button" title="Refresh data now" aria-label="Refresh data now"
-            class="inline-flex size-8 items-center justify-center rounded-md border border-slate-800 bg-[#050505] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-400">
+            class="inline-flex size-8 items-center justify-center rounded-md border border-slate-800 bg-[#000000] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-400">
             <i data-lucide="refresh-cw" class="size-4"></i>
           </button>
           <div id="clock" class="hidden w-[70px] text-right font-mono text-xs tabular-nums text-slate-400 lg:block">--:--:--</div>
@@ -240,7 +246,7 @@
       </main>
 
       {# Status footer — sticky, server-rendered live stats #}
-      <footer class="sticky bottom-0 z-20 mt-auto flex h-9 shrink-0 items-center justify-between gap-4 border-t border-slate-800 bg-[#0b0b0b]/80 px-4 text-[11px] backdrop-blur md:px-6">
+      <footer class="sticky bottom-0 z-20 mt-auto flex h-9 shrink-0 items-center justify-between gap-4 border-t border-slate-800 bg-[#000000]/80 px-4 text-[11px] backdrop-blur md:px-6">
         <div id="footer-stats" hx-get="/partials/footer-stats" hx-trigger="load, nova:refresh from:body, nova:auto-refresh from:body" hx-swap="innerHTML"
           class="flex w-full items-center justify-between gap-4 text-[11px]">
           <span class="font-mono text-slate-500">connecting…</span>

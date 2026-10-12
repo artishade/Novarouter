@@ -48,11 +48,11 @@
       allowTransparency: true,
       convertEol: false,
       theme: {
-        background: '#0a0a0a', foreground: '#d4d4d4', cursor: '#d43a3a', cursorAccent: '#0a0a0a',
-        selectionBackground: 'rgba(30,41,59,0.85)',
-        black: '#0f172a', red: '#fb7185', green: '#34d399', yellow: '#fbbf24',
+        background: '#000000', foreground: '#e5e5e5', cursor: '#22c55e', cursorAccent: '#000000',
+        selectionBackground: 'rgba(34,197,94,0.25)',
+        black: '#000000', red: '#fb7185', green: '#22c55e', yellow: '#fbbf24',
         blue: '#60a5fa', magenta: '#c084fc', cyan: '#22d3ee', white: '#e2e8f0',
-        brightBlack: '#64748b', brightRed: '#fda4af', brightGreen: '#6ee7b7', brightYellow: '#fde047',
+        brightBlack: '#1a1a1a', brightRed: '#6A1C0F', brightGreen: '#4ade80', brightYellow: '#fde047',
         brightBlue: '#93c5fd', brightMagenta: '#e9d5ff', brightCyan: '#67e8f9', brightWhite: '#f8fafc',
       },
     });
@@ -80,7 +80,8 @@
   };
   const dim = (s) => '\x1b[38;5;244m' + s + '\x1b[0m';
   const bold = (s) => '\x1b[1m' + s + '\x1b[0m';
-  const green = (s) => '\x1b[32m' + s + '\x1b[0m';
+  const neonGreen = (s) => '\x1b[38;2;34;197;94m' + s + '\x1b[0m';
+  const errRed = (s) => '\x1b[38;2;106;28;15m' + s + '\x1b[0m';
 
   function copyOutput() {
     if (!term) return;
@@ -687,7 +688,7 @@
   /* ------------------------ one-shot exec bar ------------------------ */
 
   async function runCommand(cmd) {
-    write(green('~ Root@Build:~# ') + cmd + '\r\n');
+    write(neonGreen('~ Root@Build:~# ') + cmd + '\r\n');
     if (cmd === 'clear' || cmd === 'reset') { clearScreen(); return; }
     try {
       const res = await fetch('/ui/terminal/exec', {
@@ -701,7 +702,7 @@
       if (data.hint) write('\x1b[33m' + data.hint + '\x1b[0m\r\n');
       if (typeof data.code === 'number' && data.code !== 0) write(dim('exit code ' + data.code) + '\r\n');
     } catch (err) {
-      write('\x1b[31m' + ((err && err.message) || 'The command could not be run') + '\x1b[0m\r\n');
+      write(errRed((err && err.message) || 'The command could not be run') + '\x1b[0m\r\n');
     }
   }
 
@@ -890,8 +891,8 @@
       body: JSON.stringify({ command: cmd }),
     });
     const data = await res.json().catch(() => ({}));
-    bubble('rounded-xl border border-slate-800 bg-[#0a0a0a] px-3 py-2 font-mono text-[11px] text-slate-300',
-      '<div class="text-emerald-400">~ Root@Build:~# ' + esc(cmd) + '</div><pre class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap">' +
+    bubble('rounded-xl border border-slate-800 bg-[#000000] px-3 py-2 font-mono text-[11px] text-slate-300',
+      '<div class="text-green-400">~ Root@Build:~# ' + esc(cmd) + '</div><pre class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap">' +
       esc(data.output || data.error || '(no output)') + '</pre>');
   }
 

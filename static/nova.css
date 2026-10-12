@@ -1,13 +1,12 @@
 /* RouterX Python UI — shell behaviours + custom bits beyond Tailwind utilities.
  *
- * Theme: matte black surfaces (#050505 page / #0b0b0b panels, neutral borders)
- * with a darkest-red interaction accent (#b01414 base, #d43a3a bright). The
- * Tailwind palette remap that drives every `emerald-*` / `slate-*` utility
- * lives in templates/base.html; the hard-coded colours here mirror it.
- * Green is reserved for success/health (see .nova-toast-success), amber for
- * warnings and rose for errors.
+ * Theme: Vantablack surfaces (#000000 page / #000000 panels, near-black
+ * neutral borders) with a **neon green** interaction accent. The Tailwind
+ * palette remap that drives every `emerald-*` / `slate-*` utility lives in
+ * templates/base.html; the hard-coded colours here mirror it.
+ * Errors use HEX #6A1C0F (rose-700). Green is reserved for success/health,
+ * amber for warnings.
  */
-/* RouterX Python UI — shell behaviours + custom bits beyond Tailwind utilities. */
 
 /* ---------------- Sidebar expand/collapse (body class driven) ---------------- */
 body.sb-expanded #sidebar { width: 15rem; }
@@ -25,8 +24,8 @@ body.sb-expanded .nav-item { gap: 0.75rem; padding: 0.5rem 0.75rem; }
 body.sb-collapsed .nav-item { height: 2.5rem; justify-content: center; padding: 0; }
 
 /* Active nav item (JS toggles .is-active) */
-.nav-item.is-active { background: rgb(16 185 129 / 0.1); color: rgb(110 231 183); }
-.nav-item.is-active .nav-icon { color: #d43a3a; }
+.nav-item.is-active { background: rgb(22 163 74 / 0.12); color: rgb(74 222 122); }
+.nav-item.is-active .nav-icon { color: #22c55e; }
 .nav-item.is-active .nav-active-bar { display: block; }
 
 /* Below lg the sidebar is always an icon rail (original auto-collapse behaviour) */
@@ -44,7 +43,7 @@ body.sb-collapsed .nav-item { height: 2.5rem; justify-content: center; padding: 
 
 /* ---------------- Loading skeleton ---------------- */
 .nova-skeleton {
-  background: linear-gradient(90deg, #0b0b0b 25%, #141414 50%, #0b0b0b 75%);
+  background: linear-gradient(90deg, #000000 25%, #0a0a0a 50%, #000000 75%);
   background-size: 200% 100%;
   animation: nova-shimmer 1.4s ease-in-out infinite;
 }
@@ -62,21 +61,21 @@ body.sb-collapsed .nav-item { height: 2.5rem; justify-content: center; padding: 
   cursor: pointer;
 }
 .nova-toast-success { border-color: rgb(34 197 94 / 0.4); color: #bbf7d0; }
-.nova-toast-error { border-color: rgb(244 63 94 / 0.45); color: #fecdd3; }
+.nova-toast-error { border-color: rgba(106 28 15 / 0.5); color: #fecdd3; }
 .nova-toast-info { border-color: rgb(148 163 184 / 0.35); color: #e5e5e5; }
 .nova-toast-success .nova-toast-dot { background: #4ade80; }
-.nova-toast-error .nova-toast-dot { background: #f43f5e; }
+.nova-toast-error .nova-toast-dot { background: #6A1C0F; }
 .nova-toast-info .nova-toast-dot { background: #a3a3a3; }
 .nova-toast.leaving { animation: nova-toast-out 0.15s ease-in forwards; }
 @keyframes nova-toast-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } }
 @keyframes nova-toast-out { to { opacity: 0; transform: translateY(4px); } }
 
 /* ---------------- Scrollbars (dark terminal aesthetic) ---------------- */
-* { scrollbar-width: thin; scrollbar-color: #262626 transparent; }
+* { scrollbar-width: thin; scrollbar-color: #1a1a1a transparent; }
 *::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-track { background: transparent; }
-*::-webkit-scrollbar-thumb { background: #262626; border-radius: 8px; }
-*::-webkit-scrollbar-thumb:hover { background: #404040; }
+*::-webkit-scrollbar-thumb { background: #1a1a1a; border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: #333333; }
 
 /* ---------------- Misc ---------------- */
 .heap-bar { transition: width 0.5s ease; }
@@ -95,10 +94,10 @@ body.sb-collapsed .nav-item { height: 2.5rem; justify-content: center; padding: 
 
 /* ---------------- Terminal (xterm.js) ---------------- */
 #term-view .xterm { height: 100%; padding: 0.25rem 0.25rem 0.5rem; }
-#term-view .xterm-viewport { background: transparent !important; scrollbar-color: #262626 transparent; }
+#term-view .xterm-viewport { background: transparent !important; scrollbar-color: #1a1a1a transparent; }
 #term-view .xterm-viewport::-webkit-scrollbar { width: 8px; }
-#term-view .xterm-viewport::-webkit-scrollbar-thumb { background: #262626; border-radius: 8px; }
-#term-view .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #404040; }
+#term-view .xterm-viewport::-webkit-scrollbar-thumb { background: #1a1a1a; border-radius: 8px; }
+#term-view .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #333333; }
 #term-view .xterm-screen { background: transparent; }
 /* Safety net for the CDN stylesheet. xterm.js hides this textarea (it exists
  * only to raise the soft keyboard and host IME composition) by moving it off
@@ -125,26 +124,26 @@ body.sb-collapsed .nav-item { height: 2.5rem; justify-content: center; padding: 
 
 /* Session tabs */
 .term-tab { transition: background-color 0.12s ease, color 0.12s ease; }
-.term-tab.is-active { background: #0b0b0b; color: #e5e5e5; box-shadow: inset 0 -2px 0 0 #d43a3a; }
+.term-tab.is-active { background: #000000; color: #e5e5e5; box-shadow: inset 0 -2px 0 0 #22c55e; }
 .term-tab:not(.is-active) { color: #737373; }
-.term-tab:not(.is-active):hover { background: #0a0a0a; color: #a3a3a3; }
+.term-tab:not(.is-active):hover { background: #000000; color: #a3a3a3; }
 .term-tab-close { opacity: 0; transition: opacity 0.12s ease, background-color 0.12s ease; }
 .term-tab:hover .term-tab-close,
 .term-tab.is-active .term-tab-close { opacity: 1; }
-.term-tab-close:hover { background: rgb(244 63 94 / 0.18); color: #f87171; }
+.term-tab-close:hover { background: rgba(106 28 15 / 0.25); color: #6A1C0F; }
 
 /* Native dialog polish */
 dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
 
 /* Markdown-ish chat output */
-.md-body code { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 0.92em; background: #050505; border: 1px solid #262626; border-radius: 0.25rem; padding: 0.05rem 0.3rem; }
-.md-body pre { background: #050505; border: 1px solid #262626; border-radius: 0.5rem; padding: 0.625rem 0.75rem; overflow-x: auto; margin: 0.375rem 0; }
+.md-body code { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 0.92em; background: #000000; border: 1px solid #1a1a1a; border-radius: 0.25rem; padding: 0.05rem 0.3rem; }
+.md-body pre { background: #000000; border: 1px solid #1a1a1a; border-radius: 0.5rem; padding: 0.625rem 0.75rem; overflow-x: auto; margin: 0.375rem 0; }
 .md-body pre code { background: transparent; border: 0; padding: 0; font-size: 12px; line-height: 1.55; }
 .md-body p { margin: 0.25rem 0; }
 .md-body ul, .md-body ol { margin: 0.25rem 0 0.25rem 1.1rem; }
 .md-body ul { list-style: disc; }
 .md-body ol { list-style: decimal; }
-.md-body a { color: #d43a3a; text-decoration: underline; text-underline-offset: 2px; }
+.md-body a { color: #22c55e; text-decoration: underline; text-underline-offset: 2px; }
 .md-body strong { color: #f1f5f9; }
 
 /* ------------------------------------------------------------------ */
@@ -177,12 +176,12 @@ dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
     align-items: center;
     justify-content: center;
     border-radius: 9999px;
-    border: 1px solid #262626;
-    background: #0b0b0b;
-    color: #d43a3a;
+    border: 1px solid #1a1a1a;
+    background: #000000;
+    color: #22c55e;
     box-shadow: 0 10px 30px rgb(0 0 0 / 0.55);
   }
-  .ws-fab-chat { left: 0.75rem; color: #38bdf8; }
+  .ws-fab-chat { left: 0.75rem; color: #22c55e; }
   .ws-fab-term { right: 0.75rem; }
   .ws-fab:active { transform: scale(0.96); }
   /* The sheet that is currently open dims its own FAB. */
@@ -238,8 +237,8 @@ dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
   gap: 0.3rem;
   padding: 0.3rem 0.35rem;
   padding-bottom: calc(0.3rem + env(safe-area-inset-bottom, 0px));
-  border-top: 1px solid #262626;
-  background: #05070d;
+  border-top: 1px solid #1a1a1a;
+  background: #000000;
 }
 .ws-keyrow::-webkit-scrollbar { display: none; }
 .ws-key {
@@ -251,8 +250,8 @@ dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
   justify-content: center;
   padding: 0 0.15rem;
   border-radius: 0.4rem;
-  border: 1px solid #2a2a2a;
-  background: #1f1f1f;
+  border: 1px solid #1a1a1a;
+  background: #000000;
   color: #e5e5e5;
   font-family: 'Geist Mono', ui-monospace, monospace;
   font-size: 11.5px;
@@ -267,8 +266,8 @@ dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
   user-select: none;
   -webkit-user-select: none;
 }
-.ws-key:active { background: #333333; border-color: #d43a3a66; color: #d43a3a; }
-.ws-key.is-sticky { background: #2e0606; border-color: #d43a3a; color: #e57979; }
+.ws-key:active { background: #1a1a1a; border-color: #22c55e80; color: #22c55e; }
+.ws-key.is-sticky { background: #0a1a10; border-color: #22c55e; color: #4ade80; }
 .ws-key.is-wide { grid-column: span 2; }
 @media (max-width: 360px) {
   .ws-key { height: 2.25rem; font-size: 10.5px; }
@@ -281,7 +280,7 @@ dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
 @media (max-width: 767px) {
   .ws-term-chrome .ws-hide-mobile { display: none !important; }
   /* Pure black shell — the one thing every mobile terminal gets right. */
-  .ws-term-chrome #term-view { background: #000; }
+  .ws-term-chrome #term-view { background: #000000; }
   #term-tabs { gap: 0.35rem; }
   #term-tabs .term-tab { height: 1.75rem; max-width: 46vw; padding-left: 0.45rem; font-size: 10.5px; }
   #term-tabs .term-tab-close { width: 1.1rem; height: 1.1rem; }
@@ -293,15 +292,15 @@ dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
     gap: 0.35rem;
     padding: 0 0.7rem;
     border-radius: 0.45rem;
-    border: 1px solid #2a2a2a;
-    background: #1f1f1f;
+    border: 1px solid #1a1a1a;
+    background: #000000;
     color: #e5e5e5;
     font-size: 12px;
     font-weight: 500;
     white-space: nowrap;
   }
-  .ws-chip:active { background: #333333; }
-  .ws-chip.is-danger { color: #f87171; }
+  .ws-chip:active { background: #1a1a1a; }
+  .ws-chip.is-danger { color: #6A1C0F; }
   .ws-icon {
     display: inline-flex;
     width: 2rem;
@@ -309,20 +308,20 @@ dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
     align-items: center;
     justify-content: center;
     border-radius: 0.45rem;
-    border: 1px solid #2a2a2a;
-    background: #1f1f1f;
+    border: 1px solid #1a1a1a;
+    background: #000000;
     color: #d4d4d4;
   }
-  .ws-icon:active { background: #333333; }
-  .ws-icon.is-on { border-color: #d43a3a; color: #d43a3a; }
+  .ws-icon:active { background: #1a1a1a; }
+  .ws-icon.is-on { border-color: #22c55e; color: #22c55e; }
   .ws-prompt-badge {
     display: inline-flex;
     height: 1.75rem;
     align-items: center;
     padding: 0 0.5rem;
     border-radius: 0.4rem;
-    background: #3a0808;
-    color: #e57979;
+    background: #0a1a10;
+    color: #4ade80;
     font-family: 'Geist Mono', ui-monospace, monospace;
     font-size: 12px;
   }
@@ -331,7 +330,7 @@ dialog::backdrop { background: rgb(2 6 12 / 0.7); backdrop-filter: blur(2px); }
     width: 0.4rem;
     height: 1.05rem;
     margin-left: 0.25rem;
-    background: #d43a3a;
+    background: #22c55e;
     animation: ws-caret 1.1s steps(2, start) infinite;
   }
   @keyframes ws-caret { 50% { opacity: 0; } }

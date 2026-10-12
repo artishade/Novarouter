@@ -1,0 +1,7 @@
+{# Providers tab — live list root (self-reproducing partial) + add/sign-in dialogs.
+   The root div lives INSIDE partials/providers_list.html so that every swap of the
+   list (filters, expand, nova:refresh, mutation refreshes) re-renders the wiring.
+   The dialogs stay OUTSIDE the swapped root so open dialogs and typed input
+   survive live re-renders. #}
+{% include "partials/providers_list.html" %}
+{% include "partials/providers_dialogs.html" %}

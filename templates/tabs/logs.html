@@ -1,0 +1,117 @@
+{# Logs tab — port of LogsTab.tsx (search + status/via filters, log table, expandable detail rows, live refresh)
+
+   Typing-safe structure: the toolbar (search input + selects + refresh) is
+   STATIC — filter actions swap only #logs-lower (results region, see
+   partials/logs_results.html), so a swap can never destroy the focused input
+   and close the mobile keyboard. #tab-logs (data-live) is swapped only by
+   manual refresh / the auto-refresh poll, which read the CURRENT filter
+   values via hx-include at trigger time. #}
+<style>
+  .nova-log-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+  .nova-log-scroll::-webkit-scrollbar-track { background: transparent; }
+  .nova-log-scroll::-webkit-scrollbar-thumb { background: #262626; border-radius: 8px; }
+  .nova-log-scroll::-webkit-scrollbar-thumb:hover { background: #404040; }
+  .nova-log-scroll { scrollbar-width: thin; scrollbar-color: #262626 transparent; }
+  .log-toggle .icon-open { display: none; }
+  .log-toggle.open .icon-open { display: block; }
+  .log-toggle.open .icon-closed { display: none; }
+  tr.row-open > td { background-color: rgb(8 12 20 / 0.6); }
+</style>
+<div id="tab-logs" class="flex flex-col gap-3" data-live="1" hx-disinherit="*"
+  hx-get="/partials/tab/logs" hx-include="#logs-search, #logs-status, #logs-via"
+  hx-trigger="nova:refresh from:body, nova:auto-refresh from:body" hx-swap="outerHTML">
+
+  {# Toolbar — never swapped by filter actions (typing safety) #}
+  <div class="flex flex-wrap items-center gap-2">
+    <div class="relative min-w-[200px] flex-1 sm:max-w-xs">
+      <i data-lucide="search" class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-500"></i>
+      <input id="logs-search" name="q" type="text" value="{{ q }}" placeholder="Filter by model, provider, error"
+        aria-label="Search request logs" autocomplete="off"
+        class="h-8 w-full rounded-md border border-slate-800 bg-[#050505] pl-8 pr-3 font-mono text-xs text-slate-200 placeholder:text-slate-600 focus:border-emerald-500/40 focus:outline-none"
+        hx-get="/partials/tab/logs?region=results" hx-include="this, #logs-status, #logs-via"
+        hx-sync="this:replace" hx-trigger="input changed delay:300ms"
+        hx-target="#logs-lower" hx-swap="innerHTML" />
+    </div>
+
+    <select id="logs-status" name="status" aria-label="Filter by HTTP status class"
+      class="h-8 rounded-md border border-slate-800 bg-[#050505] px-2 font-mono text-xs text-slate-200 focus:border-emerald-500/40 focus:outline-none"
+      hx-get="/partials/tab/logs?region=results" hx-include="#logs-search, this, #logs-via"
+      hx-sync="this:replace" hx-trigger="change"
+      hx-target="#logs-lower" hx-swap="innerHTML">
+      <option value="all" {% if status == 'all' %}selected{% endif %}>all status</option>
+      <option value="2xx" {% if status == '2xx' %}selected{% endif %}>2xx success</option>
+      <option value="4xx" {% if status == '4xx' %}selected{% endif %}>4xx client</option>
+      <option value="5xx" {% if status == '5xx' %}selected{% endif %}>5xx server</option>
+    </select>
+
+    <select id="logs-via" name="via" aria-label="Filter by routing path"
+      class="h-8 rounded-md border border-slate-800 bg-[#050505] px-2 font-mono text-xs text-slate-200 focus:border-emerald-500/40 focus:outline-none"
+      hx-get="/partials/tab/logs?region=results" hx-include="#logs-search, #logs-status, this"
+      hx-sync="this:replace" hx-trigger="change"
+      hx-target="#logs-lower" hx-swap="innerHTML">
+      <option value="all" {% if via == 'all' %}selected{% endif %}>all routes</option>
+      <option value="upstream" {% if via == 'upstream' %}selected{% endif %}>upstream</option>
+      <option value="nova-engine" {% if via == 'nova-engine' %}selected{% endif %}>nova-engine</option>
+      <option value="fallback" {% if via == 'fallback' %}selected{% endif %}>fallback</option>
+      <option value="cache" {% if via == 'cache' %}selected{% endif %}>cache</option>
+    </select>
+
+    <button type="button" title="Reload the request log" aria-label="Reload the request log"
+      class="ml-auto inline-flex items-center justify-center gap-2 rounded-md border border-slate-800 bg-[#0b0b0b]/80 px-3 py-1.5 font-mono text-xs text-slate-300 transition-colors hover:border-emerald-500/40 hover:text-emerald-300"
+      onclick="NovaUI.refresh(); var ic = this.querySelector('svg'); if (ic) { ic.classList.add('nova-spin'); setTimeout(function () { ic.classList.remove('nova-spin'); }, 700); }">
+      <i data-lucide="refresh-cw" class="size-3.5"></i>
+      Refresh
+    </button>
+  </div>
+
+  {# Results region — the only swapped part #}
+  {% include "partials/logs_results.html" %}
+</div>
+
+<script>
+  /* Row expansion with live-swap persistence. */
+  window.novaLogs = window.novaLogs || (function () {
+    var expanded = null;
+    function find(id) {
+      return {
+        row: document.getElementById('log-detail-' + id),
+        btn: document.querySelector('[data-toggle-row="' + id + '"]')
+      };
+    }
+    function apply(id) {
+      var els = find(id);
+      if (!els.row) return;
+      els.row.classList.remove('hidden');
+      if (els.btn) {
+        els.btn.classList.add('open');
+        els.btn.setAttribute('aria-expanded', 'true');
+        els.btn.title = 'Hide details';
+        els.btn.setAttribute('aria-label', 'Hide details');
+        var tr = els.btn.closest('tr');
+        if (tr) tr.classList.add('row-open');
+      }
+    }
+    function collapse(id) {
+      var els = find(id);
+      if (els.row) els.row.classList.add('hidden');
+      if (els.btn) {
+        els.btn.classList.remove('open');
+        els.btn.setAttribute('aria-expanded', 'false');
+        els.btn.title = 'Show request details';
+        els.btn.setAttribute('aria-label', 'Show request details');
+        var tr = els.btn.closest('tr');
+        if (tr) tr.classList.remove('row-open');
+      }
+    }
+    return {
+      toggle: function (id) {
+        if (expanded === id) { collapse(id); expanded = null; return; }
+        if (expanded !== null) collapse(expanded);
+        expanded = id;
+        apply(id);
+      },
+      restore: function () { if (expanded !== null) apply(expanded); }
+    };
+  })();
+  window.novaLogs.restore();
+</script>

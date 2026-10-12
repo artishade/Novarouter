@@ -1,0 +1,1497 @@
+"""OpenAI-compatible gateway — /v1/* (also mounted under /api/v1/*).
+
+Endpoints (requirement #3):
+  GET  /v1/models               list models (DB) — ?discover=1 live discovery
+  POST /v1/chat/completions     streaming (SSE) + non-streaming, full fallback pipeline
+  POST /v1/completions          legacy completions (prompt → chat pipeline)
+  POST /v1/messages             Anthropic-format adapter (routers/anthropic_adapter.py)
+  POST /v1/messages/count_tokens  Claude Code pre-flight token count
+  POST /v1/embeddings           embeddings via upstream providers
+
+Routing pipeline:
+  Stage 1     — direct upstream (requested model, enabled key)
+  Stage 2..N  — fallback chain: the ModelRoute `fallbacks` list first (publicId
+                match, else '*'), then any richer declarative chains registered
+                in `routing_fallback_chains`, then the auto stand-in pool
+                (every other healthy, enabled provider) while the route's `auto`
+                flag is on — the default
+  Final stage — RouterX Free engine (free-ai-models catalogue, no key required)
+
+The order of those stages is produced by `nova.routing` (the OmniRoute domain
+layer, ported): policy engine → exposure lists → tag routing → per-(provider,
+model) lockouts → selection strategy. Every exclusion is recorded so `_nova`
+can explain why a request did not use the provider the operator expected.
+
+The response `model` field is ALWAYS the requested id (identity spoofing);
+`_nova` metadata exposes what actually served the request. Every request is
+logged to RequestLog.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator
+
+import httpx
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, joinedload
+
+from nova import engine as nova_engine
+from nova import catalog as nova_catalog
+from nova import routing as nova_routing
+from nova import router_settings
+from nova.discovery import aggregate_discovery, discover_provider_models
+from nova.models import ClientKey, Model as ModelRow, ModelRoute, Provider, RequestLog
+from nova.provider_transport import anthropic_headers, anthropic_to_openai, anthropic_url, openai_to_anthropic
+
+log = logging.getLogger("nova.gateway")
+
+router = APIRouter()
+
+UPSTREAM_CONNECT_TIMEOUT = float(os.environ.get("NOVA_CONNECT_TIMEOUT", "5.0"))
+# Read timeout = max silence BETWEEN bytes from upstream. Claude/long-thinking runs
+# can legally sit silent for minutes (thinking blocks, cold queue) — 60s caused
+# ReadTimeout mid-stream → "request failed" in Claude Code. Env-tunable.
+UPSTREAM_READ_TIMEOUT = float(os.environ.get("NOVA_UPSTREAM_READ_TIMEOUT", "600.0"))
+NONSTREAM_READ_TIMEOUT = float(os.environ.get("NOVA_NONSTREAM_READ_TIMEOUT", "300.0"))
+UPSTREAM_TIMEOUT = httpx.Timeout(connect=UPSTREAM_CONNECT_TIMEOUT, read=UPSTREAM_READ_TIMEOUT, write=120.0, pool=30.0)
+
+# Shared client — connection pooling / keep-alive across requests. A fresh
+# AsyncClient per request pays a full TCP+TLS handshake to the upstream every
+# call (hundreds of ms each); a pooled client reuses warm connections.
+UPSTREAM_CLIENT = httpx.AsyncClient(
+    timeout=UPSTREAM_TIMEOUT,
+    limits=httpx.Limits(max_connections=64, max_keepalive_connections=16, keepalive_expiry=60.0),
+)
+NONSTREAM_CLIENT = httpx.AsyncClient(
+    timeout=httpx.Timeout(connect=UPSTREAM_CONNECT_TIMEOUT, read=NONSTREAM_READ_TIMEOUT, write=120.0, pool=30.0),
+    limits=httpx.Limits(max_connections=64, max_keepalive_connections=16, keepalive_expiry=60.0),
+)
+
+# Provider-key cache — avoids a DB roundtrip per upstream attempt.
+_KEY_CACHE: dict[int, tuple[float, dict | None]] = {}
+_KEY_CACHE_TTL = 30.0
+
+# Lockouts are flushed to SystemConfig at most once a minute.
+_LOCKOUT_FLUSH_TS = 0.0
+
+# Auto stand-ins: once a route's explicit chain is exhausted (and the route's
+# `auto` flag is on — the default), the pipeline appends other healthy, enabled
+# providers' models. That is what makes a dead provider fall over onto the rest
+# of the pool the operator configured instead of jumping straight to the free
+# engine. The dashboard preview calls the same helper, so they never disagree.
+AUTO_STANDIN_LIMIT = int(os.environ.get("NOVA_AUTO_STANDINS", "6"))
+
+# SSE keep-alive: when an upstream is silent (cold start, long thinking, queue)
+# a proxy with a short idle timeout drops the connection and the client reports
+# a failure roughly 10-15s in. A comment line / ping every few seconds keeps the
+# stream demonstrably alive end to end. Env-tunable.
+SSE_HEARTBEAT_S = float(os.environ.get("NOVA_SSE_HEARTBEAT", "10.0"))
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+def estimate_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4)
+
+
+THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+THINK_OPEN_RE = re.compile(r"<think>.*", re.DOTALL | re.IGNORECASE)
+
+
+def strip_think_blocks(text: str | None) -> str | None:
+    """Remove <think>...</think> blocks (including unclosed trailing <think>)."""
+    if not text:
+        return text
+    # Remove complete blocks
+    cleaned = THINK_BLOCK_RE.sub("", text)
+    # If an opening <think> remains without closing, drop it and everything after
+    # (handles truncated stream or unclosed reasoning)
+    if re.search(r"<think>", cleaned, re.IGNORECASE):
+        cleaned = THINK_OPEN_RE.sub("", cleaned)
+        # also handle leftover case like "</think>" stray
+        cleaned = re.sub(r"</think>", "", cleaned, flags=re.IGNORECASE)
+    # Also strip common leaked tool-call markdown that lives INSIDE think leak
+    # e.g. "</think>```bash\nls -la ..."  - if entire remaining text is just that, drop
+    cleaned = cleaned.strip()
+    return cleaned
+
+
+class ThinkStreamFilter:
+    """Stateful filter for SSE streaming - drops text inside <think>...</think> even when split across chunks."""
+    def __init__(self):
+        self.in_think = False
+        self.buf = ""  # holds partial tag across chunks
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        combined = self.buf + chunk
+        self.buf = ""
+        out_parts = []
+        i = 0
+        low = combined.lower()
+        while i < len(combined):
+            if not self.in_think:
+                idx = low.find("<think>", i)
+                if idx == -1:
+                    # check for partial opening tag at tail
+                    tail = combined[i:]
+                    # hold back up to 6 chars that could be start of tag
+                    for k in range(6,0,-1):
+                        if len(tail) >= k and tail[-k:].lower() == "<think>"[:k]:
+                            # check that tail actually ends with that prefix and not already emitted
+                            out_parts.append(tail[:-k])
+                            self.buf = tail[-k:]
+                            return "".join(out_parts)
+                    out_parts.append(tail)
+                    break
+                else:
+                    out_parts.append(combined[i:idx])
+                    self.in_think = True
+                    i = idx + 7
+                    low = combined.lower()  # keep in sync
+            else:
+                idx = low.find("</think>", i)
+                if idx == -1:
+                    # partial closing tag?
+                    tail = combined[i:]
+                    for k in range(8,0,-1):
+                        if len(tail) >= k and tail[-k:].lower() == "</think>"[:k]:
+                            # remain in think, buffer partial
+                            self.buf = tail[-k:]
+                            return "".join(out_parts)
+                    # entire tail is inside think -> drop it
+                    break
+                else:
+                    self.in_think = False
+                    i = idx + 8
+        return "".join(out_parts)
+    def flush(self) -> str:
+        # if we were holding a partial tag that never completed and not in think, emit it
+        # but if in_think, drop everything
+        if self.in_think:
+            self.buf = ""
+            return ""
+        b = self.buf
+        self.buf = ""
+        # if buffered partial looks like a think tag start, drop it (was inside leak)
+        if b.lower().startswith("<"):
+            return ""
+        return b
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def normalize_messages(raw: list[dict]) -> list[dict]:
+    out = []
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        # preserve tool role and assistant tool_calls
+        if role == "tool":
+            out.append({
+                "role": "tool",
+                "tool_call_id": m.get("tool_call_id") or m.get("toolCallId") or "",
+                "content": m.get("content") if isinstance(m.get("content"), str) else str(m.get("content") or ""),
+            })
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            # preserve full assistant tool_calls verbatim
+            entry = {"role": "assistant", "content": m.get("content")}
+            # keep tool_calls as-is (OpenAI format)
+            entry["tool_calls"] = m["tool_calls"]
+            if m.get("tool_call_id"):
+                entry["tool_call_id"] = m["tool_call_id"]
+            out.append(entry)
+            continue
+        role = role if role in ("system", "assistant", "user") else "user"
+        content = m.get("content")
+        if content is None:
+            text = ""
+        elif isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(
+                str(p.get("text", "")) for p in content
+                if isinstance(p, dict) and "text" in p
+            ).strip("\n")
+        else:
+            text = str(content or "")
+        entry = {"role": role, "content": text}
+        # Preserve tool_calls if present on any role (some providers send it on user)
+        if m.get("tool_calls"):
+            entry["tool_calls"] = m["tool_calls"]
+        if m.get("tool_call_id"):
+            entry["tool_call_id"] = m["tool_call_id"]
+        if m.get("name"):
+            entry["name"] = m["name"]
+        out.append(entry)
+    return out
+
+
+def extract_upstream_content(payload: Any) -> str | None:
+    try:
+        choices = payload["choices"]
+        if not isinstance(choices, list) or not choices:
+            return None
+        msg = choices[0]["message"]
+        # tool_calls response has no content but has tool_calls -> treat as success
+        if msg.get("tool_calls"):
+            return "__tool_calls__"  # sentinel so caller knows it is tool call
+        content = msg.get("content")
+    except (KeyError, TypeError, IndexError):
+        return None
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return strip_think_blocks(content)
+    if isinstance(content, list):
+        joined = "\n".join(
+            str(p.get("text", "")) for p in content if isinstance(p, dict) and "text" in p
+        ).strip("\n")
+        return strip_think_blocks(joined) or None
+    return strip_think_blocks(str(content)) if content else None
+
+
+def extract_upstream_message(payload: Any) -> dict | None:
+    """Extract full assistant message (content + tool_calls) for passthrough."""
+    try:
+        choices = payload["choices"]
+        if not isinstance(choices, list) or not choices:
+            return None
+        msg = choices[0]["message"]
+        if not isinstance(msg, dict):
+            return None
+        return msg
+    except (KeyError, TypeError, IndexError):
+        return None
+
+
+PASSTHROUGH_FIELDS = ["tools", "tool_choice", "response_format", "max_tokens", "max_completion_tokens", "top_p", "top_k", "frequency_penalty", "presence_penalty", "stop", "seed", "n", "logit_bias", "user", "parallel_tool_calls", "reasoning_effort", "verbosity"]
+
+
+def build_upstream_body(original_body: dict, model_id: str, messages: list[dict], stream: bool = False) -> dict:
+    body: dict = {"model": model_id, "messages": messages}
+    if stream:
+        body["stream"] = True
+    # passthrough common fields
+    for field in PASSTHROUGH_FIELDS:
+        if field in original_body and original_body[field] is not None:
+            body[field] = original_body[field]
+    # temperature / top_p special handling (allow 0)
+    for k in ["temperature", "top_p"]:
+        if k in original_body and isinstance(original_body[k], (int, float)):
+            body[k] = original_body[k]
+    # stream_options
+    if "stream_options" in original_body:
+        body["stream_options"] = original_body["stream_options"]
+    return body
+
+
+def find_model(db: Session, id_or_exposed: str) -> ModelRow | None:
+    return db.scalars(
+        select(ModelRow)
+        .where((ModelRow.exposedId == id_or_exposed) | (ModelRow.modelId == id_or_exposed))
+        .options(joinedload(ModelRow.provider))
+        .order_by(ModelRow.id)
+    ).first()
+
+
+def resolve_chain(db: Session, requested: str) -> list[str]:
+    route = db.scalars(
+        select(ModelRoute).where(ModelRoute.publicId == requested, ModelRoute.enabled.is_(True))
+    ).first()
+    if route is None:
+        route = db.scalars(
+            select(ModelRoute).where(ModelRoute.publicId == "*", ModelRoute.enabled.is_(True))
+        ).first()
+    if route is None:
+        return []
+    try:
+        parsed = json.loads(route.fallbacks)
+        return [f for f in parsed if isinstance(f, str)] if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def write_log(db: Session, **p) -> None:
+    try:
+        db.add(RequestLog(
+            model=p.get("model", ""), upstreamModel=p.get("upstream_model", ""),
+            providerName=p.get("provider_name", ""), endpoint=p.get("endpoint", "/v1/chat/completions"),
+            status=p.get("status", 200), latencyMs=p.get("latency_ms", 0),
+            tokensIn=p.get("tokens_in", 0), tokensOut=p.get("tokens_out", 0),
+            via=p.get("via", ""), spoofed=p.get("spoofed", False), error=p.get("error", ""),
+        ))
+        db.commit()
+    except Exception:  # logging must never break the response
+        db.rollback()
+
+
+def nova_meta(upstream_model: str, provider_name: str, stage: int, requested: str,
+              fallback: bool, routing_block: dict | None = None) -> dict:
+    meta = {
+        "upstream_model": upstream_model,
+        "provider": provider_name,
+        "fallback": fallback,
+        "hedged": False,
+        "cached": False,
+        "spoofed": requested != upstream_model,
+        "stage": stage,
+    }
+    if routing_block:
+        meta["routing"] = routing_block
+    return meta
+
+
+def build_headers() -> dict:
+    return {"x-content-type-options": "nosniff"}
+
+
+class UpstreamFailure(Exception):
+    def __init__(self, detail: str, status: int = 0):
+        super().__init__(detail)
+        self.detail = detail
+        self.status = status
+
+
+# --------------------------------------------------------------------------- #
+# Non-streaming upstream attempt (parity with attemptUpstream)
+# --------------------------------------------------------------------------- #
+
+async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: float | None, original_body: dict | None = None) -> dict | None:
+    provider = row.provider
+    if not provider or not provider.enabled or provider.kind in ("builtin", "gemini"):
+        return None
+    base = provider.baseUrl.rstrip("/")
+    if not base or base.startswith("internal://"):
+        return None
+
+    if original_body is not None:
+        body = build_upstream_body(original_body, row.modelId, messages, stream=False)
+    else:
+        body = {"model": row.modelId, "messages": messages}
+        if temperature is not None:
+            body["temperature"] = temperature
+
+    from nova.database import SessionLocal
+    from nova.models import ProviderKey
+
+    def _load_key():
+        with SessionLocal() as s:
+            from sqlalchemy import select as sel
+
+            k = s.scalars(
+                sel(ProviderKey)
+                .where(ProviderKey.providerId == provider.id, ProviderKey.enabled.is_(True))
+                .order_by(ProviderKey.weight.desc(), ProviderKey.id)
+            ).first()
+            if k is None:
+                return None
+            now = datetime.utcnow()
+            if k.cooldownUntil and k.cooldownUntil > now:
+                return {"apiKey": k.apiKey}  # last resort — same as TS parity
+            return {"apiKey": k.apiKey}
+
+    key_info = await asyncio.to_thread(_load_key)
+    if not key_info:
+        return None
+
+    try:
+        native = provider.kind == "anthropic"
+        res = await NONSTREAM_CLIENT.post(
+            anthropic_url(base) if native else f"{base}/chat/completions",
+            headers=anthropic_headers(key_info["apiKey"]) if native else
+                    {"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
+            json=openai_to_anthropic(row.modelId, messages, body) if native else body,
+        )
+        if res.status_code < 200 or res.status_code >= 300:
+            return None
+        payload = res.json()
+        if native:
+            normalized = anthropic_to_openai(payload)
+            if normalized is None:
+                return None
+            return {**normalized, "upstream_model": row.modelId,
+                    "upstream_exposed_id": row.exposedId, "provider_name": provider.name,
+                    "provider_id": provider.id, "via": "upstream-anthropic"}
+        content = extract_upstream_content(payload)
+        if content is None:
+            return None
+        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        upstream_msg = extract_upstream_message(payload)
+        return {
+            "content": content if content != "__tool_calls__" else (upstream_msg.get("content") if upstream_msg else None),
+            "upstream_model": row.modelId,
+            "upstream_exposed_id": row.exposedId,
+            "provider_name": provider.name,
+            "provider_id": provider.id,
+            "via": "upstream",
+            "upstream_message": upstream_msg,
+            "tool_calls": upstream_msg.get("tool_calls") if upstream_msg else None,
+            "finish_reason": (payload.get("choices") or [{}])[0].get("finish_reason"),
+            "usage": {
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+            },
+        }
+    except httpx.HTTPError:
+        return None
+
+
+def select_upstream_key_sync(provider_id: int):
+    """Direct key selection used by the streaming path (cached 30s)."""
+    now_m = time.time()
+    cached = _KEY_CACHE.get(provider_id)
+    if cached is not None and now_m - cached[0] < _KEY_CACHE_TTL:
+        return cached[1]
+    from nova.database import SessionLocal
+    from nova.models import ProviderKey
+
+    with SessionLocal() as s:
+        rows = s.scalars(
+            select(ProviderKey)
+            .where(ProviderKey.providerId == provider_id, ProviderKey.enabled.is_(True))
+            .order_by(ProviderKey.weight.desc(), ProviderKey.id)
+        ).all()
+        now = datetime.utcnow()
+        for k in rows:
+            if not k.cooldownUntil or k.cooldownUntil <= now:
+                info = {"apiKey": k.apiKey}
+                break
+        else:
+            info = {"apiKey": rows[0].apiKey} if rows else None
+    _KEY_CACHE[provider_id] = (now_m, info)
+    return info
+
+
+# --------------------------------------------------------------------------- #
+# Streaming upstream attempt (SSE relay)
+# --------------------------------------------------------------------------- #
+
+async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperature: float | None, original_body: dict | None = None):
+    """Open an SSE stream to the upstream provider.
+
+    Returns (stream_iterator, provider_name, upstream_model) or raises UpstreamFailure
+    before anything is committed (connect errors / HTTP error status).
+    """
+    provider = row.provider
+    if not provider or not provider.enabled or provider.kind in ("builtin", "gemini"):
+        raise UpstreamFailure("provider not streamable")
+    key_info = await asyncio.to_thread(select_upstream_key_sync, provider.id)
+    if key_info is None:
+        raise UpstreamFailure("no enabled key")
+    base = provider.baseUrl.rstrip("/")
+    if not base or base.startswith("internal://"):
+        raise UpstreamFailure("no base url")
+
+    body = build_upstream_body(original_body, row.modelId, messages, stream=True) if original_body is not None else {"model": row.modelId, "messages": messages, "stream": True, **({"temperature": temperature} if temperature is not None else {})}
+    native = provider.kind == "anthropic"
+    client = UPSTREAM_CLIENT
+    try:
+        req = client.build_request(
+            "POST", anthropic_url(base) if native else f"{base}/chat/completions",
+            headers=anthropic_headers(key_info["apiKey"]) if native else
+                    {"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
+            json=openai_to_anthropic(row.modelId, messages, body, stream=True) if native else body,
+        )
+        res = await client.send(req, stream=True)
+    except httpx.HTTPError as err:
+        raise UpstreamFailure(f"connect failed: {err}") from err
+
+    if res.status_code < 200 or res.status_code >= 300:
+        await res.aclose()
+        raise UpstreamFailure(f"upstream returned HTTP {res.status_code}", status=res.status_code)
+
+    async def relay() -> AsyncIterator[dict]:
+        tool_indices: dict[int, int] = {}
+        try:
+            async for line in res.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except Exception:
+                    continue
+                if native:
+                    event = chunk.get("type")
+                    if event == "content_block_start":
+                        block = chunk.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            index = len(tool_indices)
+                            tool_indices[chunk.get("index", index)] = index
+                            yield {"text": "", "finish_reason": None, "tool_calls": [{"index": index,
+                                "id": block.get("id"), "type": "function", "function": {"name": block.get("name"), "arguments": ""}}]}
+                    elif event == "content_block_delta":
+                        delta = chunk.get("delta") or {}
+                        if delta.get("type") == "text_delta" and delta.get("text"):
+                            yield {"text": delta["text"], "finish_reason": None, "tool_calls": None}
+                        elif delta.get("type") == "input_json_delta" and chunk.get("index") in tool_indices:
+                            yield {"text": "", "finish_reason": None, "tool_calls": [{"index": tool_indices[chunk["index"]],
+                                "function": {"arguments": delta.get("partial_json") or ""}}]}
+                    elif event == "message_delta":
+                        reason = (chunk.get("delta") or {}).get("stop_reason")
+                        if reason:
+                            yield {"text": "", "finish_reason": {"end_turn": "stop", "tool_use": "tool_calls", "max_tokens": "length"}.get(reason, reason), "tool_calls": None}
+                    continue
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                text = delta.get("content")
+                finish = choices[0].get("finish_reason")
+                tool_calls_delta = delta.get("tool_calls")
+                if text or finish or tool_calls_delta:
+                    yield {"text": text or "", "finish_reason": finish, "tool_calls": tool_calls_delta, "raw_delta": delta, "raw_choice": choices[0]}
+        finally:
+            try:
+                await res.aclose()
+            except Exception:
+                pass
+            # client is the shared UPSTREAM_CLIENT — never close it, only the
+            # per-response stream; the pooled connection returns to the pool.
+
+    return relay(), provider.name, row.modelId
+
+
+# --------------------------------------------------------------------------- #
+# Chat completions core
+# --------------------------------------------------------------------------- #
+
+def resolve_pipeline(db: Session, requested: str) -> list[ModelRow]:
+    """Stage 1 row (direct) + stage 2..N rows, already ordered by the router.
+
+    Kept as a list-returning wrapper so the Anthropic adapter and the legacy
+    completions path keep working unchanged; both just need the order.
+    """
+    rows, _plan = route_request(db, requested)
+    return rows
+
+
+# --------------------------------------------------------------------------- #
+# Routing — nova.routing wired to the database
+# --------------------------------------------------------------------------- #
+
+def _provider_tags(db: Session) -> dict[str, list[str]]:
+    """Per-provider routing tags, stored as `provider_tags` in SystemConfig.
+
+    Kept in config rather than a new column so the schema stays exactly as
+    documented in `nova/models.py`; an unset key simply means "no tags".
+    """
+    from nova.kv import get_config_json
+
+    raw = get_config_json(db, "provider_tags", {}) or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): nova_routing.normalize_tags(v) for k, v in raw.items()}
+
+
+def _usage_counts(db: Session) -> dict[str, int]:
+    """Requests served per provider name. Only loaded for the `least-used` strategy."""
+    rows = db.execute(
+        select(RequestLog.providerName, func.count())
+        .where(RequestLog.providerName != "")
+        .group_by(RequestLog.providerName)
+    ).all()
+    return {str(name): int(count) for name, count in rows}
+
+
+def _candidate(row: ModelRow, stage: int, requested: str,
+               tags: dict[str, list[str]], counts: dict[str, int]) -> dict:
+    """Flatten a Model row into the plain dict `nova.routing` scores."""
+    provider = row.provider
+    return {
+        "row": row,
+        "exposed_id": row.exposedId,
+        "model_id": row.modelId,
+        "provider_key": provider.key if provider else "",
+        "provider_name": provider.name if provider else "",
+        "provider_priority": provider.priority if provider else 100,
+        "stage": stage,
+        "chain_depth": stage,
+        "requested": requested,
+        "tags": tags.get(provider.key, []) if provider else [],
+        "status": row.status or "unknown",
+        "latency_ms": int(row.latencyMs or 0),
+        "cost_per_1m": max(float(row.priceIn or 0.0), float(row.priceOut or 0.0)) * 1_000_000,
+        "req_count": counts.get(provider.name, 0) if provider else 0,
+    }
+
+
+def _effective_route(db: Session, requested: str) -> ModelRoute | None:
+    """The enabled route that governs `requested`, else the '*' default chain."""
+    route = db.scalars(
+        select(ModelRoute).where(ModelRoute.publicId == requested, ModelRoute.enabled.is_(True))
+    ).first()
+    if route is None:
+        route = db.scalars(
+            select(ModelRoute).where(ModelRoute.publicId == "*", ModelRoute.enabled.is_(True))
+        ).first()
+    return route
+
+
+def auto_standins(db: Session, requested: str, seen: set[str],
+                  limit: int = AUTO_STANDIN_LIMIT) -> list[ModelRow]:
+    """Healthy, enabled models from other providers — the auto-fallback pool.
+
+    Shared by the live pipeline (after a route's explicit chain is exhausted)
+    and by the dashboard's route preview, so what the preview promises is what
+    the gateway actually does.
+    """
+    rows = db.scalars(
+        select(ModelRow)
+        .where(ModelRow.enabled.is_(True))
+        .options(joinedload(ModelRow.provider))
+        .order_by(ModelRow.isFree.desc(), ModelRow.latencyMs.asc(), ModelRow.id.asc())
+    ).unique().all()
+    picked: list[ModelRow] = []
+    for m in rows:
+        provider = m.provider
+        if provider is None or not provider.enabled:
+            continue
+        # Not reachable through the HTTP upstream path: the free engine is the
+        # pipeline's own final stage, and gemini is not wired for chat here.
+        if provider.kind in ("builtin", "gemini"):
+            continue
+        if not provider.baseUrl or provider.baseUrl.startswith("internal://"):
+            continue
+        if (m.status or "") == "dead":
+            continue
+        if m.exposedId in seen or m.modelId in seen:
+            continue
+        seen.add(m.exposedId)
+        picked.append(m)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+async def _iterate_with_heartbeat(stream, heartbeat: bytes):
+    """Iterate a provider stream, yielding heartbeats while it stays silent.
+
+    Yields ``("hb", bytes)`` for every silent interval, ``("piece", item)`` for
+    each real chunk and a final ``("eof", None)``. The pending read is shielded
+    from cancellation, so emitting a heartbeat never tears the upstream
+    connection down the way cancelling ``__anext__`` would. Callers keep the
+    same generator across the probe/continuation split, so a long prefill can be
+    watched by the client (and a proxy) without the stream dying.
+    """
+    pending = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(stream.__anext__())
+            try:
+                piece = await asyncio.wait_for(asyncio.shield(pending), timeout=SSE_HEARTBEAT_S)
+            except asyncio.TimeoutError:
+                yield ("hb", heartbeat)
+                continue
+            except (StopAsyncIteration, Exception):
+                yield ("eof", None)
+                return
+            pending = None
+            yield ("piece", piece)
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+
+
+def _pipeline_rows(db: Session, requested: str,
+                   settings: router_settings.RouterSettings) -> list[ModelRow]:
+    """Direct row, then ModelRoute fallbacks, then declarative routing chains."""
+    seen: set[str] = {requested}
+    chain_ids: list[str] = []
+    for cid in resolve_chain(db, requested):
+        if cid and cid not in seen:
+            seen.add(cid)
+            chain_ids.append(cid)
+    for entry in nova_routing.resolve_chain(settings.chains, requested, exclude=seen):
+        if entry["id"] not in seen:
+            seen.add(entry["id"])
+            chain_ids.append(entry["id"])
+
+    rows: list[ModelRow] = []
+    direct = find_model(db, requested)
+    if direct is not None:
+        rows.append(direct)
+    for cid in chain_ids:
+        row = find_model(db, cid)
+        if row is not None:
+            rows.append(row)
+
+    # Auto stand-ins — every other healthy, enabled provider joins the chain
+    # after the explicit fallbacks (opt out per route with auto=0).
+    route = _effective_route(db, requested)
+    if route.auto if route is not None else True:
+        rows.extend(auto_standins(db, requested, seen))
+    return rows
+
+
+def route_request(db: Session, requested: str, body: dict | None = None) -> tuple[list[ModelRow], dict]:
+    """Order the candidate pool for one request and explain the decision.
+
+    Returns `(rows, plan)`. `plan` carries the strategy that ran, the policy
+    verdict, and one entry per dropped candidate so the dashboard can answer
+    "why didn't it use X?" without re-deriving anything.
+    """
+    settings = router_settings.load(db)
+    rows = _pipeline_rows(db, requested, settings)
+    tags = _provider_tags(db)
+    counts = _usage_counts(db) if settings.strategy == "least-used" else {}
+
+    candidates = [
+        _candidate(row, stage, requested, tags, counts)
+        for stage, row in enumerate(rows, start=1)
+    ]
+    request_tags, tag_mode = nova_routing.request_tags(body or {})
+
+    plan = nova_routing.build_plan(
+        candidates,
+        requested=requested,
+        strategy=settings.strategy,
+        weights=settings.weights,
+        policies=settings.policies,
+        chains=settings.chains,
+        denylist=settings.denylist,
+        allowlist=settings.allowlist,
+        lockouts=nova_routing.LOCKOUTS,
+        request_tags_=request_tags,
+        tag_mode=tag_mode,
+        last_known_good=settings.last_known_good,
+        sla=settings.sla,
+    )
+
+    if not plan["allowed"]:
+        raise HTTPError(403, plan["verdict"].get("reason") or "Blocked by a routing policy")
+
+    plan["rows"] = [c["row"] for c in plan["candidates"]]
+    plan["considered"] = len(candidates)
+    # Did the requested id resolve to a real candidate? If not, whatever serves
+    # the request is a fallback even when it lands at stage 1.
+    plan["direct"] = any(
+        c.get("exposed_id") == requested or c.get("model_id") == requested
+        for c in candidates
+    )
+    return plan["rows"], plan
+
+
+def routing_summary(plan: dict) -> dict:
+    """The `_nova.routing` block: what ran, what it skipped, and why."""
+    return {
+        "strategy": plan.get("strategy", "priority"),
+        "considered": plan.get("considered", 0),
+        "ordered": [c.get("exposed_id", "") for c in plan.get("candidates", [])],
+        "excluded": plan.get("excluded", {}),
+        "steps": plan.get("steps", [])[:8],
+        "policies": (plan.get("verdict") or {}).get("applied", []),
+    }
+
+
+def note_attempt(row: ModelRow, ok: bool, reason: str = "") -> None:
+    """Feed one upstream attempt back into the lockout registry.
+
+    Repeated failures on the same (provider, model) back the candidate off for
+    a while instead of burning a key on every request; a single success clears
+    the record so a recovered provider rejoins the pool immediately.
+    """
+    provider = row.provider
+    if not provider:
+        return
+    if ok:
+        nova_routing.LOCKOUTS.record_success(provider.key, row.modelId)
+    else:
+        nova_routing.LOCKOUTS.record_failure(provider.key, row.modelId, reason or "upstream attempt failed")
+
+
+def persist_lockouts(db: Session, force: bool = False) -> None:
+    """Flush lockout state to SystemConfig, throttled to once a minute."""
+    global _LOCKOUT_FLUSH_TS
+    now = time.time()
+    if not force and now - _LOCKOUT_FLUSH_TS < 60.0:
+        return
+    _LOCKOUT_FLUSH_TS = now
+    router_settings.save_lockouts(db, nova_routing.LOCKOUTS)
+
+
+async def pipeline_nonstream(db: Session, requested: str, messages: list[dict], temperature: float | None, original_body: dict | None = None):
+    """Returns (result_dict, stage, plan) — walking the router's ordering."""
+    started = now_ms()
+    rows, plan = route_request(db, requested, original_body)
+    stage = 0
+    for row in rows:
+        stage += 1
+        result = await attempt_upstream(row, messages, temperature, original_body)
+        note_attempt(row, result is not None)
+        if result is not None:
+            result["stage"] = stage
+            return result, stage, plan
+
+    # Final stage: RouterX Free engine (free-ai-models base, non-streaming)
+    stage = len(rows) + 1
+    tools = None
+    tool_choice = None
+    if isinstance(original_body, dict):
+        tools = original_body.get("tools")
+        tool_choice = original_body.get("tool_choice")
+    try:
+        completion = await nova_engine.chat(
+            messages, tools=tools, tool_choice=tool_choice, model=requested
+        )
+        engine_meta = completion.get("_nova") if isinstance(completion, dict) else None
+        engine_meta = engine_meta if isinstance(engine_meta, dict) else {}
+        choice: dict = {}
+        if isinstance(completion, dict):
+            choices = completion.get("choices")
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                choice = choices[0]
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        try:
+            content = strip_think_blocks(message.get("content"))
+        except (KeyError, TypeError, IndexError):
+            content = str(completion)
+        return {
+            "content": content,
+            "tool_calls": message.get("tool_calls"),
+            "finish_reason": choice.get("finish_reason"),
+            "upstream_model": engine_meta.get("upstream_model") or "nova-engine",
+            "upstream_exposed_id": engine_meta.get("upstream_model") or "nova-engine",
+            "provider_name": engine_meta.get("provider") or "RouterX Free Engine",
+            "provider_id": None,
+            "via": "nova-engine",
+            "usage": {"prompt_tokens": None, "completion_tokens": None},
+            "stage": stage,
+        }, stage, plan
+    except nova_engine.EngineUnavailable as err:
+        raise HTTPError(502, f"All routing stages failed: {err}") from err
+
+
+class HTTPError(Exception):
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+# --------------------------------------------------------------------------- #
+# GET /v1/models
+# --------------------------------------------------------------------------- #
+
+@router.get("/models")
+async def list_models(request: Request, discover: str = "", provider: str = "", free: str = ""):
+    from nova.database import SessionLocal
+
+    with SessionLocal() as db:
+        if discover in ("1", "true"):
+            results = await discover_provider_models(db, provider.strip() or None)
+            summary = aggregate_discovery(results)
+            if free in ("1", "true"):
+                summary["data"] = [m for m in summary["data"] if m.get("is_free")]
+                summary["total_models"] = len(summary["data"])
+            return JSONResponse(summary)
+
+        rows = db.execute(
+            select(ModelRow)
+            .where(ModelRow.enabled.is_(True))
+            .options(joinedload(ModelRow.provider))
+            .order_by(ModelRow.providerId)
+        ).scalars().unique().all()
+
+        data = []
+        for m in rows:
+            if not m.provider.enabled:
+                continue
+            # Exposure allow/deny globs gate advertisement here AND dispatch in
+            # nova.routing — one predicate, both chokepoints, so a hidden model
+            # can never sneak into a fallback chain either.
+            if not nova_routing.is_exposure_allowed(m.exposedId, m.provider.key):
+                continue
+            try:
+                capabilities = json.loads(m.capabilities)
+                if not isinstance(capabilities, dict):
+                    capabilities = {}
+            except Exception:
+                capabilities = {}
+            data.append({
+                "id": m.exposedId,
+                "object": "model",
+                "owned_by": m.provider.key,
+                "context_length": m.contextLength,
+                "capabilities": capabilities,
+                "is_free": m.isFree,
+                "status": m.status,
+            })
+        return JSONResponse({
+            "object": "list",
+            "data": data,
+            "_nova": {"catalog": nova_catalog.source()},
+        })
+
+
+# --------------------------------------------------------------------------- #
+# POST /v1/chat/completions
+# --------------------------------------------------------------------------- #
+
+@router.post("/chat/completions")
+async def chat_completions(request: Request):
+    started = now_ms()
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    requested = str(body.get("model") or "").strip()
+    raw_messages = body.get("messages")
+    if not requested:
+        return JSONResponse({"error": "Missing required parameter: 'model'"}, status_code=400)
+    if not isinstance(raw_messages, list) or len(raw_messages) == 0:
+        return JSONResponse({"error": "Missing required parameter: 'messages' (non-empty array)"}, status_code=400)
+
+    messages = normalize_messages(raw_messages)
+    temperature = body.get("temperature") if isinstance(body.get("temperature"), (int, float)) else None
+    stream = body.get("stream") is True
+    tokens_in = estimate_tokens("\n".join(f"{m['role']}:{m['content']}" for m in messages))
+
+    from nova.database import SessionLocal
+
+    if stream:
+        return StreamingResponse(
+            _chat_stream_response(requested, messages, temperature, tokens_in, started, body),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **build_headers()},
+        )
+
+    with SessionLocal() as db:
+        try:
+            result, stage, plan = await pipeline_nonstream(db, requested, messages, temperature, body)
+        except HTTPError as err:
+            write_log(db, model=requested, upstream_model="nova-engine",
+                      provider_name="RouterX Free Engine", endpoint="/v1/chat/completions",
+                      status=err.status, latency_ms=now_ms() - started, via="nova-engine",
+                      error=err.message)
+            return JSONResponse({"error": err.message}, status_code=err.status)
+        persist_lockouts(db)
+
+        completion_text = strip_think_blocks(result.get("content") or "") or ""
+        prompt_tokens = result["usage"]["prompt_tokens"] or tokens_in
+        completion_tokens = result["usage"]["completion_tokens"] or estimate_tokens(completion_text)
+        usage = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                 "total_tokens": prompt_tokens + completion_tokens}
+        meta = nova_meta(result["upstream_model"], result["provider_name"], result["stage"], requested,
+                         result["stage"] > 1 or not plan.get("direct", True), routing_summary(plan))
+        write_log(db, model=requested, upstream_model=result["upstream_model"],
+                  provider_name=result["provider_name"], status=200,
+                  latency_ms=now_ms() - started, tokens_in=prompt_tokens,
+                  tokens_out=completion_tokens, via=result["via"], spoofed=meta["spoofed"])
+
+        msg: dict = {"role": "assistant", "content": strip_think_blocks(result.get("content"))}
+        if result.get("tool_calls"):
+            msg["tool_calls"] = result["tool_calls"]
+        finish_reason = result.get("finish_reason") or ("tool_calls" if result.get("tool_calls") else "stop")
+        return JSONResponse({
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": requested,
+            "choices": [{"index": 0, "message": msg,
+                         "finish_reason": finish_reason}],
+            "usage": usage,
+            "_nova": meta,
+        })
+
+
+def sse_chunk(obj: dict) -> bytes:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+async def _chat_stream_response(requested: str, messages: list[dict], temperature, tokens_in: int, started: int, original_body: dict | None = None):
+    """Full pipeline with SSE output. Commits to a stage only after the first
+    real content arrives; otherwise falls through to the next stage."""
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+
+    def base_chunk() -> dict:
+        return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
+                "model": requested, "choices": []}
+
+    from nova.database import SessionLocal
+
+    db = SessionLocal()
+    committed = False
+    assembled: list[str] = []
+    served = {"upstream_model": "nova-engine", "provider_name": "RouterX Free Engine", "via": "nova-engine", "stage": 0}
+    think_filter = ThinkStreamFilter()
+    try:
+        # Open the client stream immediately so a proxy never sees an idle
+        # connection while the router resolves and the upstream warms up.
+        yield b": routerx-keepalive\n\n"
+        try:
+            rows, plan = route_request(db, requested, original_body)
+        except HTTPError as err:
+            yield sse_chunk({"error": {"message": err.message, "type": "gateway_error",
+                                       "code": err.status}})
+            yield b"data: [DONE]\n\n"
+            return
+        stage = 0
+        for row in rows:
+            stage += 1
+            try:
+                stream, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature, original_body)
+            except UpstreamFailure as err:
+                note_attempt(row, False, err.detail)
+                log.info("stream stage %s failed: %s", stage, err)
+                continue
+
+            # Probe the first delta before committing — heartbeats keep the
+            # connection warm while a cold/long-thinking upstream stays silent.
+            pieces = _iterate_with_heartbeat(stream, b": routerx-keepalive\n\n")
+            first = None
+            async for kind, value in pieces:
+                if kind == "hb":
+                    yield value
+                    continue
+                if kind == "piece" and (value["text"] or value["finish_reason"] or value.get("tool_calls")):
+                    first = value
+                break
+
+            if first is None:
+                try:
+                    await stream.aclose()
+                except Exception:
+                    pass
+                continue
+
+            committed = True
+            note_attempt(row, True)
+            served = {"upstream_model": upstream_model, "provider_name": provider_name,
+                      "via": "upstream", "stage": stage}
+            # Track tool_calls for streaming passthrough
+            tool_calls_buffer: list[dict] = []
+            finish_reason_val = None
+            yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]})
+            # handle first piece
+            if first["text"]:
+                filtered = think_filter.feed(first["text"])
+                if filtered:
+                    assembled.append(filtered)
+                    yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": filtered}, "finish_reason": None}]})
+            if first.get("tool_calls"):
+                tool_calls_buffer.extend(first["tool_calls"])
+                yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"tool_calls": first["tool_calls"]}, "finish_reason": None}]})
+            if first.get("finish_reason"):
+                finish_reason_val = first["finish_reason"]
+                yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason_val}]})
+                yield b"data: [DONE]\n\n"
+                try:
+                    await stream.aclose()
+                except Exception:
+                    pass
+                break
+            async for kind, piece in pieces:
+                if kind == "hb":
+                    yield piece
+                    continue
+                if kind == "eof":
+                    break
+                if piece["text"]:
+                    filtered = think_filter.feed(piece["text"])
+                    if filtered:
+                        assembled.append(filtered)
+                        yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": filtered}, "finish_reason": None}]})
+                if piece.get("tool_calls"):
+                    tool_calls_buffer.extend(piece["tool_calls"])
+                    yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"tool_calls": piece["tool_calls"]}, "finish_reason": None}]})
+                if piece["finish_reason"]:
+                    finish_reason_val = piece["finish_reason"]
+                    break
+            final_reason = finish_reason_val or ("tool_calls" if tool_calls_buffer else "stop")
+            yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {}, "finish_reason": final_reason}]})
+            yield b"data: [DONE]\n\n"
+            break
+
+        if not committed:
+            # Final stage: RouterX Free engine (free-ai-models base, streamed).
+            stage = len(rows) + 1
+            served = {"upstream_model": "nova-engine", "provider_name": "RouterX Free Engine",
+                      "via": "nova-engine", "stage": stage}
+            tools = None
+            tool_choice = None
+            if isinstance(original_body, dict):
+                tools = original_body.get("tools")
+                tool_choice = original_body.get("tool_choice")
+            try:
+                iterator = await nova_engine.chat_stream(
+                    messages, tools=tools, tool_choice=tool_choice, model=requested
+                )
+                yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]})
+                finish_reason_val = None
+                engine_tool_calls: list[dict] = []
+                async for data in iterator:
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except Exception:
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    engine_meta = chunk.get("_nova")
+                    if isinstance(engine_meta, dict):
+                        served["upstream_model"] = engine_meta.get("upstream_model") or served["upstream_model"]
+                        served["provider_name"] = engine_meta.get("provider") or served["provider_name"]
+                    if chunk.get("error"):
+                        raise nova_engine.EngineUnavailable(str(chunk.get("error", "engine error")))
+                    choices = chunk.get("choices") or []
+                    text = ""
+                    if choices:
+                        delta = choices[0].get("delta") or {}
+                        text = delta.get("content") or ""
+                        tool_calls_delta = delta.get("tool_calls")
+                        if tool_calls_delta:
+                            engine_tool_calls.extend(tool_calls_delta)
+                            yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"tool_calls": tool_calls_delta}, "finish_reason": None}]})
+                        if choices[0].get("finish_reason"):
+                            finish_reason_val = choices[0]["finish_reason"]
+                        if not text:
+                            msg = (choices[0].get("message") or {})
+                            text = msg.get("content") or ""
+                    if text:
+                        filtered = think_filter.feed(text)
+                        if filtered:
+                            assembled.append(filtered)
+                            yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {"content": filtered}, "finish_reason": None}]})
+                committed = True
+                final_reason = finish_reason_val or ("tool_calls" if engine_tool_calls else "stop")
+                yield sse_chunk({**base_chunk(), "choices": [{"index": 0, "delta": {}, "finish_reason": final_reason}]})
+                yield b"data: [DONE]\n\n"
+            except nova_engine.EngineUnavailable as err:
+                msg = f"All routing stages failed: {err}. Fix checklist: (1) Dashboard → Providers → Test your provider; (2) Dashboard → Models → Sync models; (3) request a model id that exists there (e.g. \"routerx/air\")."
+                yield sse_chunk({"error": {"message": msg, "type": "gateway_error", "code": 502}})
+                yield b"data: [DONE]\n\n"
+    finally:
+        content = "".join(assembled)
+        persist_lockouts(db)
+        if committed or assembled:
+            write_log(db, model=requested, upstream_model=served["upstream_model"],
+                      provider_name=served["provider_name"], status=200,
+                      latency_ms=now_ms() - started,
+                      tokens_in=tokens_in, tokens_out=estimate_tokens(content) or 1,
+                      via=served["via"], spoofed=requested != served["upstream_model"])
+        db.close()
+
+
+# --------------------------------------------------------------------------- #
+# POST /v1/completions — legacy
+# --------------------------------------------------------------------------- #
+
+@router.post("/completions")
+async def legacy_completions(request: Request):
+    started = now_ms()
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    requested = str(body.get("model") or "").strip()
+    prompt = body.get("prompt")
+    if not requested:
+        return JSONResponse({"error": "Missing required parameter: 'model'"}, status_code=400)
+    if prompt is None:
+        return JSONResponse({"error": "Missing required parameter: 'prompt'"}, status_code=400)
+
+    prompts = prompt if isinstance(prompt, list) else [prompt]
+    if not prompts or not all(isinstance(p, str) for p in prompts):
+        return JSONResponse({"error": "'prompt' must be a string or array of strings"}, status_code=400)
+    if body.get("stream") is True and len(prompts) > 1:
+        return JSONResponse({"error": "Streaming is supported for a single prompt only"}, status_code=400)
+
+    temperature = body.get("temperature") if isinstance(body.get("temperature"), (int, float)) else None
+
+    if body.get("stream") is True:
+        return StreamingResponse(
+            _legacy_stream(requested, prompts[0], temperature, started),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **build_headers()},
+        )
+
+    from nova.database import SessionLocal
+
+    choices = []
+    total_in = total_out = 0
+    with SessionLocal() as db:
+        for i, p in enumerate(prompts):
+            messages = normalize_messages([{"role": "user", "content": p}])
+            try:
+                result, stage, plan = await pipeline_nonstream(db, requested, messages, temperature)
+            except HTTPError as err:
+                write_log(db, model=requested, upstream_model="nova-engine",
+                          provider_name="RouterX Free Engine", endpoint="/v1/completions",
+                          status=err.status, latency_ms=now_ms() - started, via="nova-engine",
+                          error=err.message)
+                return JSONResponse({"error": err.message}, status_code=err.status)
+            tin = result["usage"]["prompt_tokens"] or estimate_tokens(p)
+            tout = result["usage"]["completion_tokens"] or estimate_tokens(result["content"])
+            total_in += tin
+            total_out += tout
+            choices.append({"text": strip_think_blocks(result["content"]) or "", "index": i, "finish_reason": "stop", "logprobs": None})
+            if i == 0:
+                served = result
+        write_log(db, model=requested, upstream_model=served["upstream_model"],
+                  provider_name=served["provider_name"], endpoint="/v1/completions",
+                  status=200, latency_ms=now_ms() - started, tokens_in=total_in,
+                  tokens_out=total_out, via=served["via"],
+                  spoofed=requested != served["upstream_model"])
+        persist_lockouts(db)
+
+    return JSONResponse({
+        "id": f"cmpl-{uuid.uuid4().hex[:24]}",
+        "object": "text_completion",
+        "created": int(time.time()),
+        "model": requested,
+        "choices": choices,
+        "usage": {"prompt_tokens": total_in, "completion_tokens": total_out,
+                  "total_tokens": total_in + total_out},
+        "_nova": nova_meta(served["upstream_model"], served["provider_name"], served["stage"], requested,
+                           served["stage"] > 1 or not plan.get("direct", True), routing_summary(plan)),
+    })
+
+
+async def _legacy_stream(requested: str, prompt: str, temperature, started: int):
+    completion_id = f"cmpl-{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+    messages = normalize_messages([{"role": "user", "content": prompt}])
+    assembled: list[str] = []
+    from nova.database import SessionLocal
+    db = SessionLocal()
+    committed = False
+    served = {"upstream_model": "nova-engine", "provider_name": "RouterX Free Engine", "via": "nova-engine", "stage": 0}
+    legacy_think = ThinkStreamFilter()
+    try:
+        rows = resolve_pipeline(db, requested)
+        stage = 0
+        for row in rows:
+            stage += 1
+            try:
+                stream, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature)
+            except UpstreamFailure:
+                continue
+            pieces = _iterate_with_heartbeat(stream, b": routerx-keepalive\n\n")
+            first = None
+            async for kind, value in pieces:
+                if kind == "hb":
+                    yield value
+                    continue
+                if kind == "piece" and (value["text"] or value["finish_reason"]):
+                    first = value
+                break
+            if first is None:
+                try:
+                    await stream.aclose()
+                except Exception:
+                    pass
+                continue
+            committed = True
+            served = {"upstream_model": upstream_model, "provider_name": provider_name, "via": "upstream", "stage": stage}
+
+            def text_chunk(t: str, finish=None) -> bytes:
+                return sse_chunk({"id": completion_id, "object": "text_completion.chunk",
+                                  "created": created, "model": requested,
+                                  "choices": [{"text": t, "index": 0, "finish_reason": finish, "logprobs": None}]})
+
+            if first["text"]:
+                filtered = legacy_think.feed(first["text"])
+                if filtered:
+                    assembled.append(filtered)
+                    yield text_chunk(filtered)
+            if first.get("finish_reason"):
+                yield text_chunk("", "stop")
+                yield b"data: [DONE]\n\n"
+                try:
+                    await stream.aclose()
+                except Exception:
+                    pass
+                break
+            async for kind, piece in pieces:
+                if kind == "hb":
+                    yield piece
+                    continue
+                if kind == "eof":
+                    break
+                if piece["text"]:
+                    filtered = legacy_think.feed(piece["text"])
+                    if filtered:
+                        assembled.append(filtered)
+                        yield text_chunk(filtered)
+                if piece["finish_reason"]:
+                    break
+            yield text_chunk("", "stop")
+            yield b"data: [DONE]\n\n"
+            break
+
+        if not committed:
+            stage = len(rows) + 1
+            served = {"upstream_model": "nova-engine", "provider_name": "RouterX Free Engine", "via": "nova-engine", "stage": stage}
+            try:
+                result_content = ""
+                completion = await nova_engine.chat(messages, model=requested)
+                try:
+                    result_content = strip_think_blocks(completion["choices"][0]["message"]["content"])
+                except (KeyError, TypeError, IndexError):
+                    result_content = strip_think_blocks(str(completion))
+                committed = True
+                # result_content already strip_think_blocks'd but also run through filter for safety
+                __f = legacy_think.feed(result_content)
+                if __f:
+                    assembled.append(__f)
+                    result_content = __f
+                else:
+                    result_content = ''
+
+                def text_chunk(t: str, finish=None) -> bytes:
+                    return sse_chunk({"id": completion_id, "object": "text_completion.chunk",
+                                      "created": created, "model": requested,
+                                      "choices": [{"text": t, "index": 0, "finish_reason": finish, "logprobs": None}]})
+
+                # chunk the completed text for a streaming experience
+                step = 24
+                for i in range(0, len(result_content), step):
+                    yield text_chunk(result_content[i:i + step])
+                yield text_chunk("", "stop")
+                yield b"data: [DONE]\n\n"
+            except nova_engine.EngineUnavailable as err:
+                yield sse_chunk({"error": {"message": f"All routing stages failed: {err}", "type": "gateway_error", "code": 502}})
+                yield b"data: [DONE]\n\n"
+    finally:
+        if assembled:
+            write_log(db, model=requested, upstream_model=served["upstream_model"],
+                      provider_name=served["provider_name"], endpoint="/v1/completions",
+                      status=200, latency_ms=now_ms() - started,
+                      tokens_in=estimate_tokens(prompt), tokens_out=estimate_tokens("".join(assembled)),
+                      via=served["via"], spoofed=requested != served["upstream_model"])
+        db.close()
+
+
+# --------------------------------------------------------------------------- #
+# POST /v1/embeddings
+# --------------------------------------------------------------------------- #
+
+@router.post("/embeddings")
+async def embeddings(request: Request):
+    started = now_ms()
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    requested = str(body.get("model") or "").strip()
+    raw_input = body.get("input")
+    if not requested:
+        return JSONResponse({"error": "Missing required parameter: 'model'"}, status_code=400)
+    if raw_input is None:
+        return JSONResponse({"error": "Missing required parameter: 'input'"}, status_code=400)
+
+    inputs = raw_input if isinstance(raw_input, list) else [raw_input]
+    inputs = [i if isinstance(i, str) else json.dumps(i) for i in inputs]
+
+    from nova.database import SessionLocal
+
+    with SessionLocal() as db:
+        row = find_model(db, requested)
+        if row is None or row.provider is None or not row.provider.enabled:
+            return JSONResponse({
+                "error": f"Model '{requested}' is not configured. Sync models in the dashboard or pick one from GET /v1/models.",
+            }, status_code=404)
+        provider = row.provider
+        key_info = await asyncio.to_thread(select_upstream_key_sync, provider.id)
+        base = provider.baseUrl.rstrip("/")
+
+        if provider.kind == "openai" and key_info and base and not base.startswith("internal://"):
+            try:
+                async with httpx.AsyncClient(timeout=NONSTREAM_READ_TIMEOUT) as client:
+                    res = await client.post(
+                        f"{base}/embeddings",
+                        headers={"Authorization": f"Bearer {key_info['apiKey']}", "Content-Type": "application/json"},
+                        json={"model": row.modelId, "input": inputs},
+                    )
+            except httpx.HTTPError as err:
+                write_log(db, model=requested, provider_name=provider.name, endpoint="/v1/embeddings",
+                          status=502, latency_ms=now_ms() - started, error=str(err))
+                return JSONResponse({"error": f"Upstream embeddings call failed: {err}"}, status_code=502)
+            if res.status_code < 200 or res.status_code >= 300:
+                write_log(db, model=requested, provider_name=provider.name, endpoint="/v1/embeddings",
+                          status=res.status_code, latency_ms=now_ms() - started,
+                          error=f"upstream HTTP {res.status_code}")
+                return JSONResponse({"error": f"Upstream returned HTTP {res.status_code} for embeddings"},
+                                    status_code=502)
+            data = res.json()
+            write_log(db, model=requested, upstream_model=row.modelId, provider_name=provider.name,
+                      endpoint="/v1/embeddings", status=200, latency_ms=now_ms() - started,
+                      tokens_in=estimate_tokens(" ".join(inputs)), tokens_out=0, via="upstream",
+                      spoofed=requested != row.modelId)
+            return JSONResponse(data)
+
+        if provider.kind == "gemini" and key_info and base and not base.startswith("internal://"):
+            vectors: list[dict] = []
+            try:
+                async with httpx.AsyncClient(timeout=NONSTREAM_READ_TIMEOUT) as client:
+                    for i, text in enumerate(inputs):
+                        res = await client.post(
+                            f"{base}/models/{row.modelId}:embedContent?key={key_info['apiKey']}",
+                            json={"content": {"parts": [{"text": text}]}},
+                        )
+                        if res.status_code < 200 or res.status_code >= 300:
+                            return JSONResponse(
+                                {"error": f"Upstream returned HTTP {res.status_code} for embeddings"},
+                                status_code=502)
+                        values = res.json().get("embedding", {}).get("values", [])
+                        vectors.append({"object": "embedding", "index": i, "embedding": values})
+            except httpx.HTTPError as err:
+                return JSONResponse({"error": f"Upstream embeddings call failed: {err}"}, status_code=502)
+            write_log(db, model=requested, upstream_model=row.modelId, provider_name=provider.name,
+                      endpoint="/v1/embeddings", status=200, latency_ms=now_ms() - started,
+                      tokens_in=estimate_tokens(" ".join(inputs)), tokens_out=0, via="upstream",
+                      spoofed=requested != row.modelId)
+            return JSONResponse({
+                "object": "list", "data": vectors, "model": requested,
+                "usage": {"prompt_tokens": estimate_tokens(" ".join(inputs)), "total_tokens": estimate_tokens(" ".join(inputs))},
+            })
+
+        return JSONResponse({
+            "error": ("Embeddings require an OpenAI-compatible or Gemini provider with a working key. "
+                      f"'{requested}' resolved to provider '{provider.key}' (kind={provider.kind}) which cannot serve embeddings."),
+        }, status_code=502)
+
+
+# --------------------------------------------------------------------------- #
+# Anthropic-format adapter — POST /v1/messages (+ /messages/count_tokens)
+#
+# Kept in its own module (routers/anthropic_adapter.py) and included here so it
+# is mounted under the same /v1 + /api/v1 prefixes as the rest of the gateway.
+# It is imported at the END of this module because it resolves the pipeline
+# helpers above lazily on first use.
+# --------------------------------------------------------------------------- #
+
+from .anthropic_adapter import router as anthropic_router  # noqa: E402
+
+router.include_router(anthropic_router)

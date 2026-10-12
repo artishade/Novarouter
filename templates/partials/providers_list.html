@@ -1,0 +1,47 @@
+{# Providers list — IS the live root (self-reproducing: the root's hx-get re-renders
+   this file, so data-live + nova:refresh wiring survives every swap).
+
+   Typing-safe structure: the search input is OUTSIDE the swapped results
+   region — search swaps only #providers-results (see
+   partials/providers_results.html), so a swap can never destroy the focused
+   input. The root reads the CURRENT search + expand state via hx-include at
+   trigger time (manual refresh + auto-refresh poll).
+   Expects ctx from ui/tabs/providers.py #}
+<div id="providers-root" data-live="1" hx-disinherit="*" hx-get="/partials/providers/list"
+  hx-include="#np-q, #np-expand"
+  hx-trigger="nova:refresh from:body" hx-swap="outerHTML" class="space-y-4">
+  <input type="hidden" id="np-expand" name="expand" value="{{ expand or '' }}" />
+<div class="flex flex-wrap items-center gap-2">
+  <h2 class="text-lg font-semibold text-slate-100">Providers</h2>
+  <span class="inline-flex items-center rounded-md border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">{{ rows | length }} configured</span>
+  {% if stats %}
+  <span class="inline-flex items-center rounded-md border border-green-900/70 bg-green-950/30 px-2 py-0.5 text-[11px] text-green-300">{{ stats.active_keys }} upstream keys · {{ stats.connected_providers }} signed in</span>
+  {% endif %}
+  <div class="ml-auto flex flex-wrap items-center gap-2">
+    <input id="np-q" name="q" value="{{ q }}" placeholder="Search providers..." aria-label="Search providers"
+      hx-get="/partials/providers/list?region=results" hx-include="this, #np-expand"
+      hx-sync="this:replace" hx-trigger="input delay:350ms"
+      hx-target="#providers-results" hx-swap="innerHTML"
+      class="h-9 w-48 rounded-md border border-slate-800 bg-black/30 px-2.5 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+    <button type="button" data-test-all data-ids="{{ test_ids | join(',') }}"
+      class="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-700 px-2.5 text-xs text-slate-300 transition-colors hover:bg-slate-800">
+      <i data-lucide="zap" class="size-3.5"></i>
+      <span data-testall-label>Test All</span>
+    </button>
+    <button type="button" data-open-dialog="np-add-dialog"
+      class="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-500 px-2.5 text-xs font-medium text-white transition-colors hover:bg-emerald-400">
+      <i data-lucide="plus" class="size-3.5"></i>
+      Add Provider
+    </button>
+  </div>
+</div>
+
+{# Results region — the only part search actions swap #}
+{% include "partials/providers_results.html" %}
+
+{% if meta %}
+<p class="text-[11px] text-slate-600">
+  Cooldowns: 429 → {{ meta.cooldowns['429'] }}s · 402 → {{ meta.cooldowns['402'] }}s · 5xx → {{ meta.cooldowns['5xx'] }}s · key rotation is weighted by key priority.
+</p>
+{% endif %}
+</div>

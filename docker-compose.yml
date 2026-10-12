@@ -1,0 +1,60 @@
+services:
+  routerx:
+    build: .
+    ports:
+      - "${PORT:-10000}:${PORT:-10000}"
+    environment:
+      # Render injects PORT dynamically; compose default kept for local runs.
+      - PORT=${PORT:-10000}
+      - DATABASE_URL=file:/app/db/custom.db
+      # Or a free Postgres (Neon/Supabase/Aiven):
+      # - DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
+      - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
+      # The Root@Build terminal runs as its own service. Comment these two out
+      # (or leave NOVA_TERMINAL_URL empty) to keep it in-process instead.
+      - NOVA_TERMINAL_URL=http://terminal:3100
+      - NOVA_TERMINAL_TOKEN=${NOVA_TERMINAL_TOKEN:-}
+    depends_on:
+      - terminal
+    volumes:
+      - nova-db:/app/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+__import__('os').environ.get('PORT','10000')+'/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # The terminal on its own host — real root shells, separately sized and
+  # restartable. Built from `terminal/` ALONE (its own Dockerfile and its own
+  # three dependencies): no gateway code, no database, no dashboard. The
+  # gateway talks to it over NOVA_TERMINAL_URL; Agentbox lives inside it.
+  terminal:
+    build:
+      context: ./terminal
+      dockerfile: Dockerfile
+    environment:
+      - NOVA_TERMINAL_PORT=3100
+      # Same shared secret the gateway sends. It grants root access, so set it.
+      - NOVA_TERMINAL_TOKEN=${NOVA_TERMINAL_TOKEN:-}
+      # Agentbox: any OpenAI-compatible /v1 endpoint, or a RouterX /v1.
+      - NOVA_AGENTBOX_BASE_URL=${NOVA_AGENTBOX_BASE_URL:-}
+      - NOVA_AGENTBOX_API_KEY=${NOVA_AGENTBOX_API_KEY:-}
+      - NOVA_AGENTBOX_MODEL=${NOVA_AGENTBOX_MODEL:-}
+      # Where shells start — the shared builder workspace.
+      - NOVA_BUILD_ROOT=${NOVA_BUILD_ROOT:-/app/build}
+    volumes:
+      - nova-build:/app/build
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3100/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  nova-db:
+  nova-build:

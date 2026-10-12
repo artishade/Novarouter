@@ -1,0 +1,515 @@
+{# Providers dialogs — rendered ONCE per full tab load, outside the live-swapped
+   list root so open dialogs and typed input survive auto-refresh. #}
+<style>
+  details.np-menu > summary::-webkit-details-marker { display: none; }
+</style>
+
+<dialog id="np-add-dialog" aria-labelledby="np-add-title"
+  class="w-[min(92vw,42rem)] rounded-xl border border-slate-800 bg-[#0b0b0b] p-0 text-slate-200">
+  <form id="np-add-form" autocomplete="off" class="p-5">
+    <input type="hidden" name="kind" id="np-kind" value="openai" />
+    <h3 id="np-add-title" class="text-base font-semibold text-slate-100">Add provider</h3>
+    <p id="np-add-desc" class="mt-0.5 text-xs text-slate-500">Choose an upstream protocol and endpoint. These are upstream providers, not client-facing gateway URLs.</p>
+
+    {# ----------------------------- step 1: preset grid ----------------------------- #}
+    <div id="np-step-1" class="mt-3">
+      <div class="nova-scroll max-h-[380px] overflow-y-auto pr-1">
+        <p class="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-400">Popular connections</p>
+        <div class="mb-4 grid gap-2 sm:grid-cols-2">
+          <button type="button" class="np-preset rounded-lg border border-slate-700 bg-black/20 p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5"
+            data-custom="0" data-name="Cloudflare Worker (OpenAI-compatible)" data-kind="openai" data-prefix="worker/" data-priority="95" data-key-hint="Worker bearer token"
+            data-url-hint="https://your-worker.your-subdomain.workers.dev/v1" data-guidance="OpenAI-compatible Worker endpoint. Enter the deployed API root; RouterX appends /models and /chat/completions. Automatic discovery requires /models and an upstream key."
+            aria-label="Add Cloudflare Worker OpenAI-compatible endpoint">
+            <span class="block text-sm font-medium text-slate-200">Cloudflare Worker</span><span class="mt-1 block text-[11px] text-slate-500">Your deployed OpenAI-compatible Worker · custom URL</span>
+          </button>
+          <button type="button" class="np-preset rounded-lg border border-slate-700 bg-black/20 p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5"
+            data-custom="0" data-name="Custom OpenAI-compatible gateway" data-kind="openai" data-prefix="gateway/" data-priority="95" data-key-hint="Gateway API key"
+            data-url-hint="https://gateway.example.com/v1" data-guidance="OpenAI-compatible upstream gateway. Use its API root (often /v1), not the full /chat/completions path. Do not point this at RouterX itself."
+            aria-label="Add custom OpenAI-compatible gateway">
+            <span class="block text-sm font-medium text-slate-200">Custom gateway API</span><span class="mt-1 block text-[11px] text-slate-500">OpenAI-compatible upstream · custom URL</span>
+          </button>
+          <button type="button" class="np-preset rounded-lg border border-slate-700 bg-black/20 p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5"
+            data-custom="0" data-name="xAI Grok" data-kind="openai" data-base-url="https://api.x.ai/v1" data-prefix="xai/" data-priority="50" data-key-hint="xai-…"
+            data-auth-url="https://console.x.ai" data-docs-url="https://docs.x.ai" data-guidance="xAI uses OpenAI-compatible /v1 endpoints. Use an xAI API key, not an Anthropic key."
+            aria-label="Add xAI Grok">
+            <span class="block text-sm font-medium text-slate-200">xAI Grok</span><span class="mt-1 block text-[11px] text-slate-500">OpenAI-compatible · https://api.x.ai/v1</span>
+          </button>
+          <button type="button" class="np-preset rounded-lg border border-slate-700 bg-black/20 p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5"
+            data-custom="0" data-name="Anthropic" data-kind="anthropic" data-base-url="https://api.anthropic.com" data-prefix="anthropic/" data-priority="90" data-key-hint="sk-ant-…"
+            data-auth-url="https://console.anthropic.com/settings/keys" data-docs-url="https://docs.anthropic.com" data-guidance="Native Anthropic API (x-api-key and /v1/messages), not an OpenAI-compatible proxy. Base URL stops at api.anthropic.com — do not append /v1."
+            aria-label="Add native Anthropic API">
+            <span class="block text-sm font-medium text-slate-200">Anthropic (native)</span><span class="mt-1 block text-[11px] text-slate-500">Messages API · https://api.anthropic.com</span>
+          </button>
+        </div>
+        <p class="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-400">Other presets</p>
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <button type="button" class="np-preset rounded-lg border border-dashed border-slate-700 p-3 text-left transition hover:border-emerald-500/60 hover:bg-emerald-500/5"
+            aria-label="Add a custom provider" data-custom="1" data-key-hint="sk-..." data-priority="50">
+            <span class="flex items-center gap-2">
+              <i data-lucide="plus" class="size-3.5 text-emerald-400"></i>
+              <span class="text-sm font-medium text-slate-200">Custom</span>
+            </span>
+            <span class="mt-2 block text-[11px] leading-snug text-slate-500">Any OpenAI-compatible endpoint</span>
+          </button>
+          {% for preset in presets if preset.key not in ['xai', 'anthropic', 'cloudflare-worker', 'custom-gateway'] %}
+          <button type="button"
+            class="np-preset rounded-lg border border-slate-800 bg-black/20 p-3 text-left transition hover:border-emerald-500/60 hover:bg-emerald-500/5"
+            aria-label="Select preset {{ preset.name }}"
+            data-custom="0" data-name="{{ preset.name }}" data-kind="{{ preset.kind }}"
+            data-base-url="{{ preset.base_url }}" data-prefix="{{ preset.prefix }}"
+            data-priority="{{ preset.priority }}" data-auth-url="{{ preset.auth_url or '' }}"
+            data-free-tier="{{ preset.free_tier or '' }}" data-docs-url="{{ preset.docs_url or '' }}"
+            data-key-hint="{{ preset.key_hint }}">
+            <span class="flex items-center gap-1.5">
+              <span class="size-2 shrink-0 rounded-full" style="background-color: {{ preset.color }}" aria-hidden="true"></span>
+              <span class="truncate text-sm font-medium text-slate-200">{{ preset.name }}</span>
+            </span>
+            <span class="mt-1.5 flex flex-wrap items-center gap-1">
+              <span class="inline-flex items-center rounded border border-slate-700 px-1 text-[10px] text-slate-400">{{ preset.kind }}</span>
+              {% if preset.requires_signin %}
+              <span class="inline-flex items-center rounded bg-amber-950/40 px-1 text-[10px] text-amber-300">Sign-in required</span>
+              {% endif %}
+            </span>
+            <span class="mt-1.5 flex items-center gap-1 text-[11px] text-slate-500">
+              <i data-lucide="sparkles" class="size-3 shrink-0 text-slate-600"></i>
+              <span class="truncate">{{ preset.free_tier or 'No free tier listed' }}</span>
+            </span>
+          </button>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    {# ----------------------------- step 2: config ----------------------------- #}
+    <div id="np-step-2" class="mt-3 hidden space-y-4">
+      <div class="grid gap-3 sm:grid-cols-2">
+        <div class="space-y-1.5">
+          <label for="np-name" class="text-xs text-slate-400">Name</label>
+          <input id="np-name" name="name" placeholder="Provider name" required maxlength="120"
+            class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+        </div>
+        <div class="space-y-1.5">
+          <label for="np-prefix" class="text-xs text-slate-400">Model prefix</label>
+          <input id="np-prefix" name="prefix" placeholder="e.g. groq/"
+            class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+        </div>
+        <div class="space-y-1.5 sm:col-span-2">
+          <label for="np-url" class="text-xs text-slate-400">Base URL</label>
+          <input id="np-url" name="base_url" type="url" placeholder="https://api.provider.com/v1" required inputmode="url" aria-describedby="np-url-help"
+            class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+          <p id="np-url-help" class="text-[11px] text-slate-500">Use the upstream API root, not a full operation path.</p>
+        </div>
+      </div>
+
+      <p id="np-protocol" class="rounded-md border border-slate-800 bg-black/20 px-3 py-2 text-[11px] leading-relaxed text-slate-400" aria-live="polite"></p>
+
+      <div class="space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-slate-400">Routing priority</span>
+          <span id="np-priority-val" class="font-mono text-xs text-emerald-300">50</span>
+        </div>
+        <input id="np-priority" name="priority" type="range" min="0" max="100" step="1" value="50" aria-label="Routing priority"
+          oninput="var v=document.getElementById('np-priority-val'); if(v) v.textContent=this.value;"
+          class="w-full accent-emerald-400" />
+        <p class="text-[11px] text-slate-500">Lower number = tried earlier when routing.</p>
+      </div>
+
+      <div class="space-y-1.5">
+        <label for="np-keys" class="text-xs text-slate-400">Upstream API keys (optional at creation)</label>
+        <textarea id="np-keys" name="api_keys" rows="3" placeholder="One key per line&#10;sk-..."
+          class="w-full rounded border border-slate-800 bg-black/30 p-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50"></textarea>
+        <p class="text-[11px] text-slate-500">A key is usually needed for discovery and requests. Add keys later from the provider card if needed. Multiple keys rotate with cooldowns.</p>
+      </div>
+
+      <div class="grid gap-3 sm:grid-cols-2">
+        <div class="space-y-1.5">
+          <label for="np-auth" class="text-xs text-slate-400">Auth / console URL (optional)</label>
+          <input id="np-auth" name="auth_url" placeholder="https://console.provider.com/keys"
+            class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+        </div>
+        <div class="space-y-1.5">
+          <label for="np-free" class="text-xs text-slate-400">Free tier note (optional)</label>
+          <input id="np-free" name="free_tier" placeholder="e.g. 14k req/day free"
+            class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+        </div>
+        <div class="space-y-1.5 sm:col-span-2">
+          <label for="np-docs" class="text-xs text-slate-400">Docs URL (optional)</label>
+          <input id="np-docs" name="docs_url" placeholder="https://docs.provider.com"
+            class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+        </div>
+      </div>
+    </div>
+
+    {# ----------------------------- step 3: live discovery log ----------------------------- #}
+    <div id="np-step-3" class="mt-3 hidden">
+      <div class="mb-2 flex items-center gap-2 text-xs text-slate-400">
+        <i data-lucide="terminal" class="size-3.5 text-emerald-400"></i>
+        <span>Checking models — live</span>
+        <span id="np-sync-status" class="ml-auto font-mono text-[11px] text-emerald-300">running…</span>
+      </div>
+      <pre id="np-sync-log" aria-live="polite"
+        class="nova-scroll max-h-[300px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-slate-800 bg-black/50 p-3 font-mono text-[11px] leading-relaxed text-emerald-200/90"></pre>
+      <p class="mt-1.5 text-[11px] text-slate-500">The provider is already saved. Discovery may fail if /models is unavailable or the key is missing; use Models → Sync Catalogue after fixing the endpoint or key. You may close this dialog while discovery runs.</p>
+    </div>
+
+    <div id="np-add-feedback" class="mt-2" aria-live="polite"></div>
+
+    <div class="mt-4 flex items-center justify-end gap-2">
+      <button type="button" id="np-back" class="hidden h-8 rounded border border-slate-700 px-2.5 text-xs text-slate-300 hover:bg-slate-800">Back to presets</button>
+      <button type="button" data-close-dialog class="h-8 rounded border border-slate-700 px-2.5 text-xs text-slate-300 hover:bg-slate-800">Close</button>
+      <button type="submit" id="np-submit" hx-disabled-elt="this"
+        class="hidden inline-flex h-8 items-center gap-1.5 rounded bg-emerald-500 px-2.5 text-xs font-medium text-white hover:bg-emerald-400 disabled:opacity-60">
+        Create provider
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="np-signin-dialog" aria-labelledby="np-si-title"
+  class="w-[min(92vw,28rem)] rounded-xl border border-slate-800 bg-[#0b0b0b] p-0 text-slate-200">
+  <form id="np-signin-form" hx-post="/ui/providers/signin" hx-target="#np-si-feedback" hx-swap="innerHTML" autocomplete="off" class="p-5">
+    <input type="hidden" name="id" id="np-si-id" value="" />
+    <h3 id="np-si-title" class="text-base font-semibold text-slate-100">Sign in to <span id="np-si-name">provider</span></h3>
+    <p class="mt-0.5 text-xs text-slate-500">
+      Two quick steps: grab an API key from the provider console, then paste it here. RouterX stores it as an
+      upstream key and marks the provider connected.
+    </p>
+
+    <ol class="mt-3 space-y-2 text-xs text-slate-400">
+      <li class="flex items-start gap-2">
+        <span class="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border border-emerald-800 text-[9px] font-semibold text-emerald-300">1</span>
+        <span>
+          Open
+          <a id="np-si-auth" href="#" target="_blank" rel="noreferrer"
+            class="inline-flex items-center gap-1 font-medium text-emerald-300 underline-offset-2 hover:underline">
+            Get your API key <i data-lucide="external-link" class="size-3"></i>
+          </a>
+          in a new tab and copy a key.
+        </span>
+      </li>
+      <li class="flex items-start gap-2">
+        <span class="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border border-emerald-800 text-[9px] font-semibold text-emerald-300">2</span>
+        <span>Paste the key below — it is stored masked and never shown in full.</span>
+      </li>
+    </ol>
+
+    <div class="mt-3 space-y-1.5">
+      <label for="np-si-key" class="text-xs text-slate-400">API key</label>
+      <input id="np-si-key" name="key" type="password" placeholder="Paste key here" autocomplete="off"
+        class="h-8 w-full rounded border border-slate-800 bg-black/30 px-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+    </div>
+
+    <div id="np-si-feedback" class="mt-2" aria-live="polite"></div>
+
+    <div class="mt-4 flex items-center justify-end gap-2">
+      <button type="button" data-close-dialog class="h-8 rounded border border-slate-700 px-2.5 text-xs text-slate-300 hover:bg-slate-800">Cancel</button>
+      <button type="submit" hx-disabled-elt="this"
+        class="inline-flex h-8 items-center gap-1.5 rounded bg-emerald-500 px-2.5 text-xs font-medium text-white hover:bg-emerald-400 disabled:opacity-60">
+        Connect
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(function () {
+  if (window.__npUIBound) return;
+  window.__npUIBound = true;
+
+  var ACT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>';
+
+  function $(id) { return document.getElementById(id); }
+
+  function npStep(n) {
+    var s1 = $('np-step-1'), s2 = $('np-step-2'), s3 = $('np-step-3'), back = $('np-back'), submit = $('np-submit'), desc = $('np-add-desc');
+    if (!s1 || !s2) return;
+    var two = n === 2, three = n === 3;
+    s1.classList.toggle('hidden', two || three);
+    s2.classList.toggle('hidden', !two || three);
+    if (s3) s3.classList.toggle('hidden', !three);
+    if (back) back.classList.toggle('hidden', !two);
+    if (submit) submit.classList.toggle('hidden', !two);
+    if (desc) desc.textContent = three
+      ? 'Discovering the live model catalogue from the upstream endpoint — progress below.'
+      : two
+        ? 'Confirm the endpoint details, set routing priority and optionally paste API keys.'
+        : 'Choose an upstream protocol and endpoint. These are upstream providers, not client-facing gateway URLs.';
+    var fb = $('np-add-feedback'); if (fb) fb.innerHTML = '';
+  }
+
+  function npChoosePreset(btn) {
+    var custom = btn.dataset.custom === '1';
+    var set = function (id, v) { var el = $(id); if (el) el.value = v; };
+    set('np-kind', custom ? 'openai' : (btn.dataset.kind || 'openai'));
+    set('np-name', custom ? '' : (btn.dataset.name || ''));
+    set('np-url', custom ? '' : (btn.dataset.baseUrl || ''));
+    set('np-prefix', custom ? '' : (btn.dataset.prefix || ''));
+    set('np-auth', btn.dataset.authUrl || '');
+    set('np-free', btn.dataset.freeTier || '');
+    set('np-docs', btn.dataset.docsUrl || '');
+    var url = $('np-url');
+    if (url) {
+      url.placeholder = btn.dataset.urlHint || (btn.dataset.kind === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.provider.com/v1');
+      url.required = (btn.dataset.kind || 'openai') !== 'builtin';
+      url.type = url.required ? 'url' : 'text';
+    }
+    var guide = $('np-protocol');
+    if (guide) guide.textContent = btn.dataset.guidance || (btn.dataset.kind === 'anthropic'
+      ? 'Native Anthropic Messages API: enter the origin without /v1. It is not an OpenAI-compatible endpoint.'
+      : 'OpenAI-compatible API: enter the root URL, usually ending in /v1. RouterX appends /models and /chat/completions.');
+    var pr = btn.dataset.priority || '50';
+    set('np-priority', pr);
+    var pv = $('np-priority-val'); if (pv) pv.textContent = pr;
+    var keys = $('np-keys'); if (keys) keys.placeholder = 'One key per line\n' + (btn.dataset.keyHint || 'sk-...');
+    npStep(2);
+  }
+
+  function npResetLog() {
+    var logEl = $('np-sync-log');
+    if (logEl) logEl.textContent = '';
+    var st = $('np-sync-status');
+    if (st) { st.textContent = 'running…'; st.className = 'ml-auto font-mono text-[11px] text-emerald-300'; }
+  }
+
+  function npFeedback(message) {
+    var fb = $('np-add-feedback');
+    if (!fb) return;
+    fb.replaceChildren();
+    var p = document.createElement('p');
+    p.className = 'rounded-md border border-rose-900/60 bg-rose-950/40 px-2.5 py-1.5 text-[11px] text-rose-300';
+    p.textContent = message;
+    fb.appendChild(p);
+  }
+
+  function npValidateEndpoint(form) {
+    var kind = form.elements.kind.value;
+    if (kind !== 'openai' && kind !== 'anthropic') return '';
+    var raw = form.elements.base_url.value.trim();
+    if (!raw) return 'Enter the upstream base URL.';
+    var url;
+    try { url = new URL(raw); } catch (e) { return 'Enter a valid HTTP(S) upstream base URL.'; }
+    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password || url.search || url.hash) {
+      return 'Use an HTTP(S) base URL without credentials, query parameters or fragments.';
+    }
+    if (/(?:\/models|\/chat\/completions|\/messages)\/?$/i.test(url.pathname)) {
+      return 'Enter the API root, not a /models, /messages or /chat/completions operation URL.';
+    }
+    if (kind === 'anthropic' && /\/v1\/?$/i.test(url.pathname)) {
+      return 'Native Anthropic uses the origin without /v1 (https://api.anthropic.com).';
+    }
+    return '';
+  }
+
+  function npStreamSync(data) {
+    var logEl = $('np-sync-log');
+    var st = $('np-sync-status');
+    npResetLog();
+    npStep(3);
+    var es;
+    try { es = new EventSource(data.stream); } catch (e) {
+      if (st) { st.textContent = 'unavailable'; st.className = 'ml-auto font-mono text-[11px] text-amber-300'; }
+      if (logEl) logEl.textContent = 'Provider saved, but the discovery stream could not start. Check Models → Sync Catalogue later.';
+      NovaUI.toast('Provider saved; discovery status unavailable. Check Models → Sync Catalogue.', 'info');
+      NovaUI.refresh(); window.__npCreating = false; return;
+    }
+    es.onmessage = function (ev) {
+      var line;
+      try { line = JSON.parse(ev.data); } catch (e) { return; }
+      if (logEl && line && line.text) {
+        logEl.textContent += line.text + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+    };
+    es.addEventListener('done', function (ev) {
+      es.close();
+      var d = {};
+      try { d = JSON.parse(ev.data); } catch (e) { /* noop */ }
+      if (st) {
+        st.textContent = d.ok ? 'done' : 'failed';
+        st.className = 'ml-auto font-mono text-[11px] ' + (d.ok ? 'text-green-300' : 'text-rose-300');
+      }
+      if (logEl && d.summary) {
+        logEl.textContent += '→ ' + d.summary + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      if (d.ok) {
+        NovaUI.toast('Provider added — ' + (d.summary || 'models discovered'), 'success');
+      } else {
+        NovaUI.toast('Provider saved; model discovery failed — ' + (d.summary || 'see the log') + '. Retry in Models → Sync Catalogue.', 'info');
+      }
+      NovaUI.refresh();
+      window.__npCreating = false;
+    });
+    es.onerror = function () {
+      es.close();
+      if (st) { st.textContent = 'status unavailable'; st.className = 'ml-auto font-mono text-[11px] text-amber-300'; }
+      if (logEl) logEl.textContent += 'Stream interrupted. Provider was saved; discovery status is unknown. Check Models → Sync Catalogue.\n';
+      NovaUI.toast('Provider saved; discovery status unavailable. Check Models → Sync Catalogue.', 'info');
+      NovaUI.refresh();
+      window.__npCreating = false;
+    };
+  }
+
+  async function npSubmitCreate(e) {
+    var form = $('np-add-form');
+    if (!form) return;
+    e.preventDefault();
+    if (window.__npCreating) return;
+    var submit = $('np-submit');
+    var fb = $('np-add-feedback');
+    if (fb) fb.innerHTML = '';
+    var validation = npValidateEndpoint(form);
+    if (validation) { npFeedback(validation); return; }
+    if (submit) { submit.disabled = true; submit.classList.add('opacity-60'); submit.textContent = 'Checking…'; }
+    window.__npCreating = true;
+    try {
+      var res = await fetch('/ui/providers/create?logs=1', { method: 'POST', body: new FormData(form) });
+      var ct = res.headers.get('content-type') || '';
+      if (ct.indexOf('application/json') === -1) {
+        npFeedback('Provider creation response was unexpected. Check the provider list before trying again.');
+        window.__npCreating = false;
+        return;
+      }
+      var data = await res.json();
+      if (!data.ok) {
+        npFeedback(data.error || 'Provider could not be created');
+        NovaUI.toast(data.error || 'Provider could not be created', 'error');
+        window.__npCreating = false;
+        return;
+      }
+      if (data.stream) npStreamSync(data);
+      else {
+        npStep(3);
+        var status = $('np-sync-status'); if (status) status.textContent = 'status unavailable';
+        var log = $('np-sync-log'); if (log) log.textContent = 'Provider saved, but no discovery stream was provided. Check Models → Sync Catalogue.';
+        NovaUI.toast('Provider saved; discovery status unavailable.', 'info');
+        NovaUI.refresh(); window.__npCreating = false;
+      }
+    } catch (err) {
+      npFeedback('Request interrupted. Check the provider list before trying again; creation may have succeeded.');
+      NovaUI.toast('Creation status unknown — check the provider list before retrying.', 'info');
+      window.__npCreating = false;
+    } finally {
+      if (submit) { submit.disabled = false; submit.classList.remove('opacity-60'); submit.textContent = 'Create provider'; }
+    }
+  }
+
+  function npSetBadge(id, data) {
+    var badge = $('pt-badge-' + id);
+    if (!badge) return;
+    data = data || {};
+    badge.dataset.ok = data.ok ? '1' : '0';
+    badge.title = data.message || data.error || '';
+    badge.className = 'flex items-center gap-1 font-mono ' + (data.ok ? 'text-green-300' : 'text-rose-300');
+    badge.innerHTML = ACT_SVG + ' ' + (data.status || 'error') +
+      (data.ok && data.latency_ms ? ' · ' + data.latency_ms + 'ms' : '');
+  }
+
+  async function npTestProvider(id, name) {
+    var badge = $('pt-badge-' + id);
+    if (badge) { badge.className = 'flex items-center gap-1 font-mono text-slate-400'; badge.textContent = 'testing…'; }
+    try {
+      var res = await fetch('/ui/providers/test?id=' + id, { method: 'POST' });
+      var data = await res.json();
+      npSetBadge(id, data);
+      if (data && data.ok) {
+        NovaUI.toast(name + ': ' + data.status + ' · ' + data.latency_ms + 'ms — ' + (data.message || ''), 'success');
+      } else if (data && data.error) {
+        NovaUI.toast(name + ': test failed — ' + data.error, 'error');
+      } else if (data) {
+        NovaUI.toast(name + ': ' + data.status + ' — ' + (data.message || 'Unreachable'), 'error');
+      }
+    } catch (e) {
+      NovaUI.toast('Test failed for ' + name, 'error');
+      if (badge) { badge.className = 'hidden'; badge.textContent = ''; }
+    }
+  }
+
+  async function npTestAll(btn) {
+    var ids = (btn.dataset.ids || '').split(',').filter(Boolean);
+    if (!ids.length) { NovaUI.toast('No providers with keys to test yet', 'info'); return; }
+    var label = btn.querySelector('[data-testall-label]');
+    var spin = btn.querySelector('svg');
+    btn.disabled = true; btn.classList.add('opacity-60');
+    if (label) label.textContent = 'Testing…';
+    if (spin) spin.classList.add('nova-spin');
+    var ok = 0;
+    for (var i = 0; i < ids.length; i++) {
+      var b = $('pt-badge-' + ids[i]);
+      if (b) { b.className = 'flex items-center gap-1 font-mono text-slate-400'; b.textContent = 'testing…'; }
+      try {
+        var res = await fetch('/ui/providers/test?id=' + ids[i], { method: 'POST' });
+        var data = await res.json();
+        if (data && data.ok) ok += 1;
+        npSetBadge(ids[i], data);
+      } catch (e) { /* keep sweeping */ }
+    }
+    if (label) label.textContent = 'Test All';
+    btn.disabled = false; btn.classList.remove('opacity-60');
+    if (spin) spin.classList.remove('nova-spin');
+    NovaUI.toast('Test sweep complete — ' + ok + '/' + ids.length + ' providers reachable', 'success');
+    NovaUI.refresh();
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+
+    /* close any open card menu when clicking elsewhere */
+    if (!t.closest('details.np-menu')) {
+      document.querySelectorAll('details.np-menu[open]').forEach(function (d) { d.removeAttribute('open'); });
+    } else if (t.closest('[data-menu-item]')) {
+      var openMenu = t.closest('details.np-menu');
+      if (openMenu) openMenu.removeAttribute('open');
+    }
+
+    var preset = t.closest('.np-preset');
+    if (preset) { npChoosePreset(preset); return; }
+
+    if (t.closest('#np-back')) { npStep(1); return; }
+
+    var opener = t.closest('[data-open-dialog]');
+    if (opener) {
+      var dlg = $(opener.dataset.openDialog);
+      var form = $('np-add-form');
+      if (form) form.reset();
+      var pv = $('np-priority-val'); if (pv) pv.textContent = '50';
+      var u = $('np-url'); if (u) { u.type = 'url'; u.required = true; }
+      var fb = $('np-add-feedback'); if (fb) fb.innerHTML = '';
+      npResetLog();
+      npStep(1);
+      if (dlg) dlg.showModal();
+      return;
+    }
+
+    if (t.closest('[data-close-dialog]')) {
+      var d = t.closest('dialog'); if (d) d.close();
+      return;
+    }
+
+    var si = t.closest('[data-signin-for]');
+    if (si) {
+      $('np-si-id').value = si.dataset.signinFor || '';
+      var nm = $('np-si-name'); if (nm) nm.textContent = si.dataset.name || 'provider';
+      var link = $('np-si-auth'); if (link) link.href = si.dataset.authUrl || '#';
+      var f = $('np-signin-form'); if (f) f.reset();
+      var sfb = $('np-si-feedback'); if (sfb) sfb.innerHTML = '';
+      var sd = $('np-signin-dialog'); if (sd) sd.showModal();
+      return;
+    }
+
+    var testBtn = t.closest('[data-test-for]');
+    if (testBtn) {
+      e.preventDefault();
+      npTestProvider(testBtn.dataset.testFor, testBtn.dataset.name || 'provider');
+      return;
+    }
+
+    var allBtn = t.closest('[data-test-all]');
+    if (allBtn) { e.preventDefault(); npTestAll(allBtn); return; }
+  });
+
+  /* Add-Provider submit → JSON create + live SSE discovery log (step 3) */
+  var addForm = $('np-add-form');
+  if (addForm) addForm.addEventListener('submit', npSubmitCreate);
+})();
+</script>

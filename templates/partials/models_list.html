@@ -1,0 +1,89 @@
+{# Models list — IS the live root (self-reproducing: the root's hx-get re-renders
+   this file, so data-live + nova:refresh wiring survives every swap).
+
+   Typing-safe structure: the filter form (search / selects / free toggle) is
+   OUTSIDE the swapped results region — filter actions swap only
+   #models-results (see partials/models_results.html), so a swap can never
+   destroy the focused input. The root reads the CURRENT filter values via
+   hx-include at trigger time (manual refresh + auto-refresh poll).
+   Expects ctx from ui/tabs/models.py #}
+<div id="models-root" data-live="1" hx-disinherit="*" hx-get="/partials/models/list"
+  hx-include="#models-filter"
+  hx-trigger="nova:refresh from:body" hx-swap="outerHTML" class="space-y-4">
+<div class="flex flex-wrap items-center gap-2">
+  <h2 class="text-lg font-semibold text-slate-100">Models</h2>
+  {% if stats %}
+  <span class="inline-flex items-center rounded-md border border-green-900/70 bg-green-950/30 px-2 py-0.5 text-[11px] text-green-300">{{ stats.healthy_models }} healthy · {{ stats.dead_models }} dead</span>
+  {% endif %}
+  <div class="ml-auto flex flex-wrap items-center gap-2">
+    <form id="models-filter" hx-get="/partials/models/list?region=results"
+      hx-target="#models-results" hx-swap="innerHTML" hx-sync="this:replace" hx-trigger="input delay:300ms"
+      onsubmit="return false" class="flex flex-wrap items-center gap-2" autocomplete="off">
+      <div class="relative">
+        <i data-lucide="search" class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-600"></i>
+        <input id="nm-q" name="q" value="{{ q }}" placeholder="Search models..." aria-label="Search models"
+          class="h-9 w-48 rounded-md border border-slate-800 bg-black/30 pl-8 pr-2 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+      </div>
+      <select name="provider_id" aria-label="Filter by provider"
+        class="h-9 w-[150px] rounded-md border border-slate-800 bg-black/30 px-2 text-xs text-slate-300 outline-none focus:border-emerald-500/50">
+        <option value="all">All providers</option>
+        {% for p in providers %}
+        <option value="{{ p.id }}" {{ 'selected' if provider_id == (p.id | string) }}>{{ p.name }}</option>
+        {% endfor %}
+      </select>
+      <select name="status" aria-label="Filter by status"
+        class="h-9 w-[120px] rounded-md border border-slate-800 bg-black/30 px-2 text-xs text-slate-300 outline-none focus:border-emerald-500/50">
+        <option value="all" {{ 'selected' if status == 'all' }}>Any status</option>
+        <option value="healthy" {{ 'selected' if status == 'healthy' }}>Healthy</option>
+        <option value="cooling" {{ 'selected' if status == 'cooling' }}>Cooling</option>
+        <option value="dead" {{ 'selected' if status == 'dead' }}>Dead</option>
+        <option value="unknown" {{ 'selected' if status == 'unknown' }}>Unknown</option>
+      </select>
+      <select name="capability" aria-label="Filter by capability"
+        class="h-9 w-[130px] rounded-md border border-slate-800 bg-black/30 px-2 text-xs text-slate-300 outline-none focus:border-emerald-500/50">
+        <option value="all" {{ 'selected' if capability == 'all' }}>Any capability</option>
+        <option value="tools" {{ 'selected' if capability == 'tools' }}>Tools</option>
+        <option value="vision" {{ 'selected' if capability == 'vision' }}>Vision</option>
+        <option value="reasoning" {{ 'selected' if capability == 'reasoning' }}>Reasoning</option>
+      </select>
+      <label class="flex h-9 cursor-pointer items-center gap-2 rounded-md border border-slate-800 bg-black/30 px-2.5 text-xs text-slate-300">
+        <input type="checkbox" name="free" {{ 'checked' if free }} class="peer sr-only" aria-label="Show free models only" />
+        <span class="relative h-4 w-7 rounded-full bg-slate-700 transition-colors after:absolute after:left-0.5 after:top-0.5 after:size-3 after:rounded-full after:bg-slate-300 after:transition-transform peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-3"></span>
+        Free only
+      </label>
+    </form>
+    <button type="button" hx-post="/ui/models/sync" hx-swap="none" hx-disabled-elt="this"
+      class="inline-flex h-9 items-center gap-1.5 rounded-md border border-slate-700 px-2.5 text-xs text-slate-300 transition-colors hover:bg-slate-800 disabled:opacity-60">
+      <i data-lucide="refresh-ccw" class="size-3.5"></i>
+      Sync Catalogue
+    </button>
+    {% set ns = namespace(p=None) %}
+    {% for p in providers %}
+    {% if provider_id == (p.id | string) %}{% set ns.p = p %}{% endif %}
+    {% endfor %}
+    {% if ns.p %}
+    <button type="button" hx-post="/ui/models/sync" hx-vals='{"provider_id": {{ ns.p.id }}}' hx-swap="none" hx-disabled-elt="this"
+      class="inline-flex h-9 items-center gap-1.5 rounded-md border border-emerald-800/70 px-2.5 text-xs text-emerald-300 transition-colors hover:bg-emerald-950/40 disabled:opacity-60">
+      <i data-lucide="refresh-ccw" class="size-3.5"></i>
+      Sync {{ ns.p.name }}
+    </button>
+    {% endif %}
+    <button type="button" data-health-check
+      class="inline-flex h-9 items-center gap-1.5 rounded-md border border-emerald-800/70 px-2.5 text-xs text-emerald-300 transition-colors hover:bg-emerald-950/40">
+      <i data-lucide="heart-pulse" class="size-3.5"></i>
+      <span data-hc-label>Health check</span>
+    </button>
+    {% if stats and stats.dead_models and stats.dead_models > 0 %}
+    <button type="button" hx-post="/ui/models/disable-unreachable" hx-swap="none" hx-disabled-elt="this"
+      hx-confirm="Disable all {{ stats.dead_models }} unreachable (dead) models? The gateway and the agent will stop using them. You can re-enable any model individually."
+      class="inline-flex h-9 items-center gap-1.5 rounded-md border border-rose-900/70 px-2.5 text-xs text-rose-300 transition-colors hover:bg-rose-950/30 disabled:opacity-60">
+      <i data-lucide="power-off" class="size-3.5"></i>
+      Disable unreachable ({{ stats.dead_models }})
+    </button>
+    {% endif %}
+  </div>
+</div>
+
+{# Results region — the only part filter actions swap #}
+{% include "partials/models_results.html" %}
+</div>

@@ -8,8 +8,8 @@
 
   {# ========================= RouterX Console (left) ========================= #}
   <aside id="ws-console" data-sheet="chat"
-    class="ws-sheet flex w-full shrink-0 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#0a0f1c] xl:w-[380px]">
-    <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/70 px-3 py-2">
+    class="ws-sheet flex w-full shrink-0 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#070707] xl:w-[380px]">
+    <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0b0b0b]/70 px-3 py-2">
       <div class="flex min-w-0 items-center gap-2.5">
         <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10">
           <i data-lucide="sparkles" class="size-4 text-sky-400"></i>
@@ -27,7 +27,7 @@
 
     <div id="term-side-body" class="flex min-h-0 flex-1 flex-col">
       <div id="term-side-stream" class="flex-1 space-y-3 overflow-y-auto px-3 py-3" aria-live="polite">
-        <div class="rounded-xl border border-slate-800 bg-[#0d1322] px-3 py-2.5 text-[12px] leading-relaxed text-slate-400">
+        <div class="rounded-xl border border-slate-800 bg-[#0b0b0b] px-3 py-2.5 text-[12px] leading-relaxed text-slate-400">
           Ask a question, or start a line with a prefix:
           <div class="mt-1.5 space-y-1 font-mono text-[11px]">
             <div><span class="text-sky-300">$</span> <span class="text-slate-500">run a shell command</span></div>
@@ -45,7 +45,7 @@
           </div>
         </div>
         {% if tools %}
-        <div class="rounded-xl border border-slate-800 bg-[#0d1322] p-3">
+        <div class="rounded-xl border border-slate-800 bg-[#0b0b0b] p-3">
           <div class="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
             <i data-lucide="wrench" class="size-3"></i>
             Permanently registered tools
@@ -60,15 +60,15 @@
         </div>
         {% endif %}
       </div>
-      <div class="shrink-0 border-t border-slate-800 bg-[#0d1322]/50 p-2.5">
+      <div class="shrink-0 border-t border-slate-800 bg-[#0b0b0b]/50 p-2.5">
         {# chat target pickers: model (grouped by provider) + reasoning effort #}
         <div class="mb-1.5 flex items-center gap-1.5">
           <select id="ws-model" aria-label="Chat model"
-            class="h-7 min-w-0 flex-1 rounded-md border border-slate-800 bg-[#080c14] px-1.5 text-[10px] text-slate-300 focus:border-sky-500/40 focus:outline-none">
+            class="h-7 min-w-0 flex-1 rounded-md border border-slate-800 bg-[#050505] px-1.5 text-[10px] text-slate-300 focus:border-sky-500/40 focus:outline-none">
             <option value="auto">model: auto — gateway routes</option>
           </select>
           <select id="ws-effort" aria-label="Reasoning effort"
-            class="h-7 w-[104px] shrink-0 rounded-md border border-slate-800 bg-[#080c14] px-1.5 text-[10px] text-slate-300 focus:border-sky-500/40 focus:outline-none">
+            class="h-7 w-[104px] shrink-0 rounded-md border border-slate-800 bg-[#050505] px-1.5 text-[10px] text-slate-300 focus:border-sky-500/40 focus:outline-none">
             <option value="">effort: default</option>
             <option value="minimal">minimal</option>
             <option value="low">low</option>
@@ -86,7 +86,7 @@
         <div class="mt-1 flex items-center justify-between gap-2">
           <span id="term-side-mode" class="truncate font-mono text-[10px] text-slate-600">chat</span>
           <button id="term-side-send" type="button" aria-label="Send message"
-            class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-sky-500/90 px-3 text-[11px] font-medium text-slate-950 transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50">
+            class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-sky-500/90 px-3 text-[11px] font-medium text-white transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50">
             <i data-lucide="send" class="size-3.5"></i>Send
           </button>
         </div>
@@ -95,9 +95,9 @@
   </aside>
 
   {# ===================== Root@Build terminal (right) ===================== #}
-  <section data-sheet="term" class="ws-sheet ws-term-chrome flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#070b13]">
+  <section data-sheet="term" class="ws-sheet ws-term-chrome flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#0a0a0a]">
 
-    <header class="ws-hide-mobile flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-slate-800 bg-[#0d1322]/70 px-3 py-2">
+    <header class="ws-hide-mobile flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-slate-800 bg-[#0b0b0b]/70 px-3 py-2">
       <div class="flex min-w-0 items-center gap-2.5">
         <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
           <i data-lucide="square-terminal" class="size-4 text-emerald-400"></i>
@@ -143,7 +143,7 @@
     </header>
 
     {# session tabs #}
-    <div class="flex shrink-0 items-center gap-2 border-b border-slate-800/70 bg-[#090e1a] px-2 py-1.5">
+    <div class="flex shrink-0 items-center gap-2 border-b border-slate-800/70 bg-[#080808] px-2 py-1.5">
       <button id="term-sheet-close" type="button" class="ws-sheet-close ws-sheet-close-term inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-300"
           title="Back to the workspace" aria-label="Back to the workspace">
           <i data-lucide="x" class="size-4"></i>
@@ -157,7 +157,7 @@
     </div>
 
     {# viewport #}
-    <div id="term-view" class="relative min-h-0 flex-1 overflow-hidden bg-[#070b13]">
+    <div id="term-view" class="relative min-h-0 flex-1 overflow-hidden bg-[#0a0a0a]">
       <div id="term-fallback" hidden
         class="h-full overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-[12px] leading-relaxed text-slate-300"></div>
       <div id="term-notice" hidden
@@ -168,7 +168,7 @@
     </div>
 
     {# --- mobile command bar: interrupt / environment / settings (Termux-style) --- #}
-    <div id="term-cmdbar" class="ws-mobile-only flex shrink-0 items-center gap-1.5 border-b border-slate-800/70 bg-[#0b101c] px-2 py-1.5">
+    <div id="term-cmdbar" class="ws-mobile-only flex shrink-0 items-center gap-1.5 border-b border-slate-800/70 bg-[#0c0c0c] px-2 py-1.5">
       <button id="term-interrupt" type="button" class="ws-chip is-danger" title="Send Ctrl+C to the shell">
         <i data-lucide="circle-stop" class="size-3.5"></i>Ctrl+C Interrupt
       </button>
@@ -182,7 +182,7 @@
     </div>
 
     {# --- mobile prompt bar: live cwd + every toggle a phone cannot reach --- #}
-    <div id="term-promptbar" class="ws-mobile-only flex shrink-0 items-center gap-1.5 border-b border-slate-800/70 bg-[#0b101c] px-2 py-1.5">
+    <div id="term-promptbar" class="ws-mobile-only flex shrink-0 items-center gap-1.5 border-b border-slate-800/70 bg-[#0c0c0c] px-2 py-1.5">
       <span id="term-prompt-badge" class="ws-prompt-badge" title="Working directory">~ $</span>
       <span class="ws-prompt-caret" aria-hidden="true"></span>
       <span class="flex-1"></span>
@@ -213,7 +213,7 @@
     <div id="ws-keyrow" class="ws-keyrow md:hidden" aria-label="Terminal helper keys"></div>
 
     {# status bar #}
-    <footer class="ws-hide-mobile flex shrink-0 items-center justify-between gap-3 border-t border-slate-800 bg-[#0d1322]/70 px-3 py-1.5 font-mono text-[10px] text-slate-500">
+    <footer class="ws-hide-mobile flex shrink-0 items-center justify-between gap-3 border-t border-slate-800 bg-[#0b0b0b]/70 px-3 py-1.5 font-mono text-[10px] text-slate-500">
       <div class="flex min-w-0 items-center gap-2">
         <span id="term-mode" class="inline-flex items-center gap-1.5 rounded border border-slate-700 px-1.5 py-0.5 text-slate-400">Interactive shell</span>
         <span id="term-cwd" class="truncate" title="Working directory">~</span>
@@ -227,8 +227,8 @@
 
   {# ================= Config drawer (build targets) ================= #}
   <div id="ws-config" hidden
-    class="fixed inset-y-0 right-0 z-[60] flex w-[min(94vw,460px)] flex-col overflow-hidden border-l border-slate-800 bg-[#0a0f1c] shadow-2xl">
-    <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/80 px-3 py-2">
+    class="fixed inset-y-0 right-0 z-[60] flex w-[min(94vw,460px)] flex-col overflow-hidden border-l border-slate-800 bg-[#070707] shadow-2xl">
+    <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0b0b0b]/80 px-3 py-2">
       <div class="flex min-w-0 items-center gap-2">
         <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
           <i data-lucide="settings-2" class="size-4 text-emerald-400"></i>

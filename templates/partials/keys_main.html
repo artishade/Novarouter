@@ -8,7 +8,7 @@
   </span>
   {% endif %}
   <button type="button" data-keys-issue
-    class="ml-auto inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-500 px-3 text-xs font-medium text-emerald-950 transition-colors hover:bg-emerald-400">
+    class="ml-auto inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-500 px-3 text-xs font-medium text-white transition-colors hover:bg-emerald-400">
     <i data-lucide="plus" class="size-3.5"></i>
     Issue New Key
   </button>
@@ -19,7 +19,7 @@
   {% for k in keys %}{% include 'partials/keys_card.html' %}{% endfor %}
 </div>
 {% else %}
-<div class="rounded-xl border border-dashed border-slate-800 bg-[#0d1322]/60 p-10 text-center text-sm text-slate-500">
+<div class="rounded-xl border border-dashed border-slate-800 bg-[#0b0b0b]/60 p-10 text-center text-sm text-slate-500">
   No client keys yet — issue one to start talking to the gateway.
 </div>
 {% endif %}

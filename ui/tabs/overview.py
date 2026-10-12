@@ -43,7 +43,7 @@ _prev_at: float = 0.0
 
 # Overview variant of the TSX statusBadgeClass (Logs has an extra 3xx tier).
 _STATUS_CLASS = (
-    lambda s: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+    lambda s: "border-green-500/30 bg-green-500/10 text-green-300"
     if 200 <= s < 300
     else "border-amber-500/30 bg-amber-500/10 text-amber-300"
     if s < 500

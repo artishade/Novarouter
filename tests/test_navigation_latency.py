@@ -3,11 +3,12 @@ import asyncio
 import json
 import sys
 import unittest
+from decimal import Decimal
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import Numeric, cast, create_engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
@@ -153,6 +154,51 @@ class AdminReadTests(unittest.TestCase):
         self.assertEqual((result["total_tokens_in"], result["total_tokens_out"]), (12, 15))
         self.assertEqual((result["avg_latency_ms"], result["cache_hit_rate"], result["error_rate"]),
                          (20, 50, 50))
+
+    def test_stats_survives_postgres_numeric_average(self):
+        """Postgres AVG() returns Decimal (psycopg2 maps `numeric` -> Decimal) and
+        `Decimal + 0.5` raises TypeError, which 500'd /api/admin/stats in
+        production while SQLite (AVG -> float) never reproduced it."""
+        with self.session() as db:
+            now = utcnow()
+            db.add_all([
+                RequestLog(ts=now, model="x", status=200, latencyMs=10, via="cache", tokensIn=2, tokensOut=3),
+                RequestLog(ts=now, model="x", status=500, latencyMs=31, via="upstream", tokensIn=4, tokensOut=5),
+            ])
+            db.commit()
+            # Force the aggregate to come back as Decimal, exactly as Postgres does.
+            numeric_avg = db.execute(
+                select(func.coalesce(cast(func.avg(RequestLog.latencyMs), Numeric), 0))
+            ).scalar_one()
+            self.assertIsInstance(numeric_avg, Decimal)
+
+            class PostgresFunc:
+                """`func` proxy whose AVG is typed numeric, like psycopg2 returns."""
+
+                def __getattr__(self, name):
+                    return getattr(func, name)
+
+                def avg(self, expr):
+                    # Cast the *result*: that is the shape whose value SQLAlchemy
+                    # (and psycopg2) hands back as Decimal.
+                    return cast(func.avg(expr), Numeric)
+
+            with patch.object(admin_misc, "func", PostgresFunc()), patch.object(
+                admin_misc, "_rss_kb", return_value=0
+            ), patch.object(admin_misc, "_vm_peak_kb", return_value=0):
+                result = admin_misc.stats(db)
+
+        self.assertEqual(result["avg_latency_ms"], 20.5)
+        self.assertEqual((result["total_requests"], result["error_rate"], result["cache_hit_rate"]),
+                         (2, 50, 50))
+
+    def test_rounding_helper_accepts_decimal_and_rejects_non_finite(self):
+        self.assertEqual(admin_misc.r1(Decimal("275.8181")), 275.8)
+        self.assertEqual(admin_misc.r1(Decimal("0")), 0.0)
+        self.assertEqual(admin_misc.r1(10), 10.0)
+        self.assertEqual(admin_misc.r1(float("nan")), 0.0)
+        self.assertEqual(admin_misc.r1(float("inf")), 0.0)
+        self.assertEqual(admin_misc.r1(None), 0.0)
 
     def test_storage_listing_does_not_fetch_base64_payload(self):
         with self.session() as db:

@@ -33,7 +33,7 @@
         <input id="bf-{{ f.name }}" name="{{ f.name }}" type="{{ 'password' if f.secret else 'text' }}"
           placeholder="{{ f.placeholder or '' }}" value="{{ f.value or '' }}"
           autocomplete="off" spellcheck="false"
-          class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+          class="w-full rounded-md border border-slate-800 bg-[#0a0a0a] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
         {% if f.secret and f.value %}
         <p class="text-[10px] text-slate-600">Saved value is hidden — type a new one to replace it, or leave blank to keep it.</p>
         {% endif %}
@@ -42,7 +42,7 @@
     </div>
 
     <button type="submit"
-      class="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md bg-emerald-500 px-4 text-sm font-medium text-slate-950 transition-colors hover:bg-emerald-400">
+      class="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md bg-emerald-500 px-4 text-sm font-medium text-white transition-colors hover:bg-emerald-400">
       <i data-lucide="save" class="size-4"></i>Save config
     </button>
   </form>
@@ -64,12 +64,12 @@
     <div class="space-y-1.5">
       <label for="bf-name" class="text-xs text-slate-400">Name <span class="text-emerald-400">*</span></label>
       <input id="bf-name" name="name" type="text" placeholder="MinIO staging" required autocomplete="off" spellcheck="false"
-        class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+        class="w-full rounded-md border border-slate-800 bg-[#0a0a0a] px-3 py-2 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
     </div>
     <div class="space-y-1.5">
       <label for="bf-type" class="text-xs text-slate-400">Type</label>
       <select id="bf-type" name="type"
-        class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 text-xs text-slate-100 outline-none focus:border-emerald-500/50">
+        class="w-full rounded-md border border-slate-800 bg-[#0a0a0a] px-3 py-2 text-xs text-slate-100 outline-none focus:border-emerald-500/50">
         <option value="s3_compatible">s3_compatible</option>
         <option value="webdav">webdav</option>
         <option value="custom">custom</option>
@@ -81,12 +81,12 @@
       <label for="bf-{{ f[0] }}" class="text-xs text-slate-400">{{ f[1] }}</label>
       <input id="bf-{{ f[0] }}" name="{{ f[0] }}" type="{{ 'password' if 'key' in f[0] else 'text' }}"
         placeholder="{{ f[2] }}" autocomplete="off" spellcheck="false"
-        class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+        class="w-full rounded-md border border-slate-800 bg-[#0a0a0a] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
     </div>
     {% endfor %}
 
     <button type="submit"
-      class="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md bg-emerald-500 px-4 text-sm font-medium text-slate-950 transition-colors hover:bg-emerald-400">
+      class="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md bg-emerald-500 px-4 text-sm font-medium text-white transition-colors hover:bg-emerald-400">
       <i data-lucide="save" class="size-4"></i>Add target
     </button>
   </form>

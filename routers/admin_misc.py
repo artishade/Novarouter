@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import case, func, select
@@ -52,9 +53,22 @@ def ms_to_dt(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).replace(tzinfo=None)
 
 
-def r1(n: float) -> float:
-    """Math.round(n * 10) / 10 parity."""
-    return math.floor(n * 10 + 0.5) / 10
+def r1(n: Any) -> float:
+    """Math.round(n * 10) / 10 parity.
+
+    SQL numeric aggregates must survive the round trip: psycopg2 maps Postgres
+    `numeric` to Decimal, and `Decimal + 0.5` raises TypeError, so `AVG()` on
+    Postgres 500'd the stats endpoint while SQLite (which returns a float)
+    looked fine. Coerce before rounding, and never emit NaN/Infinity (invalid
+    JSON that would break the client).
+    """
+    try:
+        value = float(n)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return math.floor(value * 10 + 0.5) / 10
 
 
 def _num_or_none(raw: str | None) -> float | None:

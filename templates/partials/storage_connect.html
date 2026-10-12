@@ -1,7 +1,7 @@
 {# Storage provider connect dialog — port of the Connect Dialog in StorageTab.tsx.
    Context: provider, fields[{key,label,password,placeholder}], note, link_label, link_url, error, values #}
 <dialog id="st-connect-dialog" aria-label="Connect {{ provider.name }}"
-  class="h-fit w-[calc(100%-2rem)] max-w-md rounded-xl border border-slate-800 bg-[#0d1322] p-6 text-slate-200 shadow-2xl backdrop:bg-black/70">
+  class="h-fit w-[calc(100%-2rem)] max-w-md rounded-xl border border-slate-800 bg-[#0b0b0b] p-6 text-slate-200 shadow-2xl backdrop:bg-black/70">
   <form hx-post="/ui/storage/connect" hx-target="#st-connect-zone" hx-swap="innerHTML">
     <input type="hidden" name="provider_key" value="{{ provider.id }}" />
     <h3 class="flex items-center gap-2 text-base font-semibold text-slate-100">
@@ -19,7 +19,7 @@
         <input id="cf-{{ f.key }}" name="{{ f.key }}" type="{{ 'password' if f.password else 'text' }}"
           placeholder="{{ f.placeholder or '' }}" value="{{ values.get(f.key, '') }}"
           autocomplete="off" spellcheck="false"
-          class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+          class="w-full rounded-md border border-slate-800 bg-[#0a0a0a] px-3 py-2 font-mono text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
       </div>
       {% endfor %}
       {% if link_url %}
@@ -36,7 +36,7 @@
         Cancel
       </button>
       <button type="submit"
-        class="inline-flex h-9 items-center rounded-md bg-emerald-500 px-4 text-sm font-medium text-slate-950 transition-colors hover:bg-emerald-400">
+        class="inline-flex h-9 items-center rounded-md bg-emerald-500 px-4 text-sm font-medium text-white transition-colors hover:bg-emerald-400">
         Connect
       </button>
     </div>

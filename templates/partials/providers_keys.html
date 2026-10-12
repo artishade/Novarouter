@@ -17,7 +17,7 @@
   <div class="nova-scroll max-h-56 space-y-2 overflow-y-auto pr-2">
     {% for k in keys %}
     {% set cooling = k.cooldown_until and k.cooldown_until > now_ms %}
-    <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-slate-800/80 bg-[#0d1322]/70 px-2.5 py-2">
+    <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-slate-800/80 bg-[#0b0b0b]/70 px-2.5 py-2">
       <i data-lucide="key-round" class="size-3.5 shrink-0 text-slate-600"></i>
       <span class="font-mono text-[11px] text-slate-300">{{ k.api_key_preview }}</span>
       {% if k.label %}

@@ -71,7 +71,8 @@ verification you'll run. Then implement. Trivial one-liners can skip the plan.
 - **Gateway invariants**: response `model` = requested id; `_nova` metadata tells
   the truth; `RequestLog` on every branch; endpoints under both `/v1/*` and
   `/api/v1/*`; reuse pooled httpx clients; never fresh clients per request.
-- **UI**: fragments via HTMX (not JSON), emerald/slate theme, no blue/indigo,
+- **UI**: fragments via HTMX (not JSON), matte-black theme with the dark-red
+  accent (`emerald-*` utilities are remapped to it, `green-*` = success),
   no emojis, aria-labels on icon buttons.
 - **Never** spawn shells in `terminal/sandbox.py` (simulated executor by design);
   interactive shells belong to `terminal/pty.py`. Keep every terminal change

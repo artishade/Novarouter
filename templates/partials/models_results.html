@@ -16,7 +16,7 @@
     </button>
   </div>
   {% elif rows | length == 0 %}
-  <div class="rounded-xl border border-dashed border-slate-800 bg-[#0d1322]/60 p-10 text-center text-sm text-slate-500">
+  <div class="rounded-xl border border-dashed border-slate-800 bg-[#0b0b0b]/60 p-10 text-center text-sm text-slate-500">
     {{ 'No models match the current filters — try clearing them.' if has_filters else 'No models in the catalogue yet — run Sync Catalogue.' }}
   </div>
   {% else %}
@@ -24,7 +24,7 @@
     <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
       {% for m in rows %}
       <div data-detail-id="{{ m.id }}" role="button" tabindex="0" aria-label="Open details for {{ m.display_name }}"
-        class="cursor-pointer rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4 transition hover:border-slate-600 hover:bg-[#0d1322] focus:outline-none focus-visible:border-emerald-500/60">
+        class="cursor-pointer rounded-xl border border-slate-800 bg-[#0b0b0b]/80 p-4 transition hover:border-slate-600 hover:bg-[#0b0b0b] focus:outline-none focus-visible:border-emerald-500/60">
         <div class="flex items-start justify-between gap-2">
           <div class="min-w-0">
             <p class="truncate text-sm font-medium text-slate-100">{{ m.display_name }}</p>
@@ -40,7 +40,7 @@
 
         <div class="mt-2 flex flex-wrap items-center gap-1.5">
           <span class="flex items-center gap-1.5 rounded-md border border-slate-800 bg-black/30 px-1.5 py-0.5 text-[10px] text-slate-400">
-            <span class="size-1.5 rounded-full" style="background-color: {{ m.provider_color or '#64748b' }}" aria-hidden="true"></span>
+            <span class="size-1.5 rounded-full" style="background-color: {{ m.provider_color or '#737373' }}" aria-hidden="true"></span>
             {{ m.provider_name or 'unknown' }}
           </span>
           <span id="mchip-{{ m.id }}" class="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] {{ m.chip }}">
@@ -70,15 +70,15 @@
         {% endif %}
 
         <div class="mt-2.5 flex items-center gap-2.5">
-          <span class="{{ 'text-emerald-300/90' if m.capabilities.tools else 'text-slate-700' }}"
+          <span class="{{ 'text-green-300/90' if m.capabilities.tools else 'text-slate-700' }}"
             title="{{ 'Tool calling supported' if m.capabilities.tools else 'No tool calling' }}">
             <i data-lucide="wrench" class="size-3.5"></i><span class="sr-only">tools</span>
           </span>
-          <span class="{{ 'text-emerald-300/90' if m.capabilities.vision else 'text-slate-700' }}"
+          <span class="{{ 'text-green-300/90' if m.capabilities.vision else 'text-slate-700' }}"
             title="{{ 'Vision supported' if m.capabilities.vision else 'No vision' }}">
             <i data-lucide="eye" class="size-3.5"></i><span class="sr-only">vision</span>
           </span>
-          <span class="{{ 'text-emerald-300/90' if m.capabilities.reasoning else 'text-slate-700' }}"
+          <span class="{{ 'text-green-300/90' if m.capabilities.reasoning else 'text-slate-700' }}"
             title="{{ 'Reasoning supported' if m.capabilities.reasoning else 'No reasoning' }}">
             <i data-lucide="brain" class="size-3.5"></i><span class="sr-only">reasoning</span>
           </span>

@@ -368,7 +368,7 @@
         fontSize: 13,
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
         scrollback: 5000,
-        theme: { background: '#080c14', foreground: '#cbd5e1', cursor: '#34d399' },
+        theme: { background: '#050505', foreground: '#d4d4d4', cursor: '#d43a3a' },
       });
       screen.term.open(host);
       if (global.FitAddon) {

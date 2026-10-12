@@ -9,8 +9,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
 <style>
   :root {
-    --bg: #0a0d14; --panel: #10151f; --line: #22262f; --fg: #d7dae0;
-    --dim: #8b93a3; --accent: #4d9fff; --ok: #34d399; --warn: #fbbf24; --err: #fb7185;
+    --bg: #050505; --panel: #0b0b0b; --line: #262626; --fg: #d7dae0;
+    --dim: #8b93a3; --accent: #b01414; --ok: #22c55e; --warn: #fbbf24; --err: #f43f5e;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     --ui: 13px;
     --fs: 13px;            /* terminal font size, adjustable */
@@ -60,7 +60,7 @@
     width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px;
     background: transparent; color: var(--dim); cursor: pointer;
   }
-  button.icon:hover { background: #1b2130; color: var(--fg); }
+  button.icon:hover { background: #1f1f1f; color: var(--fg); }
   button.icon[aria-pressed="true"] { color: var(--accent); }
   button.icon:focus-visible { outline: 1px solid var(--accent); }
   svg { width: 15px; height: 15px; fill: none; stroke: currentColor;
@@ -113,7 +113,7 @@
   #split:hover, #split.dragging { background: var(--accent); }
   #split::before {
     content: ""; position: absolute; top: 50%; left: 50%; width: 2px; height: 26px;
-    transform: translate(-50%, -50%); border-radius: 2px; background: #0a0d14; opacity: .55;
+    transform: translate(-50%, -50%); border-radius: 2px; background: #050505; opacity: .55;
   }
   #split:focus-visible { outline: 1px solid var(--accent); background: var(--accent); }
 
@@ -188,7 +188,7 @@
       border: 0; background: transparent; color: var(--dim); padding: 9px 16px;
       font: 11px var(--mono); cursor: pointer;
     }
-    .mobile-switch button.on { background: #1b2231; color: var(--fg); }
+    .mobile-switch button.on { background: #1f1f1f; color: var(--fg); }
   }
   @media (prefers-reduced-motion: reduce) { body { transition: none; } }
 </style>

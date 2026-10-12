@@ -120,7 +120,7 @@ def provider_icon(ptype: str) -> str:
 def status_badge(status: str) -> dict[str, str]:
     """statusBadgeCls() parity."""
     mapping = {
-        "connected": {"cls": "border-emerald-500/40 bg-emerald-500/10 text-emerald-300", "label": "connected"},
+        "connected": {"cls": "border-green-500/40 bg-green-500/10 text-green-300", "label": "connected"},
         "pending": {"cls": "border-amber-500/40 bg-amber-500/10 text-amber-300", "label": "pending"},
         "error": {"cls": "border-rose-500/40 bg-rose-500/10 text-rose-300", "label": "error"},
     }

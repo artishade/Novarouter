@@ -1,6 +1,6 @@
 {# One model's detail dialog — swapped into #models-detail-slot, auto-shown. #}
 <dialog id="nm-detail-dialog" aria-labelledby="nm-detail-title"
-  class="w-[min(92vw,32rem)] rounded-xl border border-slate-800 bg-[#0d1322] p-0 text-slate-200">
+  class="w-[min(92vw,32rem)] rounded-xl border border-slate-800 bg-[#0b0b0b] p-0 text-slate-200">
   <div class="p-5">
     <div class="flex items-start justify-between gap-2">
       <div class="min-w-0">
@@ -47,13 +47,13 @@
       </div>
 
       <div class="flex items-center gap-3 text-[11px] text-slate-400">
-        <span class="{{ 'text-emerald-300' if m.capabilities.tools else 'text-slate-600' }}">
+        <span class="{{ 'text-green-300' if m.capabilities.tools else 'text-slate-600' }}">
           <i data-lucide="wrench" class="mr-1 inline size-3.5"></i>tools
         </span>
-        <span class="{{ 'text-emerald-300' if m.capabilities.vision else 'text-slate-600' }}">
+        <span class="{{ 'text-green-300' if m.capabilities.vision else 'text-slate-600' }}">
           <i data-lucide="eye" class="mr-1 inline size-3.5"></i>vision
         </span>
-        <span class="{{ 'text-emerald-300' if m.capabilities.reasoning else 'text-slate-600' }}">
+        <span class="{{ 'text-green-300' if m.capabilities.reasoning else 'text-slate-600' }}">
           <i data-lucide="brain" class="mr-1 inline size-3.5"></i>reasoning
         </span>
         <span class="ml-auto flex items-center gap-1.5">

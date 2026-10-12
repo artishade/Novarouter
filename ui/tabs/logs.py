@@ -40,7 +40,7 @@ METHOD_RE = re.compile(r"^(GET|POST|PUT|PATCH|DELETE)\s+")
 # TSX STATUS_CLASS — includes the teal 3xx tier (Overview uses a 2-variant one).
 def _status_class(status: int) -> str:
     if 200 <= status < 300:
-        return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+        return "border-green-500/30 bg-green-500/10 text-green-300"
     if status < 400:
         return "border-teal-500/30 bg-teal-500/10 text-teal-300"
     if status < 500:

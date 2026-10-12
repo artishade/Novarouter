@@ -79,7 +79,7 @@ A request is ordered by a pure function (`nova/routing.py`, an OmniRoute port) a
 | 🔑 **Key management** | Multi-key pools per provider, bulk import, weights, cooldown tracking, client keys for the gateway. |
 | 🖥️ **Console + terminal** | One chatbox (`$ cmd` shell, `! task` agent) and a real xterm.js cloud terminal with an optional standalone deployment. |
 | 🗄️ **Storage / compute** | Storage manager (R2, S3, GCS, B2, Azure, Supabase…) and compute config (GPU pool, gateway RAM booster). |
-| 🎨 **UI/UX** | Dark terminal aesthetic (emerald/slate), responsive mobile-first layout, server-rendered Jinja2 + HTMX. |
+| 🎨 **UI/UX** | Matte-black terminal aesthetic with a darkest-red accent (green = healthy, amber = warning, rose = error), responsive mobile-first layout, server-rendered Jinja2 + HTMX. |
 
 ---
 

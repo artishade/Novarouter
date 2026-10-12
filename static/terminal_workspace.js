@@ -48,7 +48,7 @@
       allowTransparency: true,
       convertEol: false,
       theme: {
-        background: '#070b13', foreground: '#cbd5e1', cursor: '#34d399', cursorAccent: '#070b13',
+        background: '#0a0a0a', foreground: '#d4d4d4', cursor: '#d43a3a', cursorAccent: '#0a0a0a',
         selectionBackground: 'rgba(30,41,59,0.85)',
         black: '#0f172a', red: '#fb7185', green: '#34d399', yellow: '#fbbf24',
         blue: '#60a5fa', magenta: '#c084fc', cyan: '#22d3ee', white: '#e2e8f0',
@@ -890,7 +890,7 @@
       body: JSON.stringify({ command: cmd }),
     });
     const data = await res.json().catch(() => ({}));
-    bubble('rounded-xl border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-[11px] text-slate-300',
+    bubble('rounded-xl border border-slate-800 bg-[#0a0a0a] px-3 py-2 font-mono text-[11px] text-slate-300',
       '<div class="text-emerald-400">~ Root@Build:~# ' + esc(cmd) + '</div><pre class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap">' +
       esc(data.output || data.error || '(no output)') + '</pre>');
   }
@@ -1073,7 +1073,7 @@
   });
 
   async function sideChat(text, context) {
-    const holder = bubble('rounded-xl border border-slate-800 bg-[#0d1322] px-3 py-2 text-[12px] text-slate-200',
+    const holder = bubble('rounded-xl border border-slate-800 bg-[#0b0b0b] px-3 py-2 text-[12px] text-slate-200',
       '<div class="md-body whitespace-pre-wrap"><span class="nova-caret text-emerald-400">▌</span></div>');
     const body = holder.querySelector('.md-body');
     const payload = {
@@ -1142,7 +1142,7 @@
       if (target.kind === 'terminal') await sideCommand(target.arg);
       else if (target.kind === 'shortcut') {
         if (target.arg === '/help') {
-          bubble('rounded-xl border border-slate-800 bg-[#0d1322] px-3 py-2 text-[11px] text-slate-300',
+          bubble('rounded-xl border border-slate-800 bg-[#0b0b0b] px-3 py-2 text-[11px] text-slate-300',
             'Shortcuts: <span class="font-mono text-slate-400">/status</span> <span class="font-mono text-slate-400">/models</span> ' +
             '<span class="font-mono text-slate-400">/gpu</span> <span class="font-mono text-slate-400">/keys</span> ' +
             '<span class="font-mono text-slate-400">/storage</span> <span class="font-mono text-slate-400">/agents</span> — or just ask a question.');

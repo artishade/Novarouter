@@ -29,7 +29,7 @@ MODEL_STATUSES = ("all", "healthy", "cooling", "dead", "unknown")
 CAPABILITIES = ("all", "tools", "vision", "reasoning")
 
 STATUS_STYLES: dict[str, dict[str, str]] = {
-    "healthy": {"dot": "bg-emerald-400", "chip": "border-emerald-900/70 bg-emerald-950/40 text-emerald-300"},
+    "healthy": {"dot": "bg-green-400", "chip": "border-green-900/70 bg-green-950/40 text-green-300"},
     "cooling": {"dot": "bg-amber-400", "chip": "border-amber-900/70 bg-amber-950/40 text-amber-300"},
     "dead": {"dot": "bg-rose-400", "chip": "border-rose-900/70 bg-rose-950/40 text-rose-300"},
     "unknown": {"dot": "bg-slate-500", "chip": "border-slate-700 bg-slate-900/60 text-slate-400"},

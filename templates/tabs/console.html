@@ -1,7 +1,7 @@
 {# Console tab — port of ConsoleTab.tsx: toolbar, stream, composer + client JS. #}
-<div id="console-root" class="relative flex h-[calc(100vh-10.5rem)] min-h-[540px] flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#0a0f1c]">
+<div id="console-root" class="relative flex h-[calc(100vh-10.5rem)] min-h-[540px] flex-col overflow-hidden rounded-xl border border-slate-800 bg-[#070707]">
   {# ------------------------------- toolbar ------------------------------- #}
-  <div class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/80 px-4 py-2">
+  <div class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-[#0b0b0b]/80 px-4 py-2">
     <div class="flex items-center gap-2">
       <div class="flex size-7 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
         <i data-lucide="sparkles" class="size-3.5 text-emerald-400"></i>
@@ -14,14 +14,14 @@
     </div>
     <div class="flex items-center gap-2">
       <select id="console-model" aria-label="Chat model"
-        class="h-8 w-[170px] rounded-md border border-slate-800 bg-[#080c14] px-2 text-[11px] text-slate-300 focus:border-emerald-500/40 focus:outline-none">
+        class="h-8 w-[170px] rounded-md border border-slate-800 bg-[#050505] px-2 text-[11px] text-slate-300 focus:border-emerald-500/40 focus:outline-none">
         <option value="auto">auto — gateway routes</option>
         {% for m in models[:40] %}
         <option value="{{ m.exposed_id }}">{{ m.display_name }}{{ ' · FREE' if m.is_free }}</option>
         {% endfor %}
       </select>
       <select id="console-steps" aria-label="Agent max steps"
-        class="h-8 w-[110px] rounded-md border border-slate-800 bg-[#080c14] px-2 text-[11px] text-slate-300 focus:border-emerald-500/40 focus:outline-none">
+        class="h-8 w-[110px] rounded-md border border-slate-800 bg-[#050505] px-2 text-[11px] text-slate-300 focus:border-emerald-500/40 focus:outline-none">
         {% for n in [4, 8, 12, 16] %}
         <option value="{{ n }}" {{ 'selected' if n == 8 }}>{{ n }} agent steps</option>
         {% endfor %}
@@ -55,7 +55,7 @@
           <p class="mt-1 text-sm text-slate-400">One chatbox — chat with the gateway, run sandbox commands and launch autonomous tasks.</p>
         </div>
         <div class="grid gap-3 sm:grid-cols-3">
-          <div class="rounded-xl border border-slate-800 bg-[#0d1322] p-4">
+          <div class="rounded-xl border border-slate-800 bg-[#0b0b0b] p-4">
             <div class="mb-2 flex size-8 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
               <i data-lucide="messages-square" class="size-4 text-emerald-400"></i>
             </div>
@@ -66,7 +66,7 @@
               <button type="button" data-console-send="Explain identity spoofing" class="truncate rounded-md border border-slate-800 bg-black/30 px-2 py-1.5 text-left font-mono text-[10px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">Explain identity spoofing</button>
             </div>
           </div>
-          <div class="rounded-xl border border-slate-800 bg-[#0d1322] p-4">
+          <div class="rounded-xl border border-slate-800 bg-[#0b0b0b] p-4">
             <div class="mb-2 flex size-8 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10">
               <i data-lucide="terminal-square" class="size-4 text-sky-400"></i>
             </div>
@@ -77,7 +77,7 @@
               <button type="button" data-console-send="$ nova gpu" class="truncate rounded-md border border-slate-800 bg-black/30 px-2 py-1.5 text-left font-mono text-[10px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300">$ nova gpu</button>
             </div>
           </div>
-          <div class="rounded-xl border border-slate-800 bg-[#0d1322] p-4">
+          <div class="rounded-xl border border-slate-800 bg-[#0b0b0b] p-4">
             <div class="mb-2 flex size-8 items-center justify-center rounded-lg border border-purple-500/30 bg-purple-500/10">
               <i data-lucide="bot" class="size-4 text-purple-400"></i>
             </div>
@@ -90,7 +90,7 @@
           </div>
         </div>
         {% if tools %}
-        <div class="mt-5 rounded-xl border border-slate-800 bg-[#0d1322] p-3">
+        <div class="mt-5 rounded-xl border border-slate-800 bg-[#0b0b0b] p-3">
           <div class="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
             <i data-lucide="wrench" class="size-3"></i>
             Agent toolbox
@@ -109,7 +109,7 @@
   </div>
 
   {# ------------------------------- composer ------------------------------ #}
-  <div class="shrink-0 border-t border-slate-800 bg-[#0d1322]/80 p-3">
+  <div class="shrink-0 border-t border-slate-800 bg-[#0b0b0b]/80 p-3">
     <div class="mx-auto max-w-4xl">
       <div id="console-suggestions" class="mb-2 flex gap-1.5 overflow-x-auto pb-1">
         {% for label, text in [
@@ -152,7 +152,7 @@
               <i data-lucide="circle-stop" class="size-3.5"></i>Stop
             </button>
             <button id="console-send" type="button" aria-label="Send message" disabled
-              class="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-500/90 px-4 text-sm font-medium text-slate-950 transition-colors hover:bg-emerald-400 disabled:opacity-40">
+              class="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-500/90 px-4 text-sm font-medium text-white transition-colors hover:bg-emerald-400 disabled:opacity-40">
               <i data-lucide="send" class="size-4"></i>Send
             </button>
           </div>
@@ -166,8 +166,8 @@
      drawer must cost nothing. #}
   <div id="console-plugins" hidden
     class="absolute inset-0 z-30 flex items-stretch justify-end bg-black/60 backdrop-blur-sm">
-    <div class="flex h-full w-[min(94vw,460px)] flex-col border-l border-slate-800 bg-[#0a0f1c]">
-      <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0d1322]/80 px-3 py-2">
+    <div class="flex h-full w-[min(94vw,460px)] flex-col border-l border-slate-800 bg-[#070707]">
+      <div class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-[#0b0b0b]/80 px-3 py-2">
         <div class="flex min-w-0 items-center gap-2.5">
           <span class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
             <i data-lucide="plug" class="size-4 text-emerald-400"></i>
@@ -373,7 +373,7 @@
 
   function terminalHtml(m) {
     const exitCls = m.exitCode === 0
-      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+      ? 'border-green-500/30 bg-green-500/10 text-green-300'
       : 'border-rose-500/30 bg-rose-500/10 text-rose-300';
     return '' +
       '<div class="flex items-center justify-between gap-2 border-b border-slate-800/80 bg-slate-900/40 px-3 py-1.5">' +
@@ -413,8 +413,8 @@
     const icon = ACTION_ICON[s.action] || 'wrench';
     const iconCls = s.status === 'error'
       ? 'border-rose-500/30 bg-rose-500/10 text-rose-300'
-      : 'border-slate-700 bg-slate-900 text-emerald-400';
-    const dot = s.status === 'error' ? 'bg-rose-400' : (s.status === 'info' ? 'bg-sky-400' : 'bg-emerald-400');
+      : 'border-slate-700 bg-slate-900 text-green-400';
+    const dot = s.status === 'error' ? 'bg-rose-400' : (s.status === 'info' ? 'bg-sky-400' : 'bg-green-400');
     return '<li>' +
       '<button type="button" data-agent-step="' + s.step_number + '" aria-expanded="' + (open ? 'true' : 'false') + '" class="flex w-full items-center gap-2.5 rounded-lg border border-transparent px-2 py-1.5 text-left transition-colors hover:border-slate-800 hover:bg-slate-900/50">' +
         '<span class="flex size-6 shrink-0 items-center justify-center rounded-md border ' + iconCls + '"><i data-lucide="' + icon + '" class="size-3.5"></i></span>' +
@@ -481,14 +481,14 @@
     } else {
       body = '<div class="md-body text-slate-200">' + (md(m.content) || '<p class="text-slate-500">(empty response)</p>') + '</div>';
     }
-    return '<div class="max-w-[85%] rounded-2xl rounded-tl-md border border-slate-800 bg-[#0d1322] px-4 py-3 text-sm">' + body + chipsHtml(m) + '</div>';
+    return '<div class="max-w-[85%] rounded-2xl rounded-tl-md border border-slate-800 bg-[#0b0b0b] px-4 py-3 text-sm">' + body + chipsHtml(m) + '</div>';
   }
 
   function msgNode(m) {
     const el = document.createElement('div');
     el.id = 'console-msg-' + m.id;
     if (m.kind === 'system') {
-      el.className = 'console-msg mx-auto w-full max-w-2xl rounded-xl border border-slate-800 bg-[#0d1322]/70 px-4 py-3 text-[13px] text-slate-300';
+      el.className = 'console-msg mx-auto w-full max-w-2xl rounded-xl border border-slate-800 bg-[#0b0b0b]/70 px-4 py-3 text-[13px] text-slate-300';
       const b = document.createElement('div');
       b.className = 'md-body';
       b.innerHTML = md(m.text);
@@ -497,10 +497,10 @@
       el.className = 'console-msg flex justify-end';
       el.innerHTML = '<div class="max-w-[85%] rounded-2xl rounded-tr-md border border-emerald-500/25 bg-emerald-500/10 px-4 py-2.5 text-sm text-slate-100"><p class="whitespace-pre-wrap break-words">' + esc(m.text) + '</p></div>';
     } else if (m.kind === 'terminal') {
-      el.className = 'console-msg w-full max-w-3xl overflow-hidden rounded-xl border border-slate-800 bg-[#070b13]';
+      el.className = 'console-msg w-full max-w-3xl overflow-hidden rounded-xl border border-slate-800 bg-[#0a0a0a]';
       el.innerHTML = terminalHtml(m);
     } else if (m.kind === 'agent') {
-      el.className = 'console-msg w-full max-w-3xl overflow-hidden rounded-xl border border-slate-800 bg-[#0d1322]';
+      el.className = 'console-msg w-full max-w-3xl overflow-hidden rounded-xl border border-slate-800 bg-[#0b0b0b]';
       el.innerHTML = agentHtml(m);
     } else {
       el.className = 'console-msg flex justify-start';

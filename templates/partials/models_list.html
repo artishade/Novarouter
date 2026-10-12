@@ -13,7 +13,7 @@
 <div class="flex flex-wrap items-center gap-2">
   <h2 class="text-lg font-semibold text-slate-100">Models</h2>
   {% if stats %}
-  <span class="inline-flex items-center rounded-md border border-emerald-900/70 bg-emerald-950/30 px-2 py-0.5 text-[11px] text-emerald-300">{{ stats.healthy_models }} healthy · {{ stats.dead_models }} dead</span>
+  <span class="inline-flex items-center rounded-md border border-green-900/70 bg-green-950/30 px-2 py-0.5 text-[11px] text-green-300">{{ stats.healthy_models }} healthy · {{ stats.dead_models }} dead</span>
   {% endif %}
   <div class="ml-auto flex flex-wrap items-center gap-2">
     <form id="models-filter" hx-get="/partials/models/list?region=results"

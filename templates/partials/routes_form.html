@@ -1,7 +1,7 @@
 {# Route create/edit dialog — port of RouteFormDialog in RoutesTab.tsx.
    Context: editing, route_id, initial {public_id, fallbacks, auto, note}, models, error #}
 <dialog id="rt-form-dialog" aria-label="{{ 'Edit route' if editing else 'New fallback route' }}"
-  class="h-fit w-[calc(100%-2rem)] max-w-xl rounded-xl border border-slate-800 bg-[#0d1322] p-6 text-slate-200 shadow-2xl backdrop:bg-black/70">
+  class="h-fit w-[calc(100%-2rem)] max-w-xl rounded-xl border border-slate-800 bg-[#0b0b0b] p-6 text-slate-200 shadow-2xl backdrop:bg-black/70">
   <form hx-post="{{ ('/ui/routes/' ~ (route_id | urlencode) ~ '/update') if editing else '/ui/routes/create' }}"
     hx-target="#rt-form-zone" hx-swap="innerHTML">
     <div x-data='rtChain({{ initial.fallbacks | tojson }}, {{ initial.auto | tojson }})'>
@@ -20,12 +20,12 @@
             <label for="rt-public" class="text-sm font-medium text-slate-300">Public model id</label>
             <input id="rt-public" name="public_id" value="{{ initial.public_id }}" placeholder="my-model or * for default chain"
               autocomplete="off" spellcheck="false"
-              class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+              class="w-full rounded-md border border-slate-800 bg-[#0a0a0a] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
           </div>
           <div class="space-y-1.5">
             <label for="rt-note" class="text-sm font-medium text-slate-300">Note (optional)</label>
             <input id="rt-note" name="note" value="{{ initial.note }}" placeholder="Why this chain exists"
-              class="w-full rounded-md border border-slate-800 bg-[#070b13] px-3 py-2 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+              class="w-full rounded-md border border-slate-800 bg-[#0a0a0a] px-3 py-2 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
           </div>
         </div>
 
@@ -37,7 +37,7 @@
               autocomplete="off" spellcheck="false" aria-label="Search models to add to the fallback chain"
               hx-get="/ui/routes/models" hx-trigger="input changed delay:250ms, search" hx-target="#rt-model-list" hx-swap="innerHTML"
               @keydown.enter.prevent
-              class="w-full rounded-md border border-slate-800 bg-[#070b13] py-2 pl-8 pr-3 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+              class="w-full rounded-md border border-slate-800 bg-[#0a0a0a] py-2 pl-8 pr-3 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
           </div>
           <div id="rt-model-list" class="max-h-44 overflow-y-auto rounded-lg border border-slate-800 bg-black/20 p-2.5">
             {% include 'partials/routes_models.html' %}
@@ -90,7 +90,7 @@
           Cancel
         </button>
         <button type="submit"
-          class="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-500 px-4 text-sm font-medium text-emerald-950 transition-colors hover:bg-emerald-400">
+          class="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-500 px-4 text-sm font-medium text-white transition-colors hover:bg-emerald-400">
           {{ 'Save changes' if editing else 'Create route' }}
         </button>
       </div>

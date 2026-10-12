@@ -5,7 +5,7 @@
 <div id="tab-analytics" class="flex flex-col gap-4">
 
   {# Header: range selector + summary chips #}
-  <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+  <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-[#0b0b0b]/80 p-4">
     <div class="flex flex-wrap items-center gap-2">
       {% call chip('border-emerald-500/30 bg-emerald-500/10 text-emerald-300') %}{{ total | default(0) | fmt_num }} requests{% endcall %}
       {% call chip('border-emerald-500/30 bg-emerald-500/10 text-emerald-300') %}{{ summary.total_tokens | default(0) | fmt_num }} tokens{% endcall %}
@@ -24,11 +24,11 @@
       <span class="hidden font-mono text-[10px] text-slate-600 sm:inline">gateway v{{ meta_version }}</span>
       {% endif %}
       <button type="button" title="Refresh shared gateway data" aria-label="Refresh shared gateway data"
-        class="rounded-md border border-slate-800 bg-[#080c14] px-2.5 py-1 font-mono text-[11px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-400"
+        class="rounded-md border border-slate-800 bg-[#050505] px-2.5 py-1 font-mono text-[11px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-400"
         hx-get="/partials/tab/analytics" hx-vals='{"hours": {{ hours }}}' hx-target="#tab-analytics" hx-swap="outerHTML"
         onclick="NovaUI.refresh()">sync</button>
       <select name="hours" aria-label="Analytics time range"
-        class="h-8 rounded-md border border-slate-800 bg-[#080c14] px-2 font-mono text-xs text-slate-200 focus:border-emerald-500/40 focus:outline-none"
+        class="h-8 rounded-md border border-slate-800 bg-[#050505] px-2 font-mono text-xs text-slate-200 focus:border-emerald-500/40 focus:outline-none"
         hx-get="/partials/tab/analytics" hx-trigger="change" hx-include="this" hx-target="#tab-analytics" hx-swap="outerHTML">
         {% for value, label in ranges %}
         <option value="{{ value }}" {% if hours == value %}selected{% endif %}>{{ label }}</option>
@@ -38,7 +38,7 @@
   </div>
 
   {# Requests & Errors over time #}
-  <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+  <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0b0b0b]/80 p-4">
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
       <div>
         <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Requests &amp; Errors</h2>
@@ -83,7 +83,7 @@
   {# Top models + top providers #}
   <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
 
-    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0b0b0b]/80 p-4">
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Top Models</h2>
@@ -108,7 +108,7 @@
       {% endif %}
     </div>
 
-    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0b0b0b]/80 p-4">
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Top Providers</h2>
@@ -136,7 +136,7 @@
   {# Percentiles + donut + cache #}
   <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
-    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0b0b0b]/80 p-4">
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Latency Percentiles</h2>
@@ -145,7 +145,7 @@
       </div>
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-1">
         {% for p in percentiles %}
-        <div class="flex items-center justify-between rounded-lg border border-slate-800 bg-[#080c14] px-3 py-2.5">
+        <div class="flex items-center justify-between rounded-lg border border-slate-800 bg-[#050505] px-3 py-2.5">
           <div class="flex items-center gap-2">
             <span class="size-2 rounded-full {{ p.dot }}"></span>
             <span class="text-xs text-slate-400">{{ p.label }}</span>
@@ -156,7 +156,7 @@
       </div>
     </div>
 
-    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0b0b0b]/80 p-4">
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Status Distribution</h2>
@@ -165,11 +165,11 @@
       </div>
       <div class="relative h-64">
         <svg viewBox="0 0 120 120" class="mx-auto h-full" role="img" aria-label="Status distribution donut">
-          <circle cx="60" cy="60" r="48" fill="none" stroke="#1e293b" stroke-width="14"></circle>
+          <circle cx="60" cy="60" r="48" fill="none" stroke="#262626" stroke-width="14"></circle>
           {% if (donut.total | default(0)) > 0 %}
-          <circle cx="60" cy="60" r="48" fill="none" stroke="#34d399" stroke-width="14"
+          <circle cx="60" cy="60" r="48" fill="none" stroke="#22c55e" stroke-width="14"
             stroke-dasharray="{{ donut.seg }} {{ donut.rest }}" transform="rotate(-90 60 60)"></circle>
-          <circle cx="60" cy="60" r="48" fill="none" stroke="#fb7185" stroke-width="14"
+          <circle cx="60" cy="60" r="48" fill="none" stroke="#f43f5e" stroke-width="14"
             stroke-dasharray="{{ donut.rest }} {{ donut.rest }}" stroke-dashoffset="{{ donut.offset }}" transform="rotate(-90 60 60)"></circle>
           {% endif %}
         </svg>
@@ -179,7 +179,7 @@
         </div>
         <div class="absolute inset-x-0 bottom-0 flex justify-center gap-4">
           <div class="flex items-center gap-1.5 text-[11px] text-slate-400">
-            <span class="size-2 rounded-full bg-emerald-400"></span>2xx success · {{ donut.success | default(0) | fmt_num }}
+            <span class="size-2 rounded-full bg-green-400"></span>2xx success · {{ donut.success | default(0) | fmt_num }}
           </div>
           <div class="flex items-center gap-1.5 text-[11px] text-slate-400">
             <span class="size-2 rounded-full bg-rose-400"></span>errors · {{ donut.errors | default(0) | fmt_num }}
@@ -188,7 +188,7 @@
       </div>
     </div>
 
-    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0d1322]/80 p-4">
+    <div class="flex flex-col rounded-xl border border-slate-800 bg-[#0b0b0b]/80 p-4">
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Cache Hit Rate</h2>

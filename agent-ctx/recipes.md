@@ -29,7 +29,7 @@ then `sh scripts/test.sh`.
    `templates/partials/` for action re-renders and error panels (see
    `partials/console_error.html` for the retry pattern).
 4. Add the sidebar entry + TabKey-style wiring in `templates/base.html`.
-5. Style per conventions #19–20 (emerald/slate, no blue/indigo, aria-labels).
+5. Style per conventions #19–20 (darkest-red accent via the `emerald-*` remap, neutral `slate-*` surfaces, `green-*` success, no blue/indigo, aria-labels).
 
 ## 3. Add a provider preset / kind
 

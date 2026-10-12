@@ -118,7 +118,7 @@ Agent (autonomous, real LLM via the RouterX Free free-model engine):
 ## Frontend (Agents 3-a..3-d) — src/components/nova/**
 
 Imports available: `@/components/ui/*` (shadcn: button card badge tabs input textarea select dialog dropdown-menu switch slider progress separator scroll-area tooltip sonner table skeleton alert etc.), `lucide-react`, `framer-motion`, `recharts`, `@/lib/api`, `@/lib/types`, `@/lib/format` (fmtNum/fmtBytes/fmtMb/fmtUptime/timeAgo/fmtClock/fmtDate/maskKey/cx). Toasts: `import { toast } from 'sonner'`.
-Style: page bg #080c14, panels `bg-[#0d1322]/80 border-slate-800`, accent emerald-400/500; secondary purple for RAM/boost, amber for warnings, rose for errors/dead, sky only for tiny info chips. Font mono for ids/commands. Rounded-xl, subtle hover transitions, framer-motion fade/slide on tab switch. NO indigo/blue theme colors.
+Style: page bg #050505, panels `bg-[#0b0b0b]/80 border-slate-800`, accent emerald-400/500 (rendered as the RouterX dark-red ramp — see the `tailwind.config` palette remap in templates/base.html); success/health green-400/500, secondary purple for RAM/boost, amber for warnings, rose for errors/dead, sky only for tiny info chips. Font mono for ids/commands. Rounded-xl, subtle hover transitions, framer-motion fade/slide on tab switch. NO indigo/blue theme colors.
 Components directory `src/components/nova/`:
 - 3-a owns: Dashboard.tsx (shell: tab state, data polling via api, renders Sidebar+Header+active tab+StatusFooter; exports TabKey type), Sidebar.tsx, Header.tsx, StatusFooter.tsx, tabs/OverviewTab.tsx, tabs/AnalyticsTab.tsx, tabs/LogsTab.tsx.
 - 3-b owns: tabs/PlaygroundTab.tsx, tabs/AgentTab.tsx.

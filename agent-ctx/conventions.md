@@ -59,10 +59,13 @@ Rules that keep changes consistent. Break these only with a documented reason
 18. Tabs are server-rendered fragments swapped into `#tab-content` by HTMX; a
     tab module owns `GET /partials/tab/<key>` + optional `POST /ui/<key>/...`
     fragment-returning actions. Fragments, not JSON, drive UI updates.
-19. Theme: bg `#080c14`, panels `#0d1322/80` + slate-800 borders, **emerald**
-    accent, amber warnings, rose errors, purple reserved for RAM/heap/spoof
-    accents, sky only for tiny info chips, mono for ids/commands. **No
-    indigo/blue**, no emojis in the UI.
+19. Theme: matte black — bg `#050505`, panels `#0b0b0b/80` + neutral borders,
+    **darkest-red** interaction accent, green success/health (`green-*`), amber
+    warnings, rose errors, purple reserved for RAM/heap/spoof accents, sky only
+    for tiny info chips, mono for ids/commands. The `emerald-*` utilities are
+    the accent class name: the palette is remapped to the RouterX red ramp in
+    `templates/base.html`, and `slate-*` is remapped to a neutral ramp so no
+    surface keeps the old navy cast. **No indigo/blue**, no emojis in the UI.
 20. aria-labels on icon-only buttons; status dots for healthy/cooling/dead/
     unknown; skeletons or graceful empty states when APIs fail (tabs must not
     blank out).

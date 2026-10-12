@@ -4,7 +4,7 @@
     <div class="flex flex-col items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/5 p-6">
       <p class="text-sm text-rose-300">Failed to load routes — {{ error }}</p>
       <button type="button" hx-get="/partials/tab/routes" hx-target="#rt-root" hx-swap="outerHTML"
-        class="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium text-emerald-950 transition-colors hover:bg-emerald-400">
+        class="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-400">
         Retry
       </button>
     </div>
@@ -30,7 +30,7 @@
           <i data-lucide="play" class="size-3.5"></i>Preview
         </button>
         <button type="button" hx-get="/ui/routes/form" hx-target="#rt-form-zone" hx-swap="innerHTML"
-          class="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-500 px-3 text-sm font-medium text-emerald-950 transition-colors hover:bg-emerald-400">
+          class="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-500 px-3 text-sm font-medium text-white transition-colors hover:bg-emerald-400">
           <i data-lucide="plus" class="size-3.5"></i>New Route
         </button>
       </div>
@@ -52,7 +52,7 @@
 
     {# ---------------------------- Route cards --------------------------- #}
     {% if routes | length == 0 %}
-      <div class="flex flex-col items-center gap-3 rounded-xl border border-dashed border-slate-800 bg-[#0d1322]/60 p-10 text-center">
+      <div class="flex flex-col items-center gap-3 rounded-xl border border-dashed border-slate-800 bg-[#0b0b0b]/60 p-10 text-center">
         <i data-lucide="route" class="size-6 text-slate-600"></i>
         <p class="text-sm text-slate-500">
           No fallback routes yet. Create one, or add a <span class="font-mono text-slate-400">*</span>
@@ -62,7 +62,7 @@
     {% else %}
       <div class="space-y-3">
         {% for r in routes %}
-        <div class="rounded-xl border bg-[#0d1322]/80 p-4 {{ 'border-purple-900/50' if r.public_id == '*' else 'border-slate-800' }}">
+        <div class="rounded-xl border bg-[#0b0b0b]/80 p-4 {{ 'border-purple-900/50' if r.public_id == '*' else 'border-slate-800' }}">
           <div class="flex flex-wrap items-center gap-2">
             <span class="font-mono text-sm text-emerald-300">{{ r.public_id }}</span>
             {% if r.public_id == '*' %}

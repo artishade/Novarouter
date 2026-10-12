@@ -1,7 +1,7 @@
 """Custom MCP servers — the console's plugin system.
 
 A user registers a Model Context Protocol server (a "plugin") and its tools
-become callable tools in the Nova Console and in the autonomous agent, exactly
+become callable tools in the RouterX Console and in the autonomous agent, exactly
 like the permanent builtin toolbox. Two transports are supported:
 
   http    Streamable HTTP JSON-RPC (the 2025-06-18 spec every current server
@@ -31,7 +31,7 @@ import httpx
 log = logging.getLogger("nova.mcp")
 
 PROTOCOL_VERSION = "2024-11-05"
-CLIENT_INFO = {"name": "novarouter-console", "version": "1.0"}
+CLIENT_INFO = {"name": "routerx-console", "version": "1.0"}
 TRANSPORTS = ("http", "stdio")
 DEFAULT_TIMEOUT = 25.0
 CALL_TIMEOUT = 60.0

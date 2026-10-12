@@ -1,0 +1,17 @@
+{# Model chips for the fallback-chain picker. Context: models [#]
+   Rendered inline by the route form and returned on its own by
+   GET /ui/routes/models, so the form can search the (large) model catalogue
+   server-side instead of rendering thousands of chips at once. The buttons
+   drive the Alpine `rtChain` component declared on the form's ancestor, so
+   they work identically before and after an HTMX swap. #}
+<div class="flex flex-wrap gap-1.5">
+  {% if models | length == 0 %}
+  <span class="text-[11px] text-slate-600">No models match — try another term.</span>
+  {% endif %}
+  {% for m in models %}
+  <button type="button" x-data='{ id: {{ m.exposed_id | tojson }} }' @click="toggle(id)"
+    :aria-pressed="fallbacks.includes(id)" :aria-label="(fallbacks.includes(id) ? 'Remove ' : 'Add ') + id + ' to chain'"
+    :class="fallbacks.includes(id) ? 'border-emerald-700/70 bg-emerald-950/50 text-emerald-300' : 'border-slate-800 bg-black/30 text-slate-400 hover:border-slate-600 hover:text-slate-200'"
+    class="rounded-md border px-2 py-1 font-mono text-[11px] transition">{{ m.exposed_id }}</button>
+  {% endfor %}
+</div>

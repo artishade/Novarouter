@@ -1,4 +1,4 @@
-# NovaRouter — Decision Log (why things are this way)
+# RouterX — Decision Log (why things are this way)
 
 Intent-preservation memory. If a change would contradict an entry here, check
 with the user before overriding, or add a new dated entry explaining the pivot.
@@ -121,7 +121,7 @@ with the user before overriding, or add a new dated entry explaining the pivot.
   silent fall back to the default, which would quietly bill the wrong account.
 
 ## 2026-10-02 — The routing brain is ported from OmniRoute
-- **The upstream model is OmniRoute's domain layer, not its code.** NovaRouter
+- **The upstream model is OmniRoute's domain layer, not its code.** RouterX
   stays Python; `nova/routing.py` re-implements `tagRouter`, `policyEngine`,
   `accountFallback`/`lockoutPolicy`, `fallbackPolicy`, the combo strategies and
   `routerStrategy` as pure functions over plain dicts, and `nova/catalog.py`

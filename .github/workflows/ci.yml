@@ -53,7 +53,7 @@ jobs:
           python3 -c "import json; d = json.load(open('health.json')); assert d['status'] == 'healthy', d; print('health ok:', d['status'], '/ db', d['db'])"
 
           # The dashboard shell and every tab fragment render server-side.
-          curl -fsS http://127.0.0.1:3111/ | grep -q 'NovaRouter'
+          curl -fsS http://127.0.0.1:3111/ | grep -q 'RouterX'
           curl -fsS http://127.0.0.1:3111/partials/tab/terminal | grep -q 'term-tabs'
 
           # The standalone cloud workspace page (opens in a new browser tab).

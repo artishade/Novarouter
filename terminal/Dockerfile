@@ -1,16 +1,16 @@
 # syntax=docker/dockerfile:1
 # ============================================================================ #
-# NovaRouter Terminal — standalone image.
+# RouterX Terminal — standalone image.
 #
 # This builds the terminal ALONE: the build context is this directory, the
 # image contains `terminal/` and its three dependencies, and nothing else. No
-# NovaRouter gateway, no database, no dashboard — just the shells, their HTTP
+# RouterX gateway, no database, no dashboard — just the shells, their HTTP
 # contract, and the Agentbox AI agent.
 #
-#   docker build -t novarouter-terminal ./terminal
-#   docker run -p 3100:3100 -e NOVA_TERMINAL_TOKEN=<secret> novarouter-terminal
+#   docker build -t routerx-terminal ./terminal
+#   docker run -p 3100:3100 -e NOVA_TERMINAL_TOKEN=<secret> routerx-terminal
 #
-# Point a NovaRouter app at it with NOVA_TERMINAL_URL — or skip the app
+# Point a RouterX app at it with NOVA_TERMINAL_URL — or skip the app
 # entirely and talk to this host (and its /agent) directly.
 # ============================================================================ #
 FROM python:3.12-slim

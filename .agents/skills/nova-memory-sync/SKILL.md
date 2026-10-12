@@ -1,12 +1,12 @@
 ---
 name: nova-memory-sync
-description: Keep NovaRouter agent memory accurate. Load after landing structural changes (new module, tab, router, convention, or reversed decision) to update AGENTS.md and agent-ctx files, or to repair memory that drifted from the code.
+description: Keep RouterX agent memory accurate. Load after landing structural changes (new module, tab, router, convention, or reversed decision) to update AGENTS.md and agent-ctx files, or to repair memory that drifted from the code.
 metadata:
   category: documentation
-  project: novarouter
+  project: routerx
 ---
 
-# Nova memory-sync — keep agent memory matching the code
+# RouterX memory-sync — keep agent memory matching the code
 
 Agent memory for this repo lives in exactly five places:
 

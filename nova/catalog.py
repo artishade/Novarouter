@@ -26,7 +26,7 @@ from typing import Any, Iterable
 
 DATA_FILE = Path(__file__).resolve().parent / "data" / "provider_registry.json"
 
-# Formats OmniRoute marks as accepting any model id, passthrough style. NovaRouter
+# Formats OmniRoute marks as accepting any model id, passthrough style. RouterX
 # never dials these blind — they stay in the catalogue, but a request still has
 # to name a model we know about.
 _MODEL_EXPOSURE_MAX_ENTRIES = 500

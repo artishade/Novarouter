@@ -1,11 +1,11 @@
 #!/bin/bash
-# NovaRouter Health Check Runner Script
+# RouterX Health Check Runner Script
 # Run: bash /path/to/Novarouter/run_health_check.sh --cron
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
 
 echo "=========================================="
-echo "NovaRouter Health Check System"
+echo "RouterX Health Check System"
 echo "=========================================="
 echo ""
 

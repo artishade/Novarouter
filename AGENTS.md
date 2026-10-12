@@ -1,7 +1,7 @@
-# AGENTS.md — NovaRouter agent memory
+# AGENTS.md — RouterX agent memory
 
 > **READ THIS FIRST.** This file is the always-loaded memory for AI coding agents
-> working on NovaRouter. Deeper context lives in `agent-ctx/` (start with
+> working on RouterX. Deeper context lives in `agent-ctx/` (start with
 > `agent-ctx/project-map.md`). The skill `nova-architect` (`.agents/skills/`)
 > loads the full analysis workflow for feature customization work.
 
@@ -10,7 +10,7 @@
 - **The app is 100% Python (FastAPI + Jinja2 + HTMX).** There is NO Next.js/React/Prisma code in this repo.
 - `worklog.md` and `agent-ctx/api-contract.md` describe a **historical Next.js rebuild** used as a porting reference. Treat them as read-only history — their file paths (`src/app/api/**`, `src/lib/**`) do not exist here. The Python equivalents are noted in `agent-ctx/project-map.md`.
 
-## What NovaRouter is
+## What RouterX is
 
 A self-hosted AI API gateway: fans requests out across many AI providers (free ones included), with fallback chains, cooldowns, key/model/route management, a 9-tab dashboard, a sandbox terminal, and an autonomous agent. One FastAPI process serves the gateway API, the admin/agent JSON APIs, and the dashboard UI.
 
@@ -25,7 +25,7 @@ A self-hosted AI API gateway: fans requests out across many AI providers (free o
 | `ui/` | Python frontend (BFF): `shell.py` (dashboard shell), `tabs/` (9 tab modules), `api_client.py` (self-API HTTP client), `render.py` (Jinja2), `format.py` |
 | `templates/` | Jinja2: `base.html`, `tabs/<key>.html`, `partials/*.html` |
 | `static/` | `nova.css`, `app.js` (HTMX wiring, toasts, streaming chat), `logo.svg` |
-| `engine/` | NovaFree engine sidecar (`index.js`, zero npm deps) + `free-models.json` catalogue |
+| `engine/` | RouterX Free engine sidecar (`index.js`, zero npm deps) + `free-models.json` catalogue |
 | `tests/` | `tests/test_*.py` (unittest) + JS suite |
 | `scripts/` | `preview.sh` (install deps + run), `test.sh` (compileall + unittest + node) |
 | `db/` | SQLite file location when no `DATABASE_URL` is set |
@@ -33,7 +33,7 @@ A self-hosted AI API gateway: fans requests out across many AI providers (free o
 
 ## Architecture in one paragraph
 
-`main.py` boots FastAPI → lifespan runs `nova/bootstrap.py` (additive schema sync + seed, including the OmniRoute provider/model catalogue) and starts the engine sidecar via `nova/engine.py` → requests hit `routers/gateway.py` (`/v1/chat/completions` etc.), which asks `nova/routing.py` to order the candidate pool (policy engine → model exposure lists → tag routing → per-(provider, model) lockouts → selection strategy), then walks it as a fallback chain (direct → chain → NovaFree engine last), calls upstreams through `nova/provider_transport.py` + pooled `httpx` clients, spoofs the response `model` to the requested id, attaches `_nova` metadata (including the routing decision), and logs to `RequestLog`. The dashboard (`ui/`) is server-rendered Jinja2 fragments swapped by HTMX; each tab module calls the app's own JSON API over HTTP (`ui/api_client.py`), so UI behaviour always matches the gateway. `nova/agent.py` runs autonomous tasks with a plan→tool→step loop. The terminal is a separate feature under `terminal/` (imported from there as `terminal.*`, and never importing `nova` back): `terminal/sandbox.py` is a simulated allowlist sandbox (no real shells), `terminal/pty.py` spawns the real PTY shells behind the Terminal tab sessions, and `terminal/agentbox.py` is the AI agent that travels with a separately hosted terminal.
+`main.py` boots FastAPI → lifespan runs `nova/bootstrap.py` (additive schema sync + seed, including the OmniRoute provider/model catalogue) and starts the engine sidecar via `nova/engine.py` → requests hit `routers/gateway.py` (`/v1/chat/completions` etc.), which asks `nova/routing.py` to order the candidate pool (policy engine → model exposure lists → tag routing → per-(provider, model) lockouts → selection strategy), then walks it as a fallback chain (direct → chain → RouterX Free engine last), calls upstreams through `nova/provider_transport.py` + pooled `httpx` clients, spoofs the response `model` to the requested id, attaches `_nova` metadata (including the routing decision), and logs to `RequestLog`. The dashboard (`ui/`) is server-rendered Jinja2 fragments swapped by HTMX; each tab module calls the app's own JSON API over HTTP (`ui/api_client.py`), so UI behaviour always matches the gateway. `nova/agent.py` runs autonomous tasks with a plan→tool→step loop. The terminal is a separate feature under `terminal/` (imported from there as `terminal.*`, and never importing `nova` back): `terminal/sandbox.py` is a simulated allowlist sandbox (no real shells), `terminal/pty.py` spawns the real PTY shells behind the Terminal tab sessions, and `terminal/agentbox.py` is the AI agent that travels with a separately hosted terminal.
 
 ## Non-negotiable conventions
 

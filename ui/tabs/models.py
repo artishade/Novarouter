@@ -236,7 +236,7 @@ async def models_detail(request: Request) -> HTMLResponse:
         f"  -H \"Content-Type: application/json\" \\\n"
         f"  -d '{{\n"
         f"    \"model\": \"{model.get('exposed_id', '')}\",\n"
-        f"    \"messages\": [{{ \"role\": \"user\", \"content\": \"Hello, NovaRouter\" }}]\n"
+        f"    \"messages\": [{{ \"role\": \"user\", \"content\": \"Hello, RouterX\" }}]\n"
         f"  }}'"
     )
     return html(render(

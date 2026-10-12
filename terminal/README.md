@@ -1,4 +1,4 @@
-# `terminal/` — NovaRouter's terminal, one path, hostable alone
+# `terminal/` — RouterX's terminal, one path, hostable alone
 
 Everything the project does with an interactive shell lives in this directory.
 Nothing terminal-related exists outside it, and the rest of the app reaches it
@@ -13,7 +13,7 @@ from terminal.sandbox import execute_command                # one-shot allowlist
 **This package is self-contained.** It imports nothing from `nova/`, needs no
 database, and reads the environment itself — so you can copy this one directory
 to another machine and run the whole terminal there, with or without a
-NovaRouter gateway pointing at it.
+RouterX gateway pointing at it.
 
 ## Layout
 
@@ -36,19 +36,19 @@ Pick whichever fits your host:
 
 ```bash
 # Docker (build context = this directory)
-docker build -t novarouter-terminal ./terminal
+docker build -t routerx-terminal ./terminal
 docker run -p 3100:3100 \
   -e NOVA_TERMINAL_TOKEN=<shared secret> \
   -e NOVA_AGENTBOX_BASE_URL=https://api.groq.com/openai/v1 \
   -e NOVA_AGENTBOX_API_KEY=<key> \
-  novarouter-terminal
+  routerx-terminal
 
 # or straight from source (needs fastapi, uvicorn, httpx)
 sh ./terminal/run.sh
 # python3 -m terminal.service
 ```
 
-Then point a NovaRouter app at it, or ignore Nova entirely and use it directly:
+Then point a RouterX app at it, or ignore RouterX entirely and use it directly:
 
 ```bash
 NOVA_TERMINAL_URL=http://terminal-host:3100 \
@@ -138,7 +138,7 @@ happens and its shell state survives between steps.
 ### Custom providers
 
 Any OpenAI-compatible `/v1` endpoint can back the agent — Groq, OpenRouter,
-OpenAI, a local vLLM/Ollama, or a NovaRouter gateway's own `/v1`. Add as many
+OpenAI, a local vLLM/Ollama, or a RouterX gateway's own `/v1`. Add as many
 as you like, side by side, and pick one per message:
 
 ```bash

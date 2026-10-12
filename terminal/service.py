@@ -1,6 +1,6 @@
-"""NovaRouter terminal service — the Root@Build terminal, hosted on its own.
+"""RouterX terminal service — the Root@Build terminal, hosted on its own.
 
-The interactive terminal is the one part of NovaRouter that wants its own
+The interactive terminal is the one part of RouterX that wants its own
 machine: it hands out real root shells, so it can be sized, restarted and
 network-isolated independently of the gateway. This module is that separate
 host, and it is the only entrypoint you need if you deploy `terminal/` alone:
@@ -12,7 +12,7 @@ It serves exactly the routes the dashboard already calls (the same
 `terminal/api.py` the gateway mounts), plus `/agent/*` for Agentbox, so
 pointing the app at it changes nothing about the UI or the API contract:
 
-    NOVA_TERMINAL_URL=http://terminal-host:3100   # on the NovaRouter side
+    NOVA_TERMINAL_URL=http://terminal-host:3100   # on the RouterX side
     NOVA_TERMINAL_TOKEN=<shared secret>           # on BOTH sides
 
 NOVA_TERMINAL_URL unset (the default) means the gateway keeps the terminal
@@ -60,7 +60,7 @@ async def lifespan(_app: FastAPI):
         await terminal_link.current().ensure_default()
     except Exception as err:  # never block boot on the warmup shell
         log.warning("default cloud shell warmup skipped: %s", err)
-    log.info("NovaRouter terminal service up on 0.0.0.0:%s (root of %s)",
+    log.info("RouterX terminal service up on 0.0.0.0:%s (root of %s)",
              TERMINAL_SERVICE_PORT, PACKAGE_ROOT)
     yield
     try:
@@ -70,7 +70,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="NovaRouter Terminal Service",
+    title="RouterX Terminal Service",
     version="2.0.0-python",
     lifespan=lifespan,
     docs_url="/api/docs",
@@ -159,7 +159,7 @@ async def health():
     return JSONResponse({
         "ok": ok,
         "status": "healthy" if ok else "degraded",
-        "service": "novarouter-terminal",
+        "service": "routerx-terminal",
         "runtime": "python",
         "uptime_s": int(time.time() - STARTED_AT),
         "sessions": sessions,

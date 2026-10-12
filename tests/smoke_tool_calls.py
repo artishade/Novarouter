@@ -1,6 +1,6 @@
 """Tool-use round-trip tests for the Claude Code (/v1/messages) path.
 
-Boots the app with a STUB NovaFree engine that answers with an OpenAI-style
+Boots the app with a STUB RouterX Free engine that answers with an OpenAI-style
 tool_call, then asserts the gateway converts it into a valid Anthropic stream /
 JSON — the exact contract Claude Code depends on for agent turns.
 
@@ -158,7 +158,7 @@ async def main() -> int:
                 "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
             }]
             base = {
-                "model": "nova/air",
+                "model": "routerx/air",
                 "max_tokens": 256,
                 "tools": tools,
                 "messages": [{"role": "user", "content": "What's the weather in Dhaka? Use the tool."}],

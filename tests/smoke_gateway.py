@@ -1,7 +1,7 @@
-"""End-to-end smoke test for the NovaRouter gateway (no live server needed).
+"""End-to-end smoke test for the RouterX gateway (no live server needed).
 
 Boots the real FastAPI app in-process (lifespan included: schema bootstrap +
-NovaFree engine sidecar), then exercises the paths Claude Code and OpenAI SDKs
+RouterX Free engine sidecar), then exercises the paths Claude Code and OpenAI SDKs
 use. Run it with the project venv:
 
     python3 tests/smoke_gateway.py
@@ -56,7 +56,7 @@ async def main() -> int:
             models = (res.json() or {}).get("data") or []
             ids = {m.get("id") for m in models}
             check(res.status_code == 200, "/v1/models is 200", str(res.status_code))
-            for tier in ("nova/mini", "nova/air", "nova/pro"):
+            for tier in ("routerx/mini", "routerx/air", "routerx/pro"):
                 check(tier in ids, f"/v1/models exposes {tier}")
             free_ids = [i for i in ids if i and ":" in str(i)]
             check(len(free_ids) >= 10, "/v1/models exposes the free-ai-models catalogue", f"{len(free_ids)} ids")
@@ -67,11 +67,11 @@ async def main() -> int:
             check(res.status_code == 200, "catalogue fetch stable", str(res.status_code))
 
             # ---- /v1/chat/completions (OpenAI shape) ---------------------
-            print("· POST /v1/chat/completions (model=nova/air, non-stream)")
+            print("· POST /v1/chat/completions (model=routerx/air, non-stream)")
             res = await client.post(
                 "/v1/chat/completions",
                 json={
-                    "model": "nova/air",
+                    "model": "routerx/air",
                     "messages": [{"role": "user", "content": "Reply with exactly: PONG"}],
                     "max_tokens": 32,
                 },
@@ -80,7 +80,7 @@ async def main() -> int:
             choice = (payload.get("choices") or [{}])[0]
             content = (choice.get("message") or {}).get("content") or ""
             if res.status_code == 200 and content.strip():
-                check(payload.get("model") == "nova/air", "response model = requested id (spoofing)")
+                check(payload.get("model") == "routerx/air", "response model = requested id (spoofing)")
                 nova = payload.get("_nova") or {}
                 check(bool(nova.get("upstream_model")), f"_nova.upstream_model set ({nova.get('upstream_model')})")
                 check(bool(nova.get("provider")), f"_nova.provider set ({nova.get('provider')})")
@@ -96,7 +96,7 @@ async def main() -> int:
             res = await client.post(
                 "/v1/messages/count_tokens",
                 json={
-                    "model": "nova/air",
+                    "model": "routerx/air",
                     "messages": [{"role": "user", "content": "hello there"}],
                     "tools": [
                         {
@@ -119,7 +119,7 @@ async def main() -> int:
                 "POST",
                 "/v1/messages",
                 json={
-                    "model": "nova/air",
+                    "model": "routerx/air",
                     "max_tokens": 64,
                     "stream": True,
                     "messages": [{"role": "user", "content": "Say hi in one short word."}],
@@ -178,7 +178,7 @@ async def main() -> int:
             res = await client.post(
                 "/v1/messages",
                 json={
-                    "model": "nova/air",
+                    "model": "routerx/air",
                     "max_tokens": 32,
                     "messages": [{"role": "user", "content": "Reply with exactly: PONG"}],
                 },

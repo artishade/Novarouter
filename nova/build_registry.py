@@ -4,7 +4,7 @@ Root@Build cloud terminal.
 Two pieces live here:
 
   BUILD_PROVIDERS — the permanent catalogue of extendable cloud config
-  targets shown in the Nova Console storage panel (Cloudflare R2, Google
+  targets shown in the RouterX Console storage panel (Cloudflare R2, Google
   Cloud Storage, AWS S3, Backblaze B2, Azure Blob, plus an S3-compatible
   custom row). Each entry describes which credential fields the web UI
   asks for; values are stored in StorageProviderRow.config by the storage
@@ -35,7 +35,7 @@ log = logging.getLogger("nova.build_registry")
 # Base workspace location — /app/build, separate from the project files
 # --------------------------------------------------------------------------- #
 # Builder agents and user shell sessions work here instead of inside the
-# gateway's own code tree, so builds can never clobber NovaRouter itself.
+# gateway's own code tree, so builds can never clobber RouterX itself.
 # Overridable with NOVA_BUILD_ROOT (absolute path).
 
 DEFAULT_BUILD_ROOT = Path("/app/build")
@@ -161,7 +161,7 @@ BUILTIN_TOOLS_FLAG = "agent_builtin_tools_registered"
 def build_root() -> Path:
     """The builder workspace base location (`/app/build`), created on demand.
 
-    Always outside the NovaRouter source tree — agent writes, `npm create`
+    Always outside the RouterX source tree — agent writes, `npm create`
     scaffolds, venvs and node_modules land here, never in the app's files.
     """
     root = _resolve_build_root()

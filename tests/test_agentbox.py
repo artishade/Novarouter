@@ -10,7 +10,7 @@ configured with. What matters, and what is easy to get wrong:
     that is the whole promise ("every command the agent runs appears in a tab")
   · an unconfigured host must say so, not fail with a stack trace or quietly
     pretend the agent exists
-  · the terminal has to import and boot with no NovaRouter app at all, because
+  · the terminal has to import and boot with no RouterX app at all, because
     a terminal is often deployed on its own
 """
 import asyncio
@@ -345,7 +345,7 @@ class AgentboxRunTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TerminalIsStandaloneTests(unittest.TestCase):
-    """`terminal/` must import and work with no NovaRouter app present — that
+    """`terminal/` must import and work with no RouterX app present — that
     is what makes "host only the terminal" a deployment, not a fork."""
 
     HOST_MODULES = ["__init__.py", "config.py", "pty.py", "link.py",
@@ -361,13 +361,15 @@ class TerminalIsStandaloneTests(unittest.TestCase):
                 self.assertNotIn("nova.", source)
 
     def test_the_package_imports_with_nova_blocked(self):
+        # Python 3.12 dropped the legacy find_module/load_module protocol, so
+        # block `nova` through find_spec (raising ImportError from a meta path
+        # finder swallows the import exactly like a missing module).
         script = (
             "import sys\n"
             "class Block:\n"
-            "    def find_module(self, name, path=None):\n"
-            "        if name.split('.')[0] == 'nova': return self\n"
-            "    def load_module(self, name):\n"
-            "        raise ImportError(name)\n"
+            "    def find_spec(self, name, path=None, target=None):\n"
+            "        if name.split('.')[0] == 'nova': raise ImportError(name)\n"
+            "        return None\n"
             "sys.meta_path.insert(0, Block())\n"
             "import terminal, terminal.service, terminal.agentbox, terminal.sandbox\n"
             "assert terminal.sandbox.APP_AVAILABLE is False\n"

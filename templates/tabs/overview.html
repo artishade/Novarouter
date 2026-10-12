@@ -1,4 +1,4 @@
-{# Overview tab — port of OverviewTab.tsx (KPI grid, NovaFree banner, provider health, recent activity, quick actions) #}
+{# Overview tab — port of OverviewTab.tsx (KPI grid, RouterX Free banner, provider health, recent activity, quick actions) #}
 {% macro badge_emerald() -%}
 <span class="inline-flex items-center rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-300">{{ caller() }}</span>
 {%- endmacro %}
@@ -30,7 +30,7 @@
     {% endfor %}
   </div>
 
-  {# (b) NovaFree engine banner #}
+  {# (b) RouterX Free engine banner #}
   <div class="rounded-xl bg-gradient-to-r from-emerald-500/60 via-emerald-400/20 to-emerald-500/60 p-[1px]">
     <div class="flex flex-col gap-4 rounded-[11px] bg-[#0d1322] p-5 sm:flex-row sm:items-center">
       <div class="flex size-11 shrink-0 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
@@ -38,7 +38,7 @@
       </div>
       <div class="min-w-0 flex-1">
         <div class="flex flex-wrap items-center gap-2">
-          <h2 class="text-sm font-semibold text-slate-100">NovaFree Engine</h2>
+          <h2 class="text-sm font-semibold text-slate-100">RouterX Free Engine</h2>
           {% call badge_emerald() %}zero API keys{% endcall %}
           {% call badge_emerald() %}automatic fallback{% endcall %}
           {% if meta and meta.fallback and meta.fallback.spoof_model %}
@@ -47,9 +47,9 @@
           {% call badge_emerald() %}always free{% endcall %}
         </div>
         <p class="mt-1.5 text-xs leading-relaxed text-slate-400">
-          NovaRouter ships with built-in NovaFree models that work with no upstream account.
+          RouterX ships with built-in RouterX Free models that work with no upstream account.
           When a provider fails, cools down, or has no key left, requests fall back to the
-          NovaFree engine automatically — with identity spoofing so clients keep seeing the
+          RouterX Free engine automatically — with identity spoofing so clients keep seeing the
           model they asked for.
         </p>
       </div>

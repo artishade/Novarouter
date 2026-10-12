@@ -18,13 +18,13 @@
         <div class="mb-4 grid gap-2 sm:grid-cols-2">
           <button type="button" class="np-preset rounded-lg border border-slate-700 bg-black/20 p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5"
             data-custom="0" data-name="Cloudflare Worker (OpenAI-compatible)" data-kind="openai" data-prefix="worker/" data-priority="95" data-key-hint="Worker bearer token"
-            data-url-hint="https://your-worker.your-subdomain.workers.dev/v1" data-guidance="OpenAI-compatible Worker endpoint. Enter the deployed API root; NovaRouter appends /models and /chat/completions. Automatic discovery requires /models and an upstream key."
+            data-url-hint="https://your-worker.your-subdomain.workers.dev/v1" data-guidance="OpenAI-compatible Worker endpoint. Enter the deployed API root; RouterX appends /models and /chat/completions. Automatic discovery requires /models and an upstream key."
             aria-label="Add Cloudflare Worker OpenAI-compatible endpoint">
             <span class="block text-sm font-medium text-slate-200">Cloudflare Worker</span><span class="mt-1 block text-[11px] text-slate-500">Your deployed OpenAI-compatible Worker · custom URL</span>
           </button>
           <button type="button" class="np-preset rounded-lg border border-slate-700 bg-black/20 p-3 text-left hover:border-emerald-500/60 hover:bg-emerald-500/5"
             data-custom="0" data-name="Custom OpenAI-compatible gateway" data-kind="openai" data-prefix="gateway/" data-priority="95" data-key-hint="Gateway API key"
-            data-url-hint="https://gateway.example.com/v1" data-guidance="OpenAI-compatible upstream gateway. Use its API root (often /v1), not the full /chat/completions path. Do not point this at NovaRouter itself."
+            data-url-hint="https://gateway.example.com/v1" data-guidance="OpenAI-compatible upstream gateway. Use its API root (often /v1), not the full /chat/completions path. Do not point this at RouterX itself."
             aria-label="Add custom OpenAI-compatible gateway">
             <span class="block text-sm font-medium text-slate-200">Custom gateway API</span><span class="mt-1 block text-[11px] text-slate-500">OpenAI-compatible upstream · custom URL</span>
           </button>
@@ -171,7 +171,7 @@
     <input type="hidden" name="id" id="np-si-id" value="" />
     <h3 id="np-si-title" class="text-base font-semibold text-slate-100">Sign in to <span id="np-si-name">provider</span></h3>
     <p class="mt-0.5 text-xs text-slate-500">
-      Two quick steps: grab an API key from the provider console, then paste it here. NovaRouter stores it as an
+      Two quick steps: grab an API key from the provider console, then paste it here. RouterX stores it as an
       upstream key and marks the provider connected.
     </p>
 
@@ -256,7 +256,7 @@
     var guide = $('np-protocol');
     if (guide) guide.textContent = btn.dataset.guidance || (btn.dataset.kind === 'anthropic'
       ? 'Native Anthropic Messages API: enter the origin without /v1. It is not an OpenAI-compatible endpoint.'
-      : 'OpenAI-compatible API: enter the root URL, usually ending in /v1. NovaRouter appends /models and /chat/completions.');
+      : 'OpenAI-compatible API: enter the root URL, usually ending in /v1. RouterX appends /models and /chat/completions.');
     var pr = btn.dataset.priority || '50';
     set('np-priority', pr);
     var pv = $('np-priority-val'); if (pv) pv.textContent = pr;

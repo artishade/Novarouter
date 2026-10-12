@@ -1,4 +1,4 @@
-"""Terminal link — the one seam between NovaRouter and its terminal.
+"""Terminal link — the one seam between RouterX and its terminal.
 
 The interactive terminal can be hosted **separately** from the rest of the
 app (its own process, its own port, another machine) while the project stays

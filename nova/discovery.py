@@ -1,7 +1,7 @@
 """Live model discovery — Python port of src/lib/server/model-discovery.ts.
 
 Queries each enabled provider's real /models endpoint so the gateway,
-dashboard and Nova Agent see what is ACTUALLY available upstream right now.
+dashboard and RouterX Agent see what is ACTUALLY available upstream right now.
 
 Wire formats handled:
   • OpenAI-compatible providers → GET {base}/models (Bearer)

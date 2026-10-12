@@ -1,5 +1,5 @@
 services:
-  novarouter:
+  routerx:
     build: .
     ports:
       - "${PORT:-10000}:${PORT:-10000}"
@@ -39,7 +39,7 @@ services:
       - NOVA_TERMINAL_PORT=3100
       # Same shared secret the gateway sends. It grants root access, so set it.
       - NOVA_TERMINAL_TOKEN=${NOVA_TERMINAL_TOKEN:-}
-      # Agentbox: any OpenAI-compatible /v1 endpoint, or a NovaRouter /v1.
+      # Agentbox: any OpenAI-compatible /v1 endpoint, or a RouterX /v1.
       - NOVA_AGENTBOX_BASE_URL=${NOVA_AGENTBOX_BASE_URL:-}
       - NOVA_AGENTBOX_API_KEY=${NOVA_AGENTBOX_API_KEY:-}
       - NOVA_AGENTBOX_MODEL=${NOVA_AGENTBOX_MODEL:-}

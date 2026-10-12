@@ -42,9 +42,9 @@
       <div>
         <p class="text-sm font-semibold text-emerald-300">Identity spoofing keeps clients happy</p>
         <p class="mt-1 text-sm text-slate-400">
-          When a model is down, NovaRouter retries the chain and still answers with the model id the
-          client asked for. Stage 1 tries the model directly, stage 2 walks your explicit chain, and
-          stage 3 picks healthy free stand-ins when auto is enabled.
+          When a model is down, RouterX retries the chain and still answers with the model id the
+          client asked for. Stage 1 tries the model directly, stage 2 walks your explicit chain, and stage 3 falls back onto your other
+          healthy, enabled providers when auto is enabled.
           {{ 'Spoofing is currently ON.' if (meta and meta.fallback and meta.fallback.spoof_model) else 'Spoofing is currently OFF.' }}
         </p>
       </div>

@@ -1,4 +1,4 @@
-# NovaRouter — Feature Recipes (how to customize common things)
+# RouterX — Feature Recipes (how to customize common things)
 
 Fast paths for the most common customization requests. Each recipe lists the
 exact files to touch, in order. Read `conventions.md` for the invariants behind
@@ -63,7 +63,7 @@ then `sh scripts/test.sh`.
 ## 6. Change gateway routing / fallback behavior
 
 1. Pipeline lives in `routers/gateway.py` `chat_completions` — stages: direct →
-   route chain (`ModelRoute` public_id match, else `*`) → NovaFree engine.
+   route chain (`ModelRoute` public_id match, else `*`) → RouterX Free engine.
 2. Preserve invariants #14–17: spoofed `model` field, `_nova` metadata, honest
    502 from the engine, RequestLog on every branch (including errors).
 3. Route-resolution helpers + `/api/admin/routes/preview` (Stage 1/2/3 timeline)
@@ -100,7 +100,7 @@ then `sh scripts/test.sh`.
 1. Sidecar code: `engine/index.js` (zero npm deps — plain fetch/routing only).
 2. Catalogue: `engine/free-models.json` (snapshot of ClawLabsAI/free-ai-models).
    Refresh via `POST /api/admin/models/sync` or regenerate from upstream repo.
-3. Tier aliases (`nova/pro`, `nova/air`, `nova/mini`) resolve in `nova/freemodels.py`.
+3. Tier aliases (`routerx/pro`, `routerx/air`, `routerx/mini`) resolve in `nova/freemodels.py`.
 4. Sidecar lifecycle/port: `nova/engine.py` + `NOVA_ENGINE_PORT` in `nova/config.py`
    (never the app's port). If the sidecar can't run, the gateway degrades to
    configured upstreams — keep that honest.

@@ -1,4 +1,4 @@
-/* NovaRouter Python UI — shell behaviour + shared helpers.
+/* RouterX Python UI — shell behaviour + shared helpers.
  * Vanilla JS over HTMX; Alpine is available to tab modules for local state.
  */
 (() => {
@@ -85,7 +85,7 @@
 
   function nav(tab) {
     if (!tab || !document.querySelector(`#sidebar .nav-item[data-tab="${tab}"]`)) return;
-    /* The merged Nova Console entry is a standalone cloud workspace page —
+    /* The merged RouterX Console entry is a standalone cloud workspace page —
      * it opens in its own browser tab instead of swapping the dashboard. */
     if (tab === 'terminal') {
       window.open('/terminal', '_blank', 'noopener');

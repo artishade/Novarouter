@@ -1,4 +1,4 @@
-# NovaRouter — Deep Project Map (Python/FastAPI era)
+# RouterX — Deep Project Map (Python/FastAPI era)
 
 > Python-port reality. The historical Next.js layout (`src/app/api/**`, `src/lib/**`)
 > in `api-contract.md` no longer exists in this repo — the Python modules below are
@@ -32,7 +32,7 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 | `config.py` | Env handling: `PORT`, `DATABASE_URL` normalization (Prisma-style `file:` / `postgres://` accepted), `IS_POSTGRES`, `PUBLIC_BASE_URL`/`public_base_url()`, `ENGINE_SIDECAR_PORT` (3099, steps aside if it collides with app port), `CORS_ALLOW_ORIGINS`, `slugify()` |
 | `database.py` | SQLAlchemy engine + `SessionLocal`; `get_db()` FastAPI dependency; `ping()`; `ensure_sqlite_dir()` |
 | `models.py` | All ORM rows (single source of schema truth): Provider, ProviderKey, Model, ModelRoute, ClientKey, RequestLog, TerminalCommand, SystemConfig (KV), StorageProviderRow, StorageFile, AgentTask, AgentStep, ProviderSession, McpServer. `utcnow()` helper |
-| `bootstrap.py` | First-boot: additive table creation + seeds NovaFree engine + gateway config + the OmniRoute provider/model catalogue. Never destructive, never mock data |
+| `bootstrap.py` | First-boot: additive table creation + seeds RouterX Free engine + gateway config + the OmniRoute provider/model catalogue. Never destructive, never mock data |
 | `catalog.py` | Read-only accessor over `nova/data/provider_registry.json` (the OmniRoute registry, ported): provider/model lookup, `resolve()` (exact → basename → longest-prefix), capabilities, `glob_match()`, and the model exposure allow/deny predicate. Database-free, JSON loaded lazily |
 | `routing.py` | The routing brain, ported from the OmniRoute domain/autoCombo layer: `tagRouter` (request `metadata.tags`), `policyEngine` (access/routing/budget, glob-matched), `accountFallback` + `lockoutPolicy` (`LockoutRegistry`, `ClientLockouts`), `fallbackPolicy` (per-model chains with priority + exclusion), combo strategies (priority/weighted/round-robin/random/least-used/cost-optimized), router strategies (rules/cost/latency/sla/lkgp), weighted `score_candidates`, and `build_plan()` which folds all of it into a dispatch plan plus an audit trail. Pure functions, no I/O |
 | `router_settings.py` | The persisted half of the router: `RouterSettings` loaded from / saved to `SystemConfig` (strategy, weights, lockout tuning, policies, chains, exposure lists) + lockout flush/load |
@@ -41,7 +41,7 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 | `provider_transport.py` | Wire-format translators: `openai_to_anthropic`, `anthropic_to_openai`, `anthropic_url`, `anthropic_headers` (incl. tool calls/results) |
 | `discovery.py` | Live model discovery: `discover_provider_models(provider)`, `aggregate_discovery()` for `?discover=1` |
 | `syncengine.py` | Catalogue sync: `sync_provider(provider)` upserts models from upstream `/models` |
-| `freemodels.py` | Loads `engine/free-models.json` (snapshot of ClawLabsAI/free-ai-models); feeds NovaFree tiers `nova/pro`, `nova/air`, `nova/mini` |
+| `freemodels.py` | Loads `engine/free-models.json` (snapshot of ClawLabsAI/free-ai-models); feeds RouterX Free tiers `routerx/pro`, `routerx/air`, `routerx/mini` |
 | `terminal/` | **The whole terminal feature, one path, self-contained** (imports nothing from `nova/`, needs no DB, so it deploys alone) — `pty.py`: real PTY session manager for Terminal tab sessions (`close_all()` on shutdown, OSC 7 cwd reporting, max 8 sessions, 30-min idle reap). `sandbox.py`: simulated allowlist executor (~1200 lines, no child processes, real OS telemetry, dangerous-token blocklist exit 126 / unknown exit 127) — the one module that borrows the app (history + `nova …`), degrading with an honest message when it isn't there. `link.py`: the seam (`LocalLink` in-process / `RemoteLink` over HTTP+SSE, `current()`/`pin()`/`is_remote()`). `api.py`: the HTTP contract mounted by BOTH hosts. `agentbox.py`: the AI agent served at `/agent/*` (tools run in visible PTY tabs) with a **custom provider registry** — `GET/POST/DELETE /agent/providers`, saved `0600` beside the workspace, keys only ever echoed masked, and the env-configured one (id `env`) kept as the default. No providers at all → honestly off (`agentbox_unconfigured`). `agentbox.html`: its page (shell tabs + chat + a providers panel). `service.py`: the standalone host (`python3 -m terminal.service`). `config.py`: every `NOVA_TERMINAL_*` / `NOVA_AGENTBOX_*` knob. `Dockerfile` + `requirements.txt`: build `./terminal` alone. `terminal/README.md` has the hosting notes |
 | `agent.py` | Autonomous runner: plan (LLM strict JSON) → execute tool → persist AgentStep → repeat until `finish`/step limit → final summary. Tools: web_search, read_url, terminal, gateway_stats, storage_scan, discover_models, write_file, read_file, edit_file, mkdir, bash_exec, **mcp_call**. `agent_llm()` = engine sidecar first, this server's own `/v1/chat/completions` as fallback (`_default_model_id()` resolves `auto` to a healthy enabled model). Each DB touch opens its own SessionLocal; cancellation checked per loop. Async callable handed to FastAPI BackgroundTasks |
 | `storage_lib.py` | Storage providers (Firebase/Supabase/B2/R2/GitHub…), backups, file ops |
@@ -84,7 +84,7 @@ gateway log middleware in `main.py` also records every `/v1/*` call to `RequestL
 
 ## Data flow examples
 
-**Chat completion:** client → `POST /v1/chat/completions` → resolve ModelRoute (public_id match, else `*`) → Stage 1 direct upstream (enabled key) → Stage 2..N explicit fallback chain → final stage NovaFree engine (`nova_engine` client → sidecar) → response `model` = requested id, `_nova` = truth (upstream_model, provider, stage, spoofed) → `RequestLog` row.
+**Chat completion:** client → `POST /v1/chat/completions` → resolve ModelRoute (public_id match, else `*`) → Stage 1 direct upstream (enabled key) → Stage 2..N explicit fallback chain → final stage RouterX Free engine (`nova_engine` client → sidecar) → response `model` = requested id, `_nova` = truth (upstream_model, provider, stage, spoofed) → `RequestLog` row.
 
 **Dashboard interaction:** browser HTMX → `GET /partials/tab/models` → `ui/tabs/models.py` renders `tabs/models.html` → fragment swapped into `#tab-content`; buttons POST to `/ui/models/...` → BFF calls `/api/admin/models/...` → re-render partial.
 

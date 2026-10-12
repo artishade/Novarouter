@@ -110,7 +110,7 @@ def _vm_peak_kb() -> int:
 
 PRESETS: list[dict] = [
     {
-        "key": "novafree", "name": "NovaFree Engine", "kind": "builtin",
+        "key": "novafree", "name": "RouterX Free Engine", "kind": "builtin",
         "base_url": "internal://nova-engine", "prefix": "nova/", "key_hint": "no key needed",
         "free_tier": "Built-in — every model here is free, no key required",
         "docs_url": "https://github.com/artishade/Novarouter", "auth_url": None,

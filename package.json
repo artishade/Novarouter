@@ -1,8 +1,8 @@
 {
-  "name": "novarouter",
+  "name": "routerx",
   "version": "2.0.0",
   "private": true,
-  "description": "NovaRouter — AI gateway (FastAPI + Jinja2 UI). `bun run dev` starts the Python server; bun itself hosts only the NovaFree engine sidecar. The Root@Build terminal runs in-process by default and can be hosted on its own with `bun run terminal`.",
+  "description": "RouterX — AI gateway (FastAPI + Jinja2 UI). `bun run dev` starts the Python server; bun itself hosts only the RouterX Free engine sidecar. The Root@Build terminal runs in-process by default and can be hosted on its own with `bun run terminal`.",
   "scripts": {
     "preview": "sh ./scripts/preview.sh",
     "terminal": "sh ./terminal/run.sh",

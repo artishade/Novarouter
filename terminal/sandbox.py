@@ -1,4 +1,4 @@
-"""NovaRouter safe sandbox executor — port of src/lib/server/terminal-exec.ts.
+"""RouterX safe sandbox executor — port of src/lib/server/terminal-exec.ts.
 
 Lives in `terminal/` with the rest of the terminal feature (see
 `terminal/__init__.py`); imported as `terminal.sandbox`.
@@ -13,7 +13,7 @@ An allowlist governs what may run; anything dangerous exits 126, anything
 unknown exits 127. Every execution is persisted (TerminalCommand, capped at
 200 rows).
 
-This is the ONE terminal module that borrows the NovaRouter app: the command
+This is the ONE terminal module that borrows the RouterX app: the command
 history and the `nova …` subcommands are gateway state. Those imports are
 optional, so a terminal deployed on its own still boots and still runs the
 sandboxed file/shell helpers — it just says so plainly when you ask for
@@ -67,7 +67,7 @@ except Exception:  # noqa: BLE001 — a standalone terminal has no app, no DB
 PROJECT_ROOT = PACKAGE_ROOT
 
 NO_APP = (
-    "the NovaRouter gateway is not attached to this terminal (only the "
+    "the RouterX gateway is not attached to this terminal (only the "
     "terminal is hosted here), so this has no database to read"
 )
 
@@ -189,7 +189,7 @@ ALLOWED = {
     "mkdir", "touch", "write", "read", "edit", "bash", "python3", "pip", "bun", "npm",
 }
 
-HELP_TEXT = """NovaRouter terminal — a REAL root shell with full freedom.
+HELP_TEXT = """RouterX terminal — a REAL root shell with full freedom.
 
 Every command runs through /bin/bash on this machine as root: git, apt,
 curl, pip, pipes, redirects, env vars, background jobs — all real.
@@ -212,7 +212,7 @@ The only refusals are host-destroying commands (rm -rf /, fork bombs,
 mkfs, raw disk writes, shutdown/reboot) — exit 126. A command that runs
 longer than 90s is killed with exit 124 (use `nohup … &` for daemons)."""
 
-NOVA_HELP_TEXT = """nova — NovaRouter gateway control
+NOVA_HELP_TEXT = """nova — RouterX gateway control
 
   nova status         gateway snapshot — providers, models, latency, memory, gpu
   nova models [n]     top requested models in the last 48h (default 10)
@@ -636,7 +636,7 @@ def uname_line(args: list[str]) -> str:
     rel = platform.release()
     arch = platform.machine()
     if "a" in flags:
-        return f"{sys_name} {host} {rel} #1-NovaRouter SMP {arch} {arch} {arch} GNU/Linux"
+        return f"{sys_name} {host} {rel} #1-RouterX SMP {arch} {arch} {arch} GNU/Linux"
     if "s" in flags:
         return sys_name
     if "r" in flags:
@@ -788,7 +788,7 @@ def nova_status(db: Session) -> dict:
     gpu_enabled = gpu_enabled_raw not in ("0", "false")
     enabled_count = sum(1 for g in gpus if g["enabled"])
     return _ok("\n".join([
-        f"⚡ NovaRouter gateway — {provider_count} providers · {model_count} models · {route_count} fallback routes",
+        f"⚡ RouterX gateway — {provider_count} providers · {model_count} models · {route_count} fallback routes",
         f"   uptime: {fmt_uptime_short(int(uptime_ms))} · requests (24h): {reqs} · avg latency: {avg_lat}ms · cache hit rate: {cache_pct}%",
         f"   memory: {totalmem_mb()} MB total · {freemem_mb()} MB available · swap {swap_mb} MB · "
         f"gpu {'enabled' if gpu_enabled else 'disabled'} — {enabled_count}/{len(gpus)} providers enabled",

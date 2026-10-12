@@ -46,9 +46,18 @@ def _err_message(err: BaseException) -> str:
     return f"API request failed: {err.__class__.__name__}"
 
 
-async def _model_options() -> list[dict[str, Any]]:
-    """Exposed ids for the fallback picker (Model[] in the TSX)."""
-    res = await _safe_get("/api/admin/models")
+async def _model_options(query: str = "", limit: int = 60) -> list[dict[str, Any]]:
+    """Exposed ids for the fallback picker (Model[] in the TSX).
+
+    The catalogue can hold thousands of models, so the dialog renders a bounded
+    window and searches the rest server-side through the very same
+    `/api/admin/models?search=` filter the Models tab uses.
+    """
+    params: dict[str, Any] = {"limit": limit}
+    query = (query or "").strip()
+    if query:
+        params["search"] = query
+    res = await _safe_get("/api/admin/models", params=params)
     rows = (res or {}).get("rows") or []
     return [{"id": m.get("id"), "exposed_id": m.get("exposed_id") or ""} for m in rows]
 
@@ -123,6 +132,17 @@ async def routes_form(request: Request) -> HTMLResponse:
             error=None,
         )
     )
+
+
+# --------------------------------------------------------------------------- #
+# GET /ui/routes/models — live model search for the fallback picker
+# --------------------------------------------------------------------------- #
+
+@router.get("/ui/routes/models")
+async def routes_models(request: Request) -> HTMLResponse:
+    """Search the model catalogue while building a fallback chain."""
+    query = (request.query_params.get("q") or "").strip()
+    return html(render("partials/routes_models.html", models=await _model_options(query)))
 
 
 # --------------------------------------------------------------------------- #

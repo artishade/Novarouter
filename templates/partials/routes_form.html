@@ -8,7 +8,7 @@
       <h3 class="text-base font-semibold text-slate-100">{{ 'Edit route' if editing else 'New fallback route' }}</h3>
       <p class="mt-1 text-sm text-slate-500">
         Map a public model id to an ordered chain of upstream models. Clients keep asking for the
-        public id — NovaRouter walks the chain until one answers.
+        public id — RouterX walks the chain until one answers.
       </p>
       {% if error %}
       <p class="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{{ error }}</p>
@@ -30,19 +30,17 @@
         </div>
 
         <div class="space-y-1.5">
-          <label class="text-sm font-medium text-slate-300">Pick fallback models (in order)</label>
-          <div class="max-h-40 overflow-y-auto rounded-lg border border-slate-800 bg-black/20 p-2.5">
-            <div class="flex flex-wrap gap-1.5">
-              {% if models | length == 0 %}
-              <span class="text-[11px] text-slate-600">No models in the catalogue yet.</span>
-              {% endif %}
-              {% for m in models %}
-              <button type="button" x-data='{ id: {{ m.exposed_id | tojson }} }' @click="toggle(id)"
-                :aria-pressed="fallbacks.includes(id)" :aria-label="(fallbacks.includes(id) ? 'Remove ' : 'Add ') + id + ' to chain'"
-                :class="fallbacks.includes(id) ? 'border-emerald-700/70 bg-emerald-950/50 text-emerald-300' : 'border-slate-800 bg-black/30 text-slate-400 hover:border-slate-600 hover:text-slate-200'"
-                class="rounded-md border px-2 py-1 font-mono text-[11px] transition">{{ m.exposed_id }}</button>
-              {% endfor %}
-            </div>
+          <label for="rt-model-search" class="text-sm font-medium text-slate-300">Pick fallback models (in order)</label>
+          <div class="relative">
+            <i data-lucide="search" class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-600"></i>
+            <input id="rt-model-search" type="search" name="q" value="" placeholder="Search models — e.g. claude, gpt-4, qwen, free…"
+              autocomplete="off" spellcheck="false" aria-label="Search models to add to the fallback chain"
+              hx-get="/ui/routes/models" hx-trigger="input changed delay:250ms, search" hx-target="#rt-model-list" hx-swap="innerHTML"
+              @keydown.enter.prevent
+              class="w-full rounded-md border border-slate-800 bg-[#070b13] py-2 pl-8 pr-3 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-emerald-500/50" />
+          </div>
+          <div id="rt-model-list" class="max-h-44 overflow-y-auto rounded-lg border border-slate-800 bg-black/20 p-2.5">
+            {% include 'partials/routes_models.html' %}
           </div>
         </div>
 
@@ -82,7 +80,7 @@
             <span class="absolute left-0.5 size-4 rounded-full bg-slate-300 transition-transform peer-checked:translate-x-4"></span>
           </label>
           <label for="rt-auto" class="text-xs text-slate-300">Auto stand-ins</label>
-          <span class="text-[11px] text-slate-500">When the chain is exhausted, healthy free models step in automatically.</span>
+          <span class="text-[11px] text-slate-500">When the chain is exhausted, your other healthy, enabled providers stand in automatically.</span>
         </div>
       </div>
 

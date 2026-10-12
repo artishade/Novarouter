@@ -433,7 +433,7 @@ class ClientLockouts:
 # Scoring + strategies — port of autoCombo/scoring.ts + routerStrategy.ts
 # --------------------------------------------------------------------------- #
 
-# OmniRoute's DEFAULT_WEIGHTS, trimmed to the factors NovaRouter can actually
+# OmniRoute's DEFAULT_WEIGHTS, trimmed to the factors RouterX can actually
 # observe from `RequestLog` + `Model` (quota/health/cost/latency/reliability/
 # quality/stability). Sums to 1.0.
 DEFAULT_WEIGHTS: dict[str, float] = {

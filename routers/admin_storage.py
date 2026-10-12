@@ -479,7 +479,7 @@ def create_backup(db: Session = Depends(get_db)):
 
     active_provider = active_row or fallback_row
     provider_key = active_provider.id if active_provider else "local_disk"
-    provider_name = active_provider.name if active_provider else "NovaVault (Local Disk)"
+    provider_name = active_provider.name if active_provider else "RouterX Vault (Local Disk)"
 
     snapshot = {
         "providers": [

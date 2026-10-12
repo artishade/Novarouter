@@ -1,6 +1,6 @@
 """Free AI model catalogue — base model list from ClawLabsAI/free-ai-models.
 
-This is the model base for the built-in NovaFree engine. The bundled snapshot
+This is the model base for the built-in RouterX Free engine. The bundled snapshot
 lives at ``engine/free-models.json`` — the exact same file the engine sidecar
 reads — and can be refreshed from the upstream repository on demand.
 
@@ -94,27 +94,27 @@ def _capabilities(model: dict) -> dict:
 # working; the engine resolves each one onto the best free model available.
 ENGINE_ALIASES = [
     {
-        "modelId": "nova-pro",
-        "exposedId": "nova/pro",
-        "displayName": "Nova Pro",
+        "modelId": "routerx-pro",
+        "exposedId": "routerx/pro",
+        "displayName": "RouterX Pro",
         "ctx": 65536,
         "maxOut": 16384,
         "caps": {"tools": True, "vision": True, "reasoning": True},
         "description": "Built-in free engine. Best available free model, largest context.",
     },
     {
-        "modelId": "nova-air",
-        "exposedId": "nova/air",
-        "displayName": "Nova Air",
+        "modelId": "routerx-air",
+        "exposedId": "routerx/air",
+        "displayName": "RouterX Air",
         "ctx": 32768,
         "maxOut": 8192,
         "caps": {"tools": True, "vision": True, "reasoning": True},
         "description": "Built-in free engine. Balanced speed and quality, always available.",
     },
     {
-        "modelId": "nova-mini",
-        "exposedId": "nova/mini",
-        "displayName": "Nova Mini",
+        "modelId": "routerx-mini",
+        "exposedId": "routerx/mini",
+        "displayName": "RouterX Mini",
         "ctx": 16384,
         "maxOut": 4096,
         "caps": {"tools": True, "vision": False, "reasoning": False},
@@ -162,7 +162,7 @@ async def refresh_catalogue(timeout: float = 15.0) -> dict:
 
     Only the ``models`` list (and its timestamp) is replaced — the local
     ``providers`` routing table is always preserved, because the upstream data
-    has no knowledge of NovaRouter's upstream URLs.
+    has no knowledge of RouterX's upstream URLs.
     """
     async with httpx.AsyncClient(timeout=timeout) as client:
         res = await client.get(UPSTREAM_URL)

@@ -1,5 +1,5 @@
 /**
- * NovaFree engine sidecar — the built-in free-model gateway.
+ * RouterX Free engine sidecar — the built-in free-model gateway.
  *
  * This is the localhost HTTP bridge between the Python gateway and the free AI
  * model set tracked by ClawLabsAI/free-ai-models (see engine/free-models.json).
@@ -67,10 +67,23 @@ function modelById(id) {
 
 /**
  * Friendly built-in tiers. Each maps to the preferred free models (best first),
- * so `nova/air` etc. keep working exactly like before while the actual model
+ * so `routerx/air` (and the legacy `nova/*` ids) keep working while the actual model
  * that answers comes from the free catalogue.
  */
 const ALIASES = {
+  'routerx/mini': ['pollinations/openai-fast', 'liquid/lfm-2.5-2.6b:free'],
+  'routerx/air': [
+    'qwen/qwen3.8-27b:free',
+    'google/gemma-4-31b-it:free',
+    'pollinations/openai',
+  ],
+  'routerx/pro': [
+    'nvidia/nemotron-3-ultra-550b-a55b:free',
+    'thinkingmachines/inkling:free',
+    'qwen/qwen3.8-27b:free',
+    'pollinations/openai',
+  ],
+  // Legacy ids kept so existing clients/deployments keep working unchanged.
   'nova/mini': ['pollinations/openai-fast', 'liquid/lfm-2.5-2.6b:free'],
   'nova/air': [
     'qwen/qwen3.8-27b:free',

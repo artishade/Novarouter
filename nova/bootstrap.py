@@ -5,7 +5,7 @@ Data-safety contract (the "git push wiped my data" fix):
      (works identically on SQLite and Postgres). Existing columns/rows are
      never dropped or altered destructively.
   2. An EMPTY database gets the real minimum seeded once: the built-in
-     NovaFree engine (provider + its model catalogue: the `nova/*` tiers plus
+     RouterX Free engine (provider + its model catalogue: the `nova/*` tiers plus
      every free model from ClawLabsAI/free-ai-models), `gateway_started_at`,
      and the real free-GPU service catalogue. Nothing fake.
   3. A NON-EMPTY database is never cleaned, purged or overwritten — not at
@@ -47,9 +47,9 @@ NOVA_ENGINE_MODELS = nova_engine_models()
 # Real free-GPU service catalogue (real providers, real free tiers) — same
 # nature as the provider preset catalogue: configuration, not telemetry.
 GPU_CATALOGUE = [
-    {"id": "novafree_gpu", "name": "NovaFree Compute", "gpu": "shared", "vram_gb": 8,
+    {"id": "novafree_gpu", "name": "RouterX Free Compute", "gpu": "shared", "vram_gb": 8,
      "free_tier": "Built-in gateway compute", "status": "available", "connected": True,
-     "hours_free": "unlimited", "region": "global", "note": "Built-in pool used by the NovaFree engine."},
+     "hours_free": "unlimited", "region": "global", "note": "Built-in pool used by the RouterX Free engine."},
     {"id": "colab", "name": "Google Colab", "gpu": "T4 16GB", "vram_gb": 16,
      "free_tier": "Free tier GPU sessions", "status": "available", "connected": False,
      "hours_free": "~4h sessions", "region": "us/eu", "note": "Attach via notebook + ngrok bridge."},
@@ -77,7 +77,7 @@ def bootstrap_minimum(db: Session) -> None:
     if provider_count == 0:
         log.info("empty database — bootstrapping the real minimum…")
         novafree = Provider(
-            key="novafree", name="NovaFree Engine", kind="builtin",
+            key="novafree", name="RouterX Free Engine", kind="builtin",
             baseUrl="internal://nova-engine", prefix="nova/", priority=1,
             color="#10b981",
             freeTier="Built-in — every model here is free, no key required",
@@ -86,7 +86,7 @@ def bootstrap_minimum(db: Session) -> None:
         db.add(novafree)
         db.flush()
         seeded = ensure_engine_models(db, novafree)
-        log.info("bootstrapped: NovaFree Engine (%s free models)", seeded)
+        log.info("bootstrapped: RouterX Free Engine (%s free models)", seeded)
     else:
         log.info("database intact — %s provider(s) found, nothing removed "
                  "(boot is additive-only; deploys never wipe data)", provider_count)

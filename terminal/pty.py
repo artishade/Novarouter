@@ -1,7 +1,7 @@
 """Persistent PTY shell sessions — a REAL interactive terminal.
 
 Self-contained: the only thing this module imports from the terminal package is
-`.config`, so `terminal/` can be hosted on its own with no NovaRouter app, no
+`.config`, so `terminal/` can be hosted on its own with no RouterX app, no
 database and no gateway.
 
 Architecture mirrors the OperitTerminalCore terminal module: a single
@@ -66,10 +66,10 @@ _PROMPT = r"\[\033[1;32m\]~ Root@Build\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]# "
 # Shown once per shell, right before the first prompt — states plainly what
 # this terminal is and what stays available in it.
 _MOTD = (
-    "NovaRouter Cloud Shell — Debian Linux, root access, permanent session.\r\n"
+    "RouterX Cloud Shell — Debian Linux, root access, permanent session.\r\n"
     "Tools stay installed for you and for background agent tasks: git, curl, python3, pip,\r\n"
     "node, bun, npm. Storage targets (Cloudflare R2 / GCS / AWS S3 / more) are managed\r\n"
-    "from the Nova Console panel. Type `nova help` for gateway commands.\r\n"
+    "from the RouterX Console panel. Type `nova help` for gateway commands.\r\n"
 )
 
 # OSC 7 (cwd report) plus a one-time MOTD. Both run from PROMPT_COMMAND so
@@ -468,9 +468,9 @@ def stop_all() -> None:
 
 
 def engine_banner() -> str | None:
-    """One extra MOTD line describing the NovaFree engine runtime, or None."""
+    """One extra MOTD line describing the RouterX Free engine runtime, or None."""
     runtime = engine_runtime()
-    return f"NovaFree engine runtime: {runtime} (sidecar auto-starts with the gateway)." if runtime else None
+    return f"RouterX Free engine runtime: {runtime} (sidecar auto-starts with the gateway)." if runtime else None
 
 
 def ensure_default() -> None:

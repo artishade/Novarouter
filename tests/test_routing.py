@@ -464,6 +464,81 @@ class GatewayRoutingTests(unittest.TestCase):
         router_settings.save(self.db, strategy="telepathy")
         self.assertEqual(router_settings.load(self.db).strategy, router_settings.DEFAULT_STRATEGY)
 
+    def _add_third_provider(self, kind="openai", status="healthy", enabled=True, base_url="https://third.test"):
+        third = Provider(key="third", name="Third", kind=kind, baseUrl=base_url,
+                         prefix="third/", priority=30, enabled=enabled)
+        self.db.add(third)
+        self.db.flush()
+        self.db.add(Model(providerId=third.id, modelId="free", exposedId="third/free",
+                          displayName="Free", status=status, latencyMs=50, isFree=True))
+        self.db.commit()
+        return third
+
+    def test_auto_standins_extend_the_chain_when_auto_is_on(self):
+        # The '*' default route turns auto on, so a failed explicit chain keeps
+        # going onto the operator's other healthy providers instead of jumping
+        # straight to the free engine.
+        self._add_third_provider()
+        route = self.db.query(ModelRoute).filter_by(publicId="primary/fast").one()
+        route.auto = True
+        self.db.commit()
+        rows, plan = self.gateway.route_request(self.db, "primary/fast")
+        self.assertEqual([r.exposedId for r in rows], ["primary/fast", "backup/slow", "third/free"])
+        self.assertEqual(plan["considered"], 3)
+
+    def test_auto_standins_skip_builtin_and_dead_providers(self):
+        self._add_third_provider()
+        builtin = Provider(key="engine", name="Engine", kind="builtin",
+                           baseUrl="internal://engine", prefix="engine/", priority=1)
+        gemini = Provider(key="gem", name="Gemini", kind="gemini",
+                          baseUrl="https://gem.test", prefix="gem/", priority=2)
+        dead = Provider(key="dead", name="Dead", kind="openai",
+                        baseUrl="https://dead.test", prefix="dead/", priority=3)
+        self.db.add_all([builtin, gemini, dead])
+        self.db.flush()
+        self.db.add_all([
+            Model(providerId=builtin.id, modelId="mini", exposedId="engine/mini", status="healthy"),
+            Model(providerId=gemini.id, modelId="pro", exposedId="gem/pro", status="healthy"),
+            Model(providerId=dead.id, modelId="gone", exposedId="dead/gone", status="dead"),
+        ])
+        self.db.commit()
+        route = self.db.query(ModelRoute).filter_by(publicId="primary/fast").one()
+        route.auto = True
+        self.db.commit()
+        rows, _plan = self.gateway.route_request(self.db, "primary/fast")
+        self.assertEqual([r.exposedId for r in rows], ["primary/fast", "backup/slow", "third/free"])
+
+    def test_auto_standins_are_opt_out_per_route(self):
+        # The explicit route in setUp sets auto=False: no stand-ins are added.
+        self._add_third_provider()
+        rows, _plan = self.gateway.route_request(self.db, "primary/fast")
+        self.assertEqual([r.exposedId for r in rows], ["primary/fast", "backup/slow"])
+
+    def test_auto_standins_cap_the_pool(self):
+        for i in range(8):
+            prov = Provider(key=f"p{i}", name=f"P{i}", kind="openai",
+                            baseUrl=f"https://p{i}.test", prefix=f"p{i}/", priority=40 + i)
+            self.db.add(prov)
+            self.db.flush()
+            self.db.add(Model(providerId=prov.id, modelId="m", exposedId=f"p{i}/m",
+                              status="healthy", latencyMs=i))
+        self.db.commit()
+        route = self.db.query(ModelRoute).filter_by(publicId="primary/fast").one()
+        route.auto = True
+        self.db.commit()
+        rows, _plan = self.gateway.route_request(self.db, "primary/fast")
+        # 2 known rows + at most AUTO_STANDIN_LIMIT
+        self.assertLessEqual(len(rows), 2 + self.gateway.AUTO_STANDIN_LIMIT)
+        self.assertGreater(len(rows), 2)
+
+    def test_persist_lockouts_is_throttled_and_never_raises(self):
+        # Regression: a missing `global` made every successful request die with
+        # UnboundLocalError the moment lockout state was flushed to the DB.
+        self.registry.record_failure("primary", "fast")
+        self.gateway.persist_lockouts(self.db, force=True)
+        self.gateway.persist_lockouts(self.db)  # throttled path
+        self.gateway.persist_lockouts(self.db, force=True)
+
     def test_a_failing_upstream_is_recorded_and_a_success_clears_it(self):
         from unittest.mock import patch
 
@@ -497,6 +572,55 @@ class GatewayRoutingTests(unittest.TestCase):
         self.assertTrue(self.registry.is_locked("primary", "fast"))
         self.gateway.note_attempt(row, True)
         self.assertFalse(self.registry.is_locked("primary", "fast"))
+
+
+class StreamHeartbeatTests(unittest.IsolatedAsyncioTestCase):
+    """A heartbeat must never tear down the upstream read it is watching."""
+
+    async def test_heartbeats_interleave_without_cancelling_the_read(self):
+        from unittest.mock import patch
+
+        from routers import gateway
+
+        async def upstream():
+            await asyncio.sleep(0.2)  # long prefill: silent past the heartbeat
+            yield {"text": "he", "finish_reason": None, "tool_calls": None}
+            yield {"text": "llo", "finish_reason": None, "tool_calls": None}
+
+        with patch.object(gateway, "SSE_HEARTBEAT_S", 0.03):
+            pieces = gateway._iterate_with_heartbeat(upstream(), b": hb\n\n")
+            kinds = []
+            first = None
+            async for kind, value in pieces:
+                kinds.append(kind)
+                if kind == "hb":
+                    continue
+                if kind == "piece":
+                    first = value
+                break
+            rest = []
+            async for kind, value in pieces:
+                if kind == "hb":
+                    continue
+                if kind == "eof":
+                    break
+                rest.append(value["text"])
+        self.assertIn("hb", kinds, "a silent upstream must produce a heartbeat")
+        self.assertEqual(first["text"], "he", "the real first chunk must still arrive")
+        self.assertEqual(rest, ["llo"], "the rest of the stream must survive the heartbeat")
+
+    async def test_a_finished_stream_reports_eof(self):
+        from routers import gateway
+
+        async def empty():
+            return
+            yield  # pragma: no cover
+
+        async for kind, _value in gateway._iterate_with_heartbeat(empty(), b": hb\n\n"):
+            self.assertEqual(kind, "eof")
+            break
+        else:  # pragma: no cover
+            self.fail("expected an eof marker")
 
 
 if __name__ == "__main__":

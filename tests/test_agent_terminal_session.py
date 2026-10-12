@@ -94,7 +94,7 @@ class AgentSessionTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(out, "one\ntwo\nthree")
         # The banner the login shell prints belongs to the first command only.
-        self.assertNotIn("NovaRouter Cloud Shell", out)
+        self.assertNotIn("RouterX Cloud Shell", out)
 
 
     def test_each_task_gets_its_own_tab(self):
@@ -126,7 +126,10 @@ class AgentSessionTests(unittest.TestCase):
         second = pty.agent_session(pty.agent_label("task two"))
         out, code = pty.run_in_session(second, "pwd", timeout=30)
         self.assertEqual(code, 0)
-        self.assertIn("/app/build", out)      # fresh shell, not /tmp
+        # A fresh shell starts in the configured build root (/app/build in the
+        # image, a package-local dir for an unprivileged local run), not /tmp.
+        from terminal.config import build_root
+        self.assertIn(str(build_root()), out)
         self.assertEqual(pty.agent_session(first.label), first)
 
 
@@ -165,8 +168,12 @@ class AgentToolRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_terminal_runs_in_the_live_session(self):
         from nova import agent
 
+        import os
+        import pwd
         out = await agent.tool_terminal("whoami")
-        self.assertIn("root", out)
+        # The live shell runs as the server's own user (root in the image,
+        # the invoking user for an unprivileged local run).
+        self.assertIn(pwd.getpwuid(os.geteuid()).pw_name, out)
         self.assertIn("agent", [s["label"] for s in pty.manager.list_sessions()])
 
     async def test_falls_back_when_no_session_can_be_had(self):

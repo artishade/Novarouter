@@ -1,10 +1,10 @@
-"""Nova Console + Terminal workspace — one unified cloud shell page.
+"""RouterX Console + Terminal workspace — one unified cloud shell page.
 
-The sidebar "Nova Console" entry opens this as a FULL standalone page in a
+The sidebar "RouterX Console" entry opens this as a FULL standalone page in a
 new browser tab (`/terminal`), laid out like the reference screenshot:
 
     ┌─────────────────────────┬──────────────────────────────┐
-    │ Nova Console (chat)     │ Root@Build cloud terminal    │
+    │ RouterX Console (chat)     │ Root@Build cloud terminal    │
     │ chat / $cmd / !goal /   │ xterm.js PTY · permanent     │
     │ /shortcut · agent steps │ root shell on Debian         │
     └─────────────────────────┴──────────────────────────────┘

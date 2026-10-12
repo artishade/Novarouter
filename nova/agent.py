@@ -1,4 +1,4 @@
-"""Nova Agent — autonomous task runner (Python port of src/lib/server/agent.ts).
+"""RouterX Agent — autonomous task runner (Python port of src/lib/server/agent.ts).
 
 Loop: plan (LLM, strict JSON) → execute tool → persist AgentStep → repeat until
 `finish` or the step limit; then a final LLM call writes the summary. All tool
@@ -106,7 +106,7 @@ TOOLS_DOC = {
     "finish": "End the task with a final summary",
 }
 
-AGENT_SYSTEM_PROMPT = """You are Nova Agent, an autonomous research & operations agent inside the NovaRouter AI gateway.
+AGENT_SYSTEM_PROMPT = """You are RouterX Agent, an autonomous research & operations agent inside the RouterX AI gateway.
 
 You work toward the user's goal one step at a time using these tools:
 - web_search: search the live web for up-to-date information ("query_or_url_or_command" = search query)
@@ -297,7 +297,7 @@ def _completion_content(completion) -> str:
 # The agent's own brain
 # --------------------------------------------------------------------------- #
 # The planner and the final summary are LLM calls, and they used to have exactly
-# one source: the builtin NovaFree engine sidecar. That sidecar can legitimately
+# one source: the builtin RouterX Free engine sidecar. That sidecar can legitimately
 # be off (NOVA_ENGINE_DISABLED, no bun/node runtime, no reachable free
 # catalogue) — and then every task died with "Agent planner returned unparseable
 # output twice" before reaching a single tool, while the chat box right next to
@@ -396,7 +396,7 @@ def strip_html(html: str) -> str:
 
 
 async def tool_web_search(query: str) -> str:
-    q = query or "NovaRouter AI gateway"
+    q = query or "RouterX AI gateway"
     results = await nova_engine.web_search(q)
     if not isinstance(results, list) or not results:
         return f'No results for "{q}".'

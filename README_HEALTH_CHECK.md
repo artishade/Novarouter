@@ -1,4 +1,4 @@
-# NovaRouter Health Check & Model Management System
+# RouterX Health Check & Model Management System
 
 ব্যক্তিগতভাবে তৈরি করা auto health check এবং model management system যেটি:
 
@@ -55,11 +55,11 @@ crontab -e
 ### Option B: Systemd Timer (Recommended)
 ```bash
 # Create service file
-sudo nano /etc/systemd/system/novarouter-health.service
+sudo nano /etc/systemd/system/routerx-health.service
 ```
 ```ini
 [Unit]
-Description=NovaRouter Health Check Service
+Description=RouterX Health Check Service
 After=network.target
 
 [Service]
@@ -74,11 +74,11 @@ WantedBy=multi-user.target
 
 ```bash
 # Create timer file
-sudo nano /etc/systemd/system/novarouter-health.timer
+sudo nano /etc/systemd/system/routerx-health.timer
 ```
 ```ini
 [Unit]
-Description=Run NovaRouter health check every 12 hours
+Description=Run RouterX health check every 12 hours
 
 [Timer]
 OnCalendar=*-*-* 00/12:00:00
@@ -90,13 +90,13 @@ WantedBy=timers.target
 
 ```bash
 # Enable and start
-sudo systemctl enable novarouter-health.timer
-sudo systemctl start novarouter-health.timer
+sudo systemctl enable routerx-health.timer
+sudo systemctl start routerx-health.timer
 ```
 
 ## API Endpoints (Already Available)
 
-NovaRouter already has these endpoints:
+RouterX already has these endpoints:
 
 1. **`POST /api/admin/models/disable-unreachable`** - Disable all dead models
 2. **`POST /api/admin/models/{id}/ping`** - Health check single model
@@ -166,6 +166,6 @@ Script গুলোতে customize করতে পারবে:
 কোন সমস্যা হলে:
 1. Logs check করো: `cat /root/Novarouter2/Novarouter/health_check.log`
 2. Database connection verify করো
-3. NovaRouter server running আছে কিনা check করো
+3. RouterX server running আছে কিনা check করো
 
 **এখন তুমি এক command দিয়ে সব model check করতে পারবে এবং unreachable model গুলো automatically disable হবে!** 🚀

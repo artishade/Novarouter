@@ -11,12 +11,12 @@ services:
       # - DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
-      # The Root@Build terminal runs as its own service. Comment these two out
-      # (or leave NOVA_TERMINAL_URL empty) to keep it in-process instead.
-      - NOVA_TERMINAL_URL=http://terminal:3100
-      - NOVA_TERMINAL_TOKEN=${NOVA_TERMINAL_TOKEN:-}
-    depends_on:
-      - terminal
+      # Terminal runs locally in-process by default.
+      # Uncomment to use a separate terminal service:
+      # - NOVA_TERMINAL_URL=http://terminal:3100
+      # - NOVA_TERMINAL_TOKEN=${NOVA_TERMINAL_TOKEN:-}
+      # - depends_on:
+      #   - terminal
     volumes:
       - nova-db:/app/db
     restart: unless-stopped

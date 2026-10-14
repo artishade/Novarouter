@@ -15,6 +15,11 @@
           </span>
         </h3>
         <p class="mt-0.5 truncate font-mono text-[11px] text-slate-500">{{ m.exposed_id }} · via {{ m.provider_name or 'unknown' }}</p>
+        {% if not m.enabled %}
+        <span class="mt-1 inline-flex items-center gap-1 rounded border border-rose-900/60 bg-rose-950/40 px-1.5 py-0.5 text-[10px] text-rose-300">
+          <i data-lucide="power-off" class="size-3"></i>Disabled — gateway and agent will skip this model
+        </span>
+        {% endif %}
       </div>
       <button type="button" data-close-dialog aria-label="Close details"
         class="inline-flex size-7 shrink-0 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-800/70 hover:text-slate-200">

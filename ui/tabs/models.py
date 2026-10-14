@@ -73,7 +73,8 @@ def _parse_filters(sp: Any) -> dict:
     if capability not in CAPABILITIES:
         capability = "all"
     free = truthy(sp.get("free"))
-    return {"q": q, "provider_id": provider_id, "status": status, "capability": capability, "free": free}
+    show_disabled = truthy(sp.get("show_disabled"))
+    return {"q": q, "provider_id": provider_id, "status": status, "capability": capability, "free": free, "show_disabled": show_disabled}
 
 
 def _api_params(f: dict) -> dict:
@@ -88,6 +89,8 @@ def _api_params(f: dict) -> dict:
         params["capability"] = f["capability"]
     if f["free"]:
         params["free"] = "true"
+    if f["show_disabled"]:
+        params["show_disabled"] = "true"
     params["limit"] = LIST_PAGE_SIZE
     return params
 
@@ -131,7 +134,7 @@ async def _models_ctx(request: Request) -> dict:
         stats = None
 
     active_filters = int(f["provider_id"] != "all") + int(f["status"] != "all") + \
-        int(f["capability"] != "all") + int(f["free"])
+        int(f["capability"] != "all") + int(f["free"]) + int(f["show_disabled"])
     has_filters = active_filters > 0 or bool(f["q"])
 
     return {
@@ -145,6 +148,7 @@ async def _models_ctx(request: Request) -> dict:
         "status": f["status"],
         "capability": f["capability"],
         "free": f["free"],
+        "show_disabled": f["show_disabled"],
         "active_filters": active_filters,
         "has_filters": has_filters,
     }

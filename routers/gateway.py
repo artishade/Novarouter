@@ -50,7 +50,10 @@ from nova import routing as nova_routing
 from nova import router_settings
 from nova.discovery import aggregate_discovery, discover_provider_models
 from nova.models import ClientKey, Model as ModelRow, ModelRoute, Provider, RequestLog
-from nova.provider_transport import anthropic_headers, anthropic_to_openai, anthropic_url, openai_to_anthropic
+from nova.provider_transport import (
+    anthropic_headers, anthropic_to_openai, anthropic_url, openai_to_anthropic,
+    extract_forward_headers,
+)
 
 log = logging.getLogger("nova.gateway")
 
@@ -372,7 +375,7 @@ class UpstreamFailure(Exception):
 # Non-streaming upstream attempt (parity with attemptUpstream)
 # --------------------------------------------------------------------------- #
 
-async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: float | None, original_body: dict | None = None) -> dict | None:
+async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: float | None, original_body: dict | None = None, forward_headers: dict[str, str] | None = None) -> dict | None:
     provider = row.provider
     if not provider or not provider.enabled or provider.kind in ("builtin", "gemini"):
         return None
@@ -414,7 +417,7 @@ async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: flo
         native = provider.kind == "anthropic"
         res = await NONSTREAM_CLIENT.post(
             anthropic_url(base) if native else f"{base}/chat/completions",
-            headers=anthropic_headers(key_info["apiKey"]) if native else
+            headers=anthropic_headers(key_info["apiKey"], forward=forward_headers) if native else
                     {"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
             json=openai_to_anthropic(row.modelId, messages, body) if native else body,
         )
@@ -427,7 +430,8 @@ async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: flo
                 return None
             return {**normalized, "upstream_model": row.modelId,
                     "upstream_exposed_id": row.exposedId, "provider_name": provider.name,
-                    "provider_id": provider.id, "via": "upstream-anthropic"}
+                    "provider_id": provider.id, "via": "upstream-anthropic",
+                    "upstream_headers": forward_response_headers(res)}
         content = extract_upstream_content(payload)
         if content is None:
             return None
@@ -488,7 +492,7 @@ def select_upstream_key_sync(provider_id: int):
 # Streaming upstream attempt (SSE relay)
 # --------------------------------------------------------------------------- #
 
-async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperature: float | None, original_body: dict | None = None):
+async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperature: float | None, original_body: dict | None = None, forward_headers: dict[str, str] | None = None):
     """Open an SSE stream to the upstream provider.
 
     Returns (stream_iterator, provider_name, upstream_model) or raises UpstreamFailure
@@ -510,7 +514,7 @@ async def attempt_upstream_stream(row: ModelRow, messages: list[dict], temperatu
     try:
         req = client.build_request(
             "POST", anthropic_url(base) if native else f"{base}/chat/completions",
-            headers=anthropic_headers(key_info["apiKey"]) if native else
+            headers=anthropic_headers(key_info["apiKey"], forward=forward_headers) if native else
                     {"Content-Type": "application/json", "Authorization": f"Bearer {key_info['apiKey']}"},
             json=openai_to_anthropic(row.modelId, messages, body, stream=True) if native else body,
         )
@@ -843,14 +847,14 @@ def persist_lockouts(db: Session, force: bool = False) -> None:
     router_settings.save_lockouts(db, nova_routing.LOCKOUTS)
 
 
-async def pipeline_nonstream(db: Session, requested: str, messages: list[dict], temperature: float | None, original_body: dict | None = None):
+async def pipeline_nonstream(db: Session, requested: str, messages: list[dict], temperature: float | None, original_body: dict | None = None, forward_headers: dict[str, str] | None = None):
     """Returns (result_dict, stage, plan) — walking the router's ordering."""
     started = now_ms()
     rows, plan = route_request(db, requested, original_body)
     stage = 0
     for row in rows:
         stage += 1
-        result = await attempt_upstream(row, messages, temperature, original_body)
+        result = await attempt_upstream(row, messages, temperature, original_body, forward_headers=forward_headers)
         note_attempt(row, result is not None)
         if result is not None:
             result["stage"] = stage
@@ -982,19 +986,21 @@ async def chat_completions(request: Request):
     temperature = body.get("temperature") if isinstance(body.get("temperature"), (int, float)) else None
     stream = body.get("stream") is True
     tokens_in = estimate_tokens("\n".join(f"{m['role']}:{m['content']}" for m in messages))
+    # Forward Anthropic-format headers (e.g. anthropic-beta for safeguards billing) to upstream.
+    forward_headers = extract_forward_headers(request=request)
 
     from nova.database import SessionLocal
 
     if stream:
         return StreamingResponse(
-            _chat_stream_response(requested, messages, temperature, tokens_in, started, body),
+            _chat_stream_response(requested, messages, temperature, tokens_in, started, body, forward_headers),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **build_headers()},
         )
 
     with SessionLocal() as db:
         try:
-            result, stage, plan = await pipeline_nonstream(db, requested, messages, temperature, body)
+            result, stage, plan = await pipeline_nonstream(db, requested, messages, temperature, body, forward_headers)
         except HTTPError as err:
             write_log(db, model=requested, upstream_model="nova-engine",
                       provider_name="RouterX Free Engine", endpoint="/v1/chat/completions",
@@ -1035,7 +1041,7 @@ def sse_chunk(obj: dict) -> bytes:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
-async def _chat_stream_response(requested: str, messages: list[dict], temperature, tokens_in: int, started: int, original_body: dict | None = None):
+async def _chat_stream_response(requested: str, messages: list[dict], temperature, tokens_in: int, started: int, original_body: dict | None = None, forward_headers: dict[str, str] | None = None):
     """Full pipeline with SSE output. Commits to a stage only after the first
     real content arrives; otherwise falls through to the next stage."""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -1067,7 +1073,7 @@ async def _chat_stream_response(requested: str, messages: list[dict], temperatur
         for row in rows:
             stage += 1
             try:
-                stream, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature, original_body)
+                stream, provider_name, upstream_model = await attempt_upstream_stream(row, messages, temperature, original_body, forward_headers=forward_headers)
             except UpstreamFailure as err:
                 note_attempt(row, False, err.detail)
                 log.info("stream stage %s failed: %s", stage, err)

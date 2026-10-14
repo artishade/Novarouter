@@ -4,8 +4,15 @@ from __future__ import annotations
 import json
 import uuid
 
+import httpx
+
 
 ANTHROPIC_VERSION = "2023-06-01"
+
+# Headers Claude Code attaches for feature pass-through that the gateway must
+# forward verbatim to the upstream Anthropic-format provider. Anything not in
+# this set is the gateway's to consume or drop.
+ANTHROPIC_FORWARD_HEADERS = ("anthropic-beta", "anthropic-version", "anthropic-workspace-id")
 
 
 def anthropic_url(base: str, path: str = "messages") -> str:
@@ -14,9 +21,50 @@ def anthropic_url(base: str, path: str = "messages") -> str:
     return f"{root}/{path}" if root.endswith("/v1") else f"{root}/v1/{path}"
 
 
-def anthropic_headers(api_key: str) -> dict[str, str]:
-    return {"Content-Type": "application/json", "x-api-key": api_key,
-            "anthropic-version": ANTHROPIC_VERSION}
+def anthropic_headers(api_key: str, forward: dict[str, str] | None = None) -> dict[str, str]:
+    """Build upstream headers. `api_key` supplies the authentication credential;
+    `forward` carries request headers the gateway must pass through unchanged
+    (notably `anthropic-beta` so Claude Code's classifier / safeguards billing
+    stays server-side and isn't billed to the user's account)."""
+    headers = {"Content-Type": "application/json", "x-api-key": api_key,
+               "anthropic-version": ANTHROPIC_VERSION}
+    if forward:
+        for _k in ANTHROPIC_FORWARD_HEADERS:
+            v = forward.get(_k)
+            if v is not None:
+                headers[_k] = v
+    return headers
+
+
+def extract_forward_headers(scope: dict | None = None, request=None) -> dict[str, str]:
+    """Pull the Anthropic forward headers off an incoming request for echo to
+    upstream. Accepts either a FastAPI `Request` or a raw header dict."""
+    out: dict[str, str] = {}
+    if request is not None:
+        for k in ANTHROPIC_FORWARD_HEADERS:
+            v = request.headers.get(k)
+            if v:
+                out[k] = v
+    elif isinstance(scope, dict):
+        for k, v in scope.items():
+            out[k] = v
+    return out
+
+
+def forward_response_headers(response: httpx.Response) -> dict[str, str]:
+    """Headers the gateway must pass through on Anthropic-format responses so
+    that stall detection, retries, and usage-limit display all work."""
+    if not response:
+        return {}
+    out: dict[str, str] = {}
+    for k in ("retry-after", "x-should-retry", "content-type"):
+        v = response.headers.get(k)
+        if v:
+            out[k] = v
+    for k in list(response.headers.keys()):
+        if k.startswith("anthropic-ratelimit-"):
+            out[k] = response.headers[k]
+    return out
 
 
 def _tool_choice(choice):
@@ -108,7 +156,8 @@ def native_anthropic_body(payload: dict, model: str, stream: bool = False) -> di
             copy["content"] = [b for b in copy["content"] if not isinstance(b, dict)
                                or b.get("type") not in ("thinking", "redacted_thinking")]
         body["messages"].append(copy)
-    for field in ("temperature", "top_p", "top_k", "stop_sequences", "tools", "tool_choice"):
+    for field in ("temperature", "top_p", "top_k", "stop_sequences", "tools", "tool_choice",
+                  "safeguards", "metadata"):
         if field in payload and payload[field] is not None:
             body[field] = payload[field]
     return body

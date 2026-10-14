@@ -108,6 +108,9 @@ def list_models(req: Request, db: Session = Depends(get_db)):
     elif free_raw in ("false", "0"):
         free = False
 
+    show_disabled_raw = sp.get("show_disabled")
+    show_disabled = show_disabled_raw in ("true", "1")
+
     search = (sp.get("search") or "").strip().lower()
     capability = sp.get("capability")
     capability_filter = capability if capability in CAPABILITIES else None
@@ -127,6 +130,8 @@ def list_models(req: Request, db: Session = Depends(get_db)):
         stmt = stmt.where(ModelRow.status == status)
     if free is not None:
         stmt = stmt.where(ModelRow.isFree == free)
+    if not show_disabled:
+        stmt = stmt.where(ModelRow.enabled.is_(True))
     rows = db.scalars(stmt).unique().all()
 
     filtered = []

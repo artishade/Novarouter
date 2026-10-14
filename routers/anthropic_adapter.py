@@ -28,7 +28,10 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
-from nova.provider_transport import anthropic_headers, anthropic_url, native_anthropic_body
+from nova.provider_transport import (
+    anthropic_headers, anthropic_url, native_anthropic_body, forward_response_headers,
+    extract_forward_headers,
+)
 
 router = APIRouter()
 
@@ -253,10 +256,15 @@ async def anthropic_messages(request: Request):
 
     from nova.database import SessionLocal
 
+    # Headers Claude Code sends that the gateway must forward to the upstream
+    # Anthropic-format provider unchanged (notably `anthropic-beta` for
+    # classifier / safeguards billing pass-through).
+    fw_headers = extract_forward_headers(request=request)
+
     if stream:
         return StreamingResponse(
             _messages_stream(requested, payload, openai_msgs, system_text, max_tokens, temperature, tokens_in, started,
-                             openai_tools, openai_tool_choice, pipeline_body),
+                             openai_tools, openai_tool_choice, pipeline_body, forward_headers=fw_headers),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **gw.build_headers()},
         )
@@ -264,7 +272,8 @@ async def anthropic_messages(request: Request):
     with SessionLocal() as db:
         plan: dict = {}
         # Stage 0: native Anthropic passthrough when the resolved provider speaks Anthropic.
-        native = await _try_native_anthropic(db, requested, payload, openai_msgs, system_text, max_tokens, temperature)
+        native = await _try_native_anthropic(db, requested, payload, openai_msgs, system_text, max_tokens, temperature,
+                                              forward_headers=fw_headers)
         if native is not None:
             result = native
         else:
@@ -299,7 +308,11 @@ async def anthropic_messages(request: Request):
                 content_blocks.extend(openai_tool_calls_to_anthropic(tc))
         stop_reason = result.get("stop_reason") or ("tool_use" if result.get("tool_calls") or result.get("tool_blocks") else "end_turn")
 
-        return JSONResponse({
+        # Merge upstream response headers (retry-after, x-should-retry, ratelimit)
+        upstream_headers = result.get("upstream_headers") or {}
+        resp_headers = {**gw.build_headers(), **upstream_headers}
+
+        response_body: dict = {
             "id": f"msg_{uuid.uuid4().hex[:24]}",
             "type": "message",
             "role": "assistant",
@@ -310,12 +323,23 @@ async def anthropic_messages(request: Request):
             "usage": {"input_tokens": tin, "output_tokens": tout},
             "_nova": gw.nova_meta(result["upstream_model"], result["provider_name"], result.get("stage", 1), requested,
                                  result.get("stage", 1) > 1 or not plan.get("direct", True)),
-        })
+        }
+        # Forward safeguard_results from the upstream so Claude Code's
+        # server-side classifier review path works end-to-end.
+        if result.get("safeguard_results") is not None:
+            response_body["safeguard_results"] = result["safeguard_results"]
+        return JSONResponse(response_body, headers=resp_headers)
 
 
 async def _try_native_anthropic(db: Session, requested: str, payload: dict, openai_msgs: list[dict],
-                                system_text: str | None, max_tokens: int, temperature) -> dict | None:
-    """Speak natively to an anthropic-kind provider when the requested model maps to one."""
+                                system_text: str | None, max_tokens: int, temperature,
+                                forward_headers: dict[str, str] | None = None) -> dict | None:
+    """Speak natively to an anthropic-kind provider when the requested model maps to one.
+
+    `forward_headers` carries request headers (e.g. `anthropic-beta`) that the
+    gateway must pass through unchanged for Claude Code's classifier/safeguards
+    billing to stay server-side.
+    """
     gw = _deps()
     row = gw.find_model(db, requested)
     if row is None or row.provider is None or row.provider.kind != "anthropic" or not row.provider.enabled:
@@ -332,7 +356,8 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
     try:
         async with httpx.AsyncClient(timeout=gw.NONSTREAM_READ_TIMEOUT) as client:
             res = await client.post(
-                anthropic_url(base), headers=anthropic_headers(key_info["apiKey"]),
+                anthropic_url(base),
+                headers=anthropic_headers(key_info["apiKey"], forward=forward_headers),
                 json=body,
             )
         if res.status_code < 200 or res.status_code >= 300:
@@ -363,6 +388,8 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
         "via": "upstream-anthropic",
         "usage": {"input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens")},
         "stage": 1,
+        "upstream_headers": forward_response_headers(res),
+        "safeguard_results": data.get("safeguard_results"),
     }
 
 
@@ -372,7 +399,8 @@ async def _try_native_anthropic(db: Session, requested: str, payload: dict, open
 
 async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict], system_text: str | None,
                            max_tokens: int, temperature, tokens_in: int, started: int,
-                           openai_tools=None, openai_tool_choice=None, pipeline_body: dict | None = None):
+                           openai_tools=None, openai_tool_choice=None, pipeline_body: dict | None = None,
+                           forward_headers: dict[str, str] | None = None):
     gw = _deps()
     if pipeline_body is None:
         pipeline_body = dict(payload)
@@ -525,7 +553,8 @@ async def _messages_stream(requested: str, payload: dict, openai_msgs: list[dict
                 client = gw.UPSTREAM_CLIENT  # shared pooled client — warm connections
                 try:
                     req = client.build_request(
-                        "POST", anthropic_url(base), headers=anthropic_headers(key_info["apiKey"]),
+                        "POST", anthropic_url(base),
+                        headers=anthropic_headers(key_info["apiKey"], forward=forward_headers),
                         json=body)
                     res = await client.send(req, stream=True)
                 except httpx.HTTPError:

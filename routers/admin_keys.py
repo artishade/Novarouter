@@ -123,6 +123,11 @@ def create_key(body: dict = Body(default={}), db: Session = Depends(get_db)):
     db.add(created)
     db.commit()
 
+    # Invalidate the streaming key cache for this provider so the new key is
+    # picked up immediately instead of waiting for the TTL.
+    from routers import gateway as gw
+    gw._KEY_CACHE.pop(provider_id, None)
+
     return JSONResponse({"id": created.id})
 
 
@@ -142,6 +147,11 @@ def delete_key(id: str, db: Session = Depends(get_db)):
 
     db.delete(existing)
     db.commit()
+
+    # Invalidate the streaming key cache for this provider so the deleted key
+    # is dropped immediately instead of being cached for up to the TTL.
+    from routers import gateway as gw
+    gw._KEY_CACHE.pop(existing.providerId, None)
 
     return JSONResponse({"ok": True})
 
@@ -179,6 +189,11 @@ def bulk_add_keys(body: dict = Body(default={}), db: Session = Depends(get_db)):
     db.add_all(created_rows)
     db.commit()
 
+    # Invalidate the streaming key cache for this provider so the new keys are
+    # picked up immediately instead of waiting for the TTL.
+    from routers import gateway as gw
+    gw._KEY_CACHE.pop(provider_id, None)
+
     ids = sorted(k.id for k in created_rows)
 
     return JSONResponse({"added": len(created_rows), "ids": ids})
@@ -195,4 +210,8 @@ def clear_cooldowns(db: Session = Depends(get_db)):
         {ProviderKey.cooldownUntil: None}, synchronize_session=False
     )
     db.commit()
+    # Invalidate the streaming key cache so cooled-down keys are picked up
+    # immediately instead of waiting for the TTL to expire.
+    from routers import gateway as gw
+    gw._KEY_CACHE.clear()
     return JSONResponse({"ok": True, "cleared": count})

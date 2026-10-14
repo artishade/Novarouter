@@ -453,7 +453,12 @@ async def attempt_upstream(row: ModelRow, messages: list[dict], temperature: flo
 
 
 def select_upstream_key_sync(provider_id: int):
-    """Direct key selection used by the streaming path (cached 30s)."""
+    """Direct key selection used by the streaming path (cached 30s).
+
+    Only caches a found key — a ``None`` (no enabled key) is never cached so
+    that a key added or re-enabled by the operator takes effect immediately
+    instead of being shadowed for up to ``_KEY_CACHE_TTL`` seconds.
+    """
     now_m = time.time()
     cached = _KEY_CACHE.get(provider_id)
     if cached is not None and now_m - cached[0] < _KEY_CACHE_TTL:
@@ -474,7 +479,8 @@ def select_upstream_key_sync(provider_id: int):
                 break
         else:
             info = {"apiKey": rows[0].apiKey} if rows else None
-    _KEY_CACHE[provider_id] = (now_m, info)
+    if info is not None:
+        _KEY_CACHE[provider_id] = (now_m, info)
     return info
 
 
@@ -653,12 +659,20 @@ def auto_standins(db: Session, requested: str, seen: set[str],
     Shared by the live pipeline (after a route's explicit chain is exhausted)
     and by the dashboard's route preview, so what the preview promises is what
     the gateway actually does.
+
+    Sorting: provider priority first, then latency, so the operator's
+    preferred providers are tried before later ones — matching the 'priority'
+    strategy that `route_request` will re-apply. Free models are NOT pulled
+    forward here; the RouterX Free engine is already the pipeline's final
+    fallback stage, so crowding auto stand-ins with only free models would let
+    a rate-limited free tier consume the entire budget and skip paid providers
+    that could still serve the request.
     """
     rows = db.scalars(
         select(ModelRow)
         .where(ModelRow.enabled.is_(True))
         .options(joinedload(ModelRow.provider))
-        .order_by(ModelRow.isFree.desc(), ModelRow.latencyMs.asc(), ModelRow.id.asc())
+        .order_by(ModelRow.provider.priority, ModelRow.latencyMs.asc(), ModelRow.id.asc())
     ).unique().all()
     picked: list[ModelRow] = []
     for m in rows:
